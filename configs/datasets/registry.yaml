@@ -1,0 +1,12 @@
+datasets:
+  - {id: NCMMSC2021_AD, active: true, adapter: implemented, channel: structured_task_audio, language: zh, local_path: NCMMSC2021_AD}
+  - {id: ADReSS_2020, active: false, adapter: pending_migration, channel: picture_description, language: en, local_path: DementiaBank_Challenges/ADReSS_2020}
+  - {id: ADReSSo_2021, active: false, adapter: pending_migration, channel: picture_description, language: en, local_path: DementiaBank_Challenges/ADReSSo_2021}
+  - {id: ADReSS_M, active: false, adapter: pending_migration, channel: picture_description, language: multilingual, local_path: DementiaBank_Challenges/ADReSS_M}
+  - {id: PREPARE_DrivenData, active: false, adapter: pending_migration, channel: structured_tasks, language: multilingual, local_path: DementiaBank_Challenges/PREPARE_DrivenData}
+  - {id: TAUKADIAL, active: false, adapter: pending_migration, channel: structured_tasks, language: multilingual, local_path: DementiaBank_Challenges/TAUKADIAL}
+  - {id: PROCESS_2, active: false, adapter: pending_migration, channel: structured_tasks, language: multilingual, local_path: PROCESS-2}
+  - {id: DementiaBank_TalkBank, active: false, adapter: pending_migration, channel: neuropsychological_tasks, language: multilingual, local_path: DementiaBank_TalkBank}
+  - {id: DementiaNet_PublicFigures, active: false, adapter: pending_migration, channel: public_speech, language: multilingual, local_path: DementiaNet_PublicFigures}
+  - {id: IAEAV, active: false, adapter: pending_migration, channel: clinical_interview, language: es, local_path: IAEAV}
+

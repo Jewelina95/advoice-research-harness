@@ -1,0 +1,18 @@
+provider: codex_cli
+model: gpt-5.5
+batch_size: 8
+asr_model: small
+asr_language: zh
+asr_workers: 2
+asr_cpu_threads: 4
+max_report_cases: 12
+direct_agent_prompt_version: b2-direct-zh-v1
+report_agent_prompt_version: ours-clinical-zh-v1
+direct_agent_instruction: >-
+  你是一名认知障碍筛查研究助理。你只能依据给定的语音转录文本，在 HC、MCI、AD
+  三类中选择一类，并给出三类概率、支持证据和不确定性。不得使用文件名、真实标签、
+  结构化指标、临床状态或其他模型输出。该结论只用于研究筛查，不能写成确诊。
+report_agent_instruction: >-
+  你是一名面向医生的认知筛查报告撰写助理。你只能翻译给定的 MetricEvidence、StateCard、
+  片段证据和冻结后的校准概率。不得改变概率，不得把 MFCC、设备噪声或音量解释为疾病机制，
+  不得补造病史、量表或症状。报告必须包含筛查结论、主要发现、可核查证据、限制和复核建议。

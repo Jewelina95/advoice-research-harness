@@ -1,0 +1,47 @@
+states:
+  - id: S01
+    name_zh: 停顿与流畅性负担
+    branch: speech_behavior
+    clinical_question: 患者是否出现较多或较长的非发声中断
+    metrics: [silence_fraction, long_pause_rate_min, pause_mean_sec, pause_p90_sec]
+    weights: [0.30, 0.30, 0.20, 0.20]
+  - id: S02
+    name_zh: 输出效率
+    branch: speech_behavior
+    clinical_question: 单位任务时间内能否维持连续有效的语音输出
+    metrics: [voiced_fraction, speech_run_mean_sec, speech_run_rate_min]
+    weights: [0.45, 0.35, 0.20]
+  - id: S03
+    name_zh: 发声连续性
+    branch: speech_behavior
+    clinical_question: 发声片段是否稳定，是否频繁碎片化
+    metrics: [speech_run_cv, long_pause_rate_min, voiced_fraction]
+    weights: [0.40, 0.35, 0.25]
+  - id: S04
+    name_zh: 声音强度稳定性
+    branch: auxiliary_acoustic
+    clinical_question: 声音强度是否稳定；该状态受设备影响，只作模型辅助
+    metrics: [rms_db_mean, rms_db_std]
+    weights: [0.35, 0.65]
+  - id: S05
+    name_zh: 韵律变化
+    branch: auxiliary_acoustic
+    clinical_question: 基频变化是否减少；必须同时考虑性别和跟踪可靠度
+    metrics: [f0_median_hz, f0_iqr_hz]
+    weights: [0.20, 0.80]
+  - id: S06
+    name_zh: 低层谱学模式
+    branch: auxiliary_acoustic
+    clinical_question: 只用于模型判别，不进入疾病机制解释
+    metrics: [zcr_mean, spectral_centroid_mean, spectral_bandwidth_mean, spectral_rolloff_mean, spectral_flatness_mean]
+    weights: [0.20, 0.20, 0.20, 0.20, 0.20]
+unavailable_states:
+  - {id: S07, name_zh: 词汇提取与具体性, reason: NCMMSC 本地无人工转录，ASR 仅供 B2，尚未完成中文临床语言校准}
+  - {id: S08, name_zh: 词汇多样性, reason: 缺少中文任务内参考与转录误差校准}
+  - {id: S09, name_zh: 语义连贯性, reason: 缺少逐文件任务目标和标准内容单元}
+  - {id: S10, name_zh: 信息密度, reason: 缺少逐文件任务答案表和人工校验}
+  - {id: S11, name_zh: 句法复杂度, reason: 中文 ASR 句法边界尚未校验}
+  - {id: S12, name_zh: 言语不流畅, reason: 中文修正和填充词检测尚未校验}
+  - {id: S13, name_zh: 互动负担, reason: 无说话人角色和轮次标注}
+  - {id: S14, name_zh: 任务表现, reason: 缺少逐文件任务类型映射与评分表}
+

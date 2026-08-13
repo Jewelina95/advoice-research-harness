@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codebase-memory/
+data/raw/*
+!data/raw/.gitkeep
+data/interim/
+data/processed/
+artifacts/
+runs/
+reports/latest/
+reports/latest_run.json
+*.log

@@ -1,0 +1,29 @@
+bootstrap_iterations: 500
+ece_bins: 10
+layer_a:
+  - accuracy
+  - balanced_accuracy
+  - macro_f1
+  - weighted_f1
+  - mcc
+  - macro_auroc_ovr
+  - weighted_auroc_ovr
+  - macro_auprc
+  - multiclass_brier
+  - log_loss
+  - ece
+  - per_class_sensitivity
+  - per_class_specificity
+layer_b:
+  - metric_evidence_completeness
+  - state_card_completeness
+  - branch_contribution_trace
+  - report_permission_audit
+  - evidence_span_faithfulness
+  - clinical_report_rubric_25
+  - concept_intervention
+  - concept_only_vs_raw_state_ablation
+negative_controls:
+  - qc_only
+  - no_duration_no_loudness
+

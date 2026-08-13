@@ -1,0 +1,15 @@
+b1:
+  classifier: multinomial_logistic_regression
+  c_grid: [0.01, 0.1, 1.0, 10.0]
+  max_iter: 4000
+ours:
+  classifier: reliability_aware_hierarchical_fusion
+  c_grid: [0.01, 0.1, 1.0, 10.0]
+  max_iter: 4000
+  branch_gate_l2: 0.05
+  auxiliary_weight_cap: 0.35
+  calibration: multinomial_logistic_stacking
+cross_validation:
+  folds: 5
+  scoring: roc_auc_ovr_weighted
+

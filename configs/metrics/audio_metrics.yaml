@@ -1,0 +1,22 @@
+metrics:
+  - {id: duration_sec, state: QC, branch: qc, direction: 0, reliability: 0.99, role: qc_only, report_permission: false, confounds: [task_duration]}
+  - {id: clipping_fraction, state: QC, branch: qc, direction: 1, reliability: 0.95, role: qc_only, report_permission: false, confounds: [recording_device]}
+  - {id: snr_proxy_db, state: QC, branch: qc, direction: -1, reliability: 0.80, role: qc_only, report_permission: false, confounds: [background_noise, recording_device]}
+  - {id: silence_fraction, state: S01, branch: speech_behavior, direction: 1, reliability: 0.85, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_duration]}
+  - {id: long_pause_rate_min, state: S01, branch: speech_behavior, direction: 1, reliability: 0.82, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_type]}
+  - {id: pause_mean_sec, state: S01, branch: speech_behavior, direction: 1, reliability: 0.80, role: clinical_support, report_permission: true, confounds: [vad_threshold]}
+  - {id: pause_p90_sec, state: S01, branch: speech_behavior, direction: 1, reliability: 0.78, role: clinical_support, report_permission: true, confounds: [vad_threshold]}
+  - {id: voiced_fraction, state: S02, branch: speech_behavior, direction: -1, reliability: 0.84, role: clinical_support, report_permission: true, confounds: [task_type, microphone_gain]}
+  - {id: speech_run_mean_sec, state: S02, branch: speech_behavior, direction: -1, reliability: 0.78, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_type]}
+  - {id: speech_run_rate_min, state: S02, branch: speech_behavior, direction: 1, reliability: 0.72, role: clinical_support, report_permission: true, confounds: [task_type]}
+  - {id: speech_run_cv, state: S03, branch: speech_behavior, direction: 1, reliability: 0.74, role: clinical_support, report_permission: true, confounds: [task_type]}
+  - {id: rms_db_mean, state: S04, branch: auxiliary_acoustic, direction: 0, reliability: 0.65, role: model_auxiliary, report_permission: false, confounds: [microphone_gain, distance]}
+  - {id: rms_db_std, state: S04, branch: auxiliary_acoustic, direction: 0, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [microphone_gain]}
+  - {id: f0_median_hz, state: S05, branch: auxiliary_acoustic, direction: 0, reliability: 0.62, role: model_auxiliary, report_permission: false, confounds: [sex, pitch_tracking]}
+  - {id: f0_iqr_hz, state: S05, branch: auxiliary_acoustic, direction: -1, reliability: 0.64, role: cautious_support, report_permission: true, confounds: [sex, pitch_tracking, emotion]}
+  - {id: zcr_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.72, role: model_auxiliary, report_permission: false, confounds: [noise, recording_device]}
+  - {id: spectral_centroid_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.70, role: model_auxiliary, report_permission: false, confounds: [recording_device]}
+  - {id: spectral_bandwidth_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [recording_device]}
+  - {id: spectral_rolloff_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [recording_device]}
+  - {id: spectral_flatness_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.66, role: model_auxiliary, report_permission: false, confounds: [noise]}
+

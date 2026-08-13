@@ -1,0 +1,15 @@
+project_name: ADvoice evidence-governed screening
+schema_version: 1
+seed: 20260813
+default_dataset: NCMMSC2021_AD
+report_language: zh
+run_retention: 10
+clinical_intended_use: research screening and referral support, not diagnosis
+conditions:
+  - id: B1
+    name: traditional_acoustic_ml
+  - id: B2
+    name: direct_transcript_agent
+  - id: Ours
+    name: evidence_governed_state_fusion
+

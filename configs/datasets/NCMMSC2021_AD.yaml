@@ -1,0 +1,23 @@
+dataset_id: NCMMSC2021_AD
+display_name: NCMMSC 2021 AD long-speech track
+raw_path: data/raw/NCMMSC2021_AD
+language: zh
+channel: structured_task_audio
+task_type: long_picture_description
+unit_of_analysis: subject
+labels: [HC, MCI, AD]
+positive_class: AD
+train_glob: AD_dataset_long/train/**/*.wav
+test_glob: AD_dataset_long/test_have_label/*.wav
+excluded_globs:
+  - AD_dataset_6s/**
+  - AD_dataset_long/test_none_label/**
+split_policy: official_train_test_subject_disjoint
+speaker_roles: unavailable
+transcripts: generated_asr_only
+notes:
+  - Only the original 30-60 second recordings are analysis inputs.
+  - Six-second challenge clips are explicitly excluded.
+  - The official long-speech track is a 60-second picture-description task; recording sequence is not interpreted as a finer task label.
+  - Multiple recordings are aggregated at subject level before modeling.
+source_url: https://github.com/THUsatlab/AD2021

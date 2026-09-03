@@ -48,7 +48,7 @@ python demo/build_local_case_manifest.py --advoice-root "/path/to/AD voice"
 make demo
 ```
 
-页面会同时提供临床访谈、标准图片描述、结构化认知任务和自然公开讲话四个中文案例。生成的 `demo/local_cases.json`、分析缓存和原始音频均被 Git 忽略；公开仓库仍只包含合成案例。
+页面会同时提供临床访谈、标准图片描述、结构化认知任务和自然公开讲话四个中文案例。通用停顿、输出和词汇证据之外，页面会按通道增加访谈互动、图片内容单元/信息密度，或仅限辅助与质量控制的声学证据。生成的 `demo/local_cases.json`、分析缓存和原始音频均被 Git 忽略；公开仓库仍只包含合成案例。
 
 随后打开 `http://127.0.0.1:8765`。网页支持直接运行仓库样例，也支持在本地上传 WAV 和转录文本。接口和可复现边界见 [docs/PUBLIC_REPRODUCIBILITY.md](docs/PUBLIC_REPRODUCIBILITY.md)。
 

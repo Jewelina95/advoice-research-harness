@@ -11,14 +11,43 @@ from .features import extract_audio_file
 from .transcripts import read_transcript
 
 
-DEMO_REFERENCES: dict[str, dict[str, float | str]] = {
-    "silence_fraction": {"median": 0.34, "scale": 0.12, "direction": 1, "unit": "ratio"},
-    "long_pause_rate_min": {"median": 5.0, "scale": 3.0, "direction": 1, "unit": "events/min"},
-    "speech_run_mean_sec": {"median": 2.2, "scale": 0.8, "direction": -1, "unit": "s"},
-    "voiced_fraction": {"median": 0.66, "scale": 0.12, "direction": -1, "unit": "ratio"},
-    "speech_rate_wpm": {"median": 118.0, "scale": 28.0, "direction": -1, "unit": "words/min"},
-    "filler_rate_100w": {"median": 2.0, "scale": 2.0, "direction": 1, "unit": "events/100 words"},
-    "lexical_ttr": {"median": 0.58, "scale": 0.12, "direction": -1, "unit": "ratio"},
+DEMO_REFERENCES: dict[str, dict[str, Any]] = {
+    "silence_fraction": {"name_zh": "静音比例", "median": 0.34, "scale": 0.12, "direction": 1, "unit": "比例", "source": "audio", "role": "clinical_state"},
+    "long_pause_rate_min": {"name_zh": "每分钟长停顿", "median": 5.0, "scale": 3.0, "direction": 1, "unit": "次/分钟", "source": "audio", "role": "clinical_state"},
+    "speech_run_mean_sec": {"name_zh": "平均连续发声时长", "median": 2.2, "scale": 0.8, "direction": -1, "unit": "秒", "source": "audio", "role": "clinical_state"},
+    "voiced_fraction": {"name_zh": "发声时间占比", "median": 0.66, "scale": 0.12, "direction": -1, "unit": "比例", "source": "audio", "role": "clinical_state"},
+    "speech_rate_wpm": {"name_zh": "每分钟词数", "median": 118.0, "scale": 28.0, "direction": -1, "unit": "词/分钟", "source": "transcript", "role": "clinical_state"},
+    "filler_rate_100w": {"name_zh": "每百词填充语", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "次/百词", "source": "transcript", "role": "clinical_state"},
+    "lexical_ttr": {"name_zh": "词汇多样性", "median": 0.58, "scale": 0.12, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
+    "patient_turn_share": {"name_zh": "患者话轮占比", "median": 0.75, "scale": 0.15, "direction": -1, "unit": "比例", "source": "dialogue", "role": "clinical_state"},
+    "mean_utterance_words": {"name_zh": "平均话轮词数", "median": 10.0, "scale": 4.0, "direction": -1, "unit": "词/话轮", "source": "dialogue", "role": "clinical_state"},
+    "repair_rate_100w": {"name_zh": "每百词修正次数", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "次/百词", "source": "transcript", "role": "clinical_state"},
+    "lexical_mattr50": {"name_zh": "移动平均词汇多样性", "median": 0.70, "scale": 0.12, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
+    "content_word_ratio": {"name_zh": "内容词比例", "median": 0.55, "scale": 0.10, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
+    "picture_content_unit_coverage": {"name_zh": "图片内容单元覆盖率", "median": 0.70, "scale": 0.20, "direction": -1, "unit": "比例", "source": "task_score", "role": "clinical_state"},
+    "picture_information_density": {"name_zh": "图片信息密度", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "单元/百词", "source": "task_score", "role": "clinical_state"},
+    "picture_content_redundancy": {"name_zh": "内容重复比例", "median": 0.15, "scale": 0.10, "direction": 1, "unit": "比例", "source": "task_score", "role": "clinical_state"},
+    "picture_uncertainty_rate_100w": {"name_zh": "不确定表达率", "median": 3.0, "scale": 3.0, "direction": 1, "unit": "次/百词", "source": "task_score", "role": "clinical_state"},
+    "rms_db_std": {"name_zh": "响度变化", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "分贝", "source": "audio", "role": "model_auxiliary"},
+    "f0_iqr_hz": {"name_zh": "基频变化范围", "median": 40.0, "scale": 20.0, "direction": -1, "unit": "赫兹", "source": "audio", "role": "model_auxiliary"},
+    "snr_proxy_db": {"name_zh": "信噪比估计", "median": 15.0, "scale": 5.0, "direction": -1, "unit": "分贝", "source": "audio", "role": "quality_control"},
+}
+
+BASE_DEMO_METRICS = [
+    "silence_fraction",
+    "long_pause_rate_min",
+    "speech_run_mean_sec",
+    "voiced_fraction",
+    "speech_rate_wpm",
+    "filler_rate_100w",
+    "lexical_ttr",
+]
+
+CHANNEL_EXTRA_METRICS = {
+    "clinical_interview": ["patient_turn_share", "mean_utterance_words", "repair_rate_100w"],
+    "picture_description": ["picture_content_unit_coverage", "picture_information_density", "picture_content_redundancy", "picture_uncertainty_rate_100w"],
+    "structured_multitask": ["lexical_mattr50", "content_word_ratio", "repair_rate_100w"],
+    "public_speech": ["rms_db_std", "f0_iqr_hz", "snr_proxy_db"],
 }
 
 STATE_DEFINITIONS: list[dict[str, Any]] = [
@@ -39,6 +68,27 @@ STATE_DEFINITIONS: list[dict[str, Any]] = [
         "name": "词汇提取与多样性",
         "question": "表达中是否出现填充增加或词汇多样性降低？",
         "metrics": [("filler_rate_100w", 0.45), ("lexical_ttr", 0.55)],
+    },
+    {
+        "id": "S10",
+        "name": "任务信息密度",
+        "question": "标准图片描述中是否遗漏关键信息、重复内容或增加不确定表达？",
+        "metrics": [("picture_content_unit_coverage", 0.45), ("picture_information_density", 0.35), ("picture_content_redundancy", 0.10), ("picture_uncertainty_rate_100w", 0.10)],
+        "channels": {"picture_description"},
+    },
+    {
+        "id": "S12",
+        "name": "访谈互动负担",
+        "question": "患者在访谈中的发言占比、单次回答长度和自我修正是否提示较高互动负担？",
+        "metrics": [("patient_turn_share", 0.50), ("mean_utterance_words", 0.30), ("repair_rate_100w", 0.20)],
+        "channels": {"clinical_interview"},
+    },
+    {
+        "id": "S07",
+        "name": "任务内词汇检索",
+        "question": "语义流畅性任务中的词汇检索、多样性和有效内容输出是否降低？",
+        "metrics": [("lexical_mattr50", 0.45), ("content_word_ratio", 0.35), ("repair_rate_100w", 0.20)],
+        "channels": {"structured_multitask"},
     },
 ]
 
@@ -71,11 +121,14 @@ def _evidence(feature: dict[str, Any], metric_id: str) -> dict[str, Any]:
     missing = value is None
     z = 0.0 if missing else (value - float(reference["median"])) / float(reference["scale"])
     directional_z = float(reference["direction"]) * z
-    source = "transcript" if metric_id in {"speech_rate_wpm", "filler_rate_100w", "lexical_ttr"} else "audio"
+    source = str(reference["source"])
     reliability = float(feature.get("text_reliability", 0.0) if source == "transcript" else feature.get("audio_reliability", 0.0))
+    if source in {"dialogue", "task_score"}:
+        reliability = float(feature.get("text_reliability", 0.0))
     return {
         "id": f"demo:{metric_id}",
         "metric_id": metric_id,
+        "name_zh": reference["name_zh"],
         "value": value,
         "unit": reference["unit"],
         "reference_median": reference["median"],
@@ -83,6 +136,8 @@ def _evidence(feature: dict[str, Any], metric_id: str) -> dict[str, Any]:
         "directional_z": round(directional_z, 3),
         "reliability": round(reliability, 3),
         "source": source,
+        "evidence_role": reference["role"],
+        "reportable": reference["role"] == "clinical_state",
         "missing": missing,
         "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
     }
@@ -96,9 +151,13 @@ def _assemble_result(
     *,
     synthetic: bool,
 ) -> dict[str, Any]:
-    evidence = {metric: _evidence(feature, metric) for metric in DEMO_REFERENCES}
+    channel_id = str(case.get("channel_id", ""))
+    metric_ids = BASE_DEMO_METRICS + CHANNEL_EXTRA_METRICS.get(channel_id, [])
+    evidence = {metric: _evidence(feature, metric) for metric in metric_ids}
     states: list[dict[str, Any]] = []
     for definition in STATE_DEFINITIONS:
+        if definition.get("channels") and channel_id not in definition["channels"]:
+            continue
         available = [(evidence[metric], weight) for metric, weight in definition["metrics"] if not evidence[metric]["missing"]]
         denominator = sum(weight * item["reliability"] for item, weight in available)
         score = (

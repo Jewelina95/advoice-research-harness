@@ -21,7 +21,7 @@ python demo/build_local_case_manifest.py --advoice-root "/path/to/AD voice"
 make demo
 ```
 
-The four channels are clinical interview (IAEAV), standard picture description (ADReSS 2020), structured cognitive tasks (PROCESS-2), and non-standard public speech (DementiaNet). The server analyzes these files on demand with the current feature code and supports HTTP byte ranges for audio playback and seeking. This gallery demonstrates channel routing and evidence traceability; it is not a replacement for dataset-level 9.2 evaluation.
+The four channels are clinical interview (IAEAV), standard picture description (ADReSS 2020), structured cognitive tasks (PROCESS-2), and non-standard public speech (DementiaNet). Channel routing changes the visible evidence set: interviews add dialogue burden measures; picture tasks add content-unit and information-density measures; public speech adds auxiliary prosody and recording-quality measures that are not marked as reportable disease evidence. The server analyzes these files on demand with the current feature code and supports HTTP byte ranges for audio playback and seeking. This gallery demonstrates channel routing and evidence traceability; it is not a replacement for dataset-level 9.2 evaluation.
 
 `demo/local_cases.json`, `demo/local_output/`, source identifiers, transcripts, and audio remain local-only and are never committed.
 

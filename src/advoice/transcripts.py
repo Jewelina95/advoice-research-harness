@@ -194,7 +194,13 @@ def _picture_description_metrics(
         "picture_uncertainty_rate_100w": float("nan"),
     }
     normalized_task = re.sub(r"[^a-z0-9]+", "_", str(task_type).lower()).strip("_")
-    if normalized_task != "picture_description" or language not in PICTURE_CONTENT_UNITS:
+    picture_tasks = {
+        "picture_description",
+        "cookie_theft_picture_description",
+        "cookie_theft",
+        "ctd",
+    }
+    if normalized_task not in picture_tasks or language not in PICTURE_CONTENT_UNITS:
         return unavailable
     normalized_text = text.lower()
     groups = PICTURE_CONTENT_UNITS[language]

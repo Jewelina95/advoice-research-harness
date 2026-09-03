@@ -114,6 +114,22 @@ def test_picture_description_metrics_are_task_scoped(tmp_path: Path) -> None:
     assert np.isnan(narrative["picture_content_unit_coverage"])
 
 
+def test_picture_description_metric_aliases_are_supported(tmp_path: Path) -> None:
+    transcript = tmp_path / "picture.txt"
+    transcript.write_text(
+        "The boy takes a cookie while the mother washes dishes at the sink.",
+        encoding="utf-8",
+    )
+
+    cookie = transcript_metrics(
+        str(transcript), "english", 10.0, "cookie_theft_picture_description"
+    )
+    process_ctd = transcript_metrics(str(transcript), "english", 10.0, "ctd")
+
+    assert cookie["picture_content_unit_coverage"] > 0
+    assert process_ctd["picture_content_unit_coverage"] > 0
+
+
 def test_acquisition_group_holdout_keeps_interviewer_out_of_training() -> None:
     frame = pd.DataFrame(
         {

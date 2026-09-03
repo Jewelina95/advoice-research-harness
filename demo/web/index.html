@@ -3,99 +3,109 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="ADvoice evidence-governed speech screening research demo">
-  <title>ADvoice | Reproducible research demo</title>
+  <meta name="description" content="ADvoice evidence-governed speech screening research demonstration">
+  <title>ADvoice | Research demonstration</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="site-header">
     <a class="brand" href="#top" aria-label="ADvoice home">
       <span class="brand-mark" aria-hidden="true">A</span>
-      <span><strong>ADvoice</strong><small>Research harness 9.2</small></span>
+      <span><strong>ADvoice</strong><small>Research demonstration</small></span>
     </a>
     <nav aria-label="Primary navigation">
       <a href="#method">Method</a>
-      <a href="#demo">Demo</a>
-      <a href="#evaluation">Evaluation</a>
-      <a href="#run">Run locally</a>
+      <a href="#case-demo">Single recording</a>
+      <a href="#cohort-demo">Cohort run</a>
+      <a href="#run">Code</a>
     </nav>
-    <a class="header-link" href="https://github.com/Jewelina95/advoice-research-harness">View repository</a>
+    <a class="header-link" href="https://github.com/Jewelina95/advoice-research-harness">Source code</a>
   </header>
 
   <main id="top">
     <section class="intro band">
       <div class="intro-copy">
         <p class="eyebrow">Evidence-governed cognitive screening from speech</p>
-        <h1>One auditable path from recording to cognitive-state evidence.</h1>
-        <p class="lede">ADvoice routes each speech task through modality-specific processing, converts measurements into typed evidence, aggregates them into cognitive StateCards, and constrains a single diagnostic Agent to cite the evidence it uses.</p>
+        <h1>Run a recording. Inspect every step behind the report.</h1>
+        <p class="lede">ADvoice converts speech into task-aware measurements, cognitive-state evidence, a constrained Agent review, and a traceable clinician-facing report.</p>
+        <div class="hero-actions">
+          <a class="primary-link" href="#case-demo">Run a single case</a>
+          <a class="secondary-link" href="#cohort-demo">View cohort result</a>
+        </div>
         <div class="status-row">
-          <span class="status-pill">Four public synthetic channels</span>
-          <span class="status-pill neutral">No participant data in this repository</span>
+          <span class="status-pill">Four task-aware examples</span>
+          <span class="status-pill neutral">Runnable from this repository</span>
           <span class="status-pill warning">Research use only</span>
         </div>
       </div>
-      <aside class="scope-panel" aria-label="Public demo scope">
-        <span class="scope-kicker">This page runs</span>
-        <strong>Audio and transcript evidence extraction</strong>
-        <p>It does not load clinical weights or emit a disease probability. Full cohort prediction and the configured GPT Agent require licensed datasets and the frozen research command.</p>
+      <aside class="scope-panel" aria-label="Demonstration scope">
+        <span class="scope-kicker">What the demonstration returns</span>
+        <strong>Evidence, states, source segments, and a clinical summary</strong>
+        <ol class="scope-list">
+          <li>Play and inspect the source recording</li>
+          <li>Run the evidence pipeline</li>
+          <li>Trace report findings back to metrics and segments</li>
+        </ol>
+        <p>Public recordings are deterministic synthetic fixtures. Restricted participant data remain outside Git.</p>
       </aside>
     </section>
 
     <section class="method band" id="method">
       <div class="section-heading">
-        <div><p class="eyebrow">System architecture</p><h2>Task-aware processing before prediction</h2></div>
-        <p>The public demo exposes the same evidence contract used by the research harness. The trained pipeline adds out-of-fold prediction, a validation-frozen correction policy, and locked report rendering.</p>
+        <div><p class="eyebrow">System method</p><h2>From a heterogeneous recording to a locked report</h2></div>
+        <p>The same evidence contract is used across interviews, picture descriptions, structured cognitive tasks, and natural speech. Task routing determines which evidence is observable before any prediction is made.</p>
       </div>
 
       <div class="channel-row" aria-label="Supported data channels">
-        <article><span class="channel-index">01</span><strong>Clinical interview</strong><small>speaker roles + interaction</small></article>
-        <article><span class="channel-index">02</span><strong>Picture description</strong><small>content units + language</small></article>
-        <article><span class="channel-index">03</span><strong>Structured task</strong><small>task-specific retrieval</small></article>
-        <article><span class="channel-index">04</span><strong>Natural speech</strong><small>conservative auxiliary audio</small></article>
+        <article><span class="channel-index">01</span><strong>Clinical interview</strong><small>speaker roles and interaction</small></article>
+        <article><span class="channel-index">02</span><strong>Picture description</strong><small>content and language production</small></article>
+        <article><span class="channel-index">03</span><strong>Structured cognitive task</strong><small>task-specific retrieval and output</small></article>
+        <article><span class="channel-index">04</span><strong>Natural speech</strong><small>conservative language and acoustic evidence</small></article>
       </div>
 
       <div class="pipeline" aria-label="ADvoice processing pipeline">
-        <article class="pipeline-step input-step"><span>01</span><h3>Route the case</h3><p>Dataset, task, language, modality, and speaker role.</p><code>src/advoice/data.py</code></article>
+        <article class="pipeline-step input-step"><span>01</span><h3>Route</h3><p>Identify task, language, available modality, and participant speech.</p><code>data.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step"><span>02</span><h3>Normalize inputs</h3><p>ASR, transcript normalization, participant isolation, and task-aware segments.</p><code>src/advoice/asr.py</code></article>
+        <article class="pipeline-step"><span>02</span><h3>Represent</h3><p>Normalize audio and text, preserve task boundaries, and index local segments.</p><code>features.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step"><span>03</span><h3>Build evidence</h3><p>Acoustic, language, dialogue, and task metrics become typed MetricEvidence.</p><code>src/advoice/evidence.py</code></article>
+        <article class="pipeline-step"><span>03</span><h3>Build evidence</h3><p>Attach reference, direction, reliability, confounds, task, and source IDs.</p><code>evidence.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step state-step"><span>04</span><h3>Form StateCards</h3><p>Reliability-weighted metrics form shared and task-specific cognitive states.</p><code>src/advoice/states.py</code></article>
+        <article class="pipeline-step state-step"><span>04</span><h3>Form states</h3><p>Combine related measurements once into shared and task-specific StateCards.</p><code>states.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step model-step"><span>05</span><h3>Learn the prior</h3><p>Text, audio, state, and segment branches produce out-of-fold probabilities.</p><code>src/advoice/models.py</code></article>
+        <article class="pipeline-step model-step"><span>05</span><h3>Estimate</h3><p>Learn text, audio, state, and segment evidence under subject-level splits.</p><code>condition_c.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step agent-step"><span>06</span><h3>Constrain the Agent</h3><p>The Agent scores evidence with typed IDs; validation-frozen fusion can fail closed.</p><code>src/advoice/condition_c.py</code></article>
+        <article class="pipeline-step agent-step"><span>06</span><h3>Review</h3><p>A blinded diagnostic Agent checks support, counter-evidence, and limitations.</p><code>cognitive_agent.py</code></article>
         <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
-        <article class="pipeline-step report-step"><span>07</span><h3>Lock and report</h3><p>The decision is locked before clinician and participant reports are rendered.</p><code>src/advoice/diagnostic_agent_report.py</code></article>
+        <article class="pipeline-step report-step"><span>07</span><h3>Lock and report</h3><p>Validate, fail closed when needed, lock the result, then render the report.</p><code>diagnostic_agent_report.py</code></article>
       </div>
 
       <div class="model-contracts">
         <article>
-          <div class="contract-label fixed">Fixed contract</div>
-          <h3>Clinical evidence boundaries</h3>
-          <p>Reference scope, abnormal direction, reliability, confounds, task, segment, and report permission travel with each metric.</p>
+          <div class="contract-label fixed">Evidence contract</div>
+          <h3>Measurements remain inspectable</h3>
+          <p>Every finding retains its observed value, reference scope, direction, reliability, confounds, task, and source segment.</p>
         </article>
         <article>
-          <div class="contract-label learned">Learned components</div>
-          <h3>Prediction and fusion weights</h3>
-          <p>Five-fold subject-level training fits the statistical prior and selects low-capacity fusion candidates on development data.</p>
+          <div class="contract-label learned">Cognitive-state model</div>
+          <h3>Related metrics do not vote twice</h3>
+          <p>Correlated measurements are consolidated into task-aware cognitive states before learned fusion.</p>
         </article>
         <article>
-          <div class="contract-label agent">Agent contract</div>
-          <h3>Evidence scoring, not free diagnosis</h3>
-          <p>The configured Agent reads a blinded evidence workspace and returns ordinal class evidence plus valid source IDs.</p>
+          <div class="contract-label agent">Constrained Agent</div>
+          <h3>Evidence review precedes communication</h3>
+          <p>The Agent cites registered evidence and counter-evidence. Invalid or unsupported updates are rejected before reporting.</p>
         </article>
       </div>
     </section>
 
-    <section class="demo band" id="demo">
+    <section class="demo band" id="case-demo">
+      <div class="section-number">Demonstration 01</div>
       <div class="section-heading">
-        <div><p class="eyebrow">Interactive repository demo</p><h2>Inspect four data channels in one workspace</h2></div>
-        <p>Select a synthetic case to see how routing changes the visible evidence. Use the local server to process an uploaded WAV; static hosting displays packaged results only.</p>
+        <div><p class="eyebrow">Single-recording workflow</p><h2>Run one recording and open the clinician view</h2></div>
+        <p>Select one task channel, play the recording, and run the packaged analysis. The report appears first; cognitive states, metric evidence, trace paths, and source segments remain available for audit.</p>
       </div>
 
-      <div class="case-selector" id="case-selector" aria-label="Public demo cases"></div>
+      <div class="case-selector" id="case-selector" aria-label="Public demonstration cases"></div>
 
       <div class="demo-workspace">
         <section class="input-console" aria-label="Case input">
@@ -116,7 +126,7 @@
           <textarea id="transcript" spellcheck="false"></textarea>
 
           <details class="upload-panel">
-            <summary>Process a local WAV with the public evidence extractor</summary>
+            <summary>Use a local WAV instead</summary>
             <div class="upload-grid">
               <label>WAV file<input id="audio" type="file" accept="audio/wav,.wav"></label>
               <label>Task<select id="task">
@@ -130,87 +140,103 @@
           </details>
 
           <div class="actions">
-            <button class="primary" id="analyze">Run evidence analysis</button>
-            <button class="secondary" id="reset">Reset selected case</button>
+            <button class="primary" id="analyze">Run selected recording</button>
+            <button class="secondary" id="reset">Reset</button>
+          </div>
+          <div class="analysis-progress" id="analysis-progress" aria-live="polite">
+            <span class="progress-dot"></span><span>Select a case, then run the analysis.</span>
           </div>
           <p id="error" class="error" aria-live="polite"></p>
         </section>
 
-        <section class="output-console" aria-label="Evidence output">
+        <section class="output-console" aria-label="Clinician-facing evidence output">
           <div class="output-head">
-            <div><span class="mono-label">OUTPUT / PUBLIC-DEMO-V3</span><h3>Traceable analysis result</h3></div>
-            <span class="run-status" id="run-status">Loading</span>
+            <div><span class="mono-label">CLINICIAN REVIEW WORKSPACE</span><h3>Evidence-linked result</h3></div>
+            <span class="run-status" id="run-status">Ready</span>
           </div>
           <div class="summary-strip" id="summary"></div>
           <div class="tabs" role="tablist" aria-label="Output views">
-            <button class="tab active" data-view="report" role="tab">Agent report</button>
-            <button class="tab" data-view="states" role="tab">StateCards</button>
-            <button class="tab" data-view="evidence" role="tab">MetricEvidence</button>
+            <button class="tab active" data-view="report" role="tab">Clinician report</button>
+            <button class="tab" data-view="states" role="tab">Cognitive states</button>
+            <button class="tab" data-view="evidence" role="tab">Metric evidence</button>
             <button class="tab" data-view="trace" role="tab">Trace map</button>
-            <button class="tab" data-view="segments" role="tab">Segments</button>
+            <button class="tab" data-view="segments" role="tab">Source segments</button>
           </div>
           <div class="view active" id="view-report"><div id="agent-report"></div></div>
           <div class="view" id="view-states"><div class="state-grid" id="states"></div></div>
-          <div class="view" id="view-evidence"><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Role</th><th>Observed</th><th>Demo reference</th><th>Directional z</th><th>Reliability</th><th>Source</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
-          <div class="view" id="view-trace"><div class="trace-legend"><span class="legend-metric">MetricEvidence</span><span class="legend-state">StateCard</span><span class="legend-segment">Audio segment</span></div><div class="trace" id="trace"></div></div>
-          <div class="view" id="view-segments"><div class="segment-layout"><div class="segment-strip" id="segments"></div><article class="segment-detail" id="segment-detail"><span class="mono-label">SELECT A SEGMENT</span><p>Click a segment to seek the packaged audio and inspect its linked text.</p></article></div></div>
+          <div class="view" id="view-evidence"><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Evidence role</th><th>Observed</th><th>Reference</th><th>Directional z</th><th>Reliability</th><th>Source</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
+          <div class="view" id="view-trace"><div class="trace-legend"><span class="legend-segment">Audio segment</span><span class="legend-metric">MetricEvidence</span><span class="legend-state">StateCard</span></div><div class="trace" id="trace"></div></div>
+          <div class="view" id="view-segments"><div class="segment-layout"><div class="segment-strip" id="segments"></div><article class="segment-detail" id="segment-detail"><span class="mono-label">SELECT A SEGMENT</span><p>Click a segment to seek the recording and inspect its linked transcript.</p></article></div></div>
         </section>
       </div>
     </section>
 
-    <section class="evaluation band" id="evaluation">
+    <section class="cohort band" id="cohort-demo">
+      <div class="section-number">Demonstration 02</div>
       <div class="section-heading">
-        <div><p class="eyebrow">PREPARE evaluation snapshot</p><h2>Prediction performance and framework checks</h2></div>
-        <p>Official test cohort, n=412. The comparison is retrospective: the test outcomes have been inspected during development and are not an untouched confirmatory validation.</p>
+        <div><p class="eyebrow">Dataset workflow</p><h2>Run the system across one held-out cohort</h2></div>
+        <p>This view reports one ADvoice run only. It summarizes subject-level prediction, class behavior, calibration, and evidence integrity for the selected cohort.</p>
       </div>
 
-      <div class="evaluation-status" id="evaluation-status"></div>
-      <div class="evaluation-grid">
+      <div class="cohort-header">
+        <div><span class="mono-label" id="cohort-task">Loading cohort</span><h3 id="cohort-title">ADReSS 2020</h3></div>
+        <div class="cohort-count"><strong id="cohort-n">--</strong><span>held-out participants</span></div>
+        <p id="cohort-status">Loading archived cohort result.</p>
+      </div>
+
+      <div class="cohort-metrics" id="cohort-metrics"></div>
+
+      <div class="cohort-grid">
         <article class="chart-panel">
-          <div class="chart-title"><div><span class="figure-label">Layer A</span><h3>Screening and classification</h3></div><span>Higher is better</span></div>
-          <div class="bar-chart" id="performance-chart"></div>
+          <div class="chart-title"><div><span class="figure-label">Classification outcome</span><h3>Confusion matrix</h3></div><span>Rows: reference / columns: system output</span></div>
+          <div class="matrix-wrap" id="confusion-matrix"></div>
         </article>
         <article class="chart-panel">
-          <div class="chart-title"><div><span class="figure-label">Layer B</span><h3>Evidence and report validation</h3></div><span>Framework-specific checks</span></div>
-          <div class="validation-grid" id="validation-grid"></div>
-          <div class="rubric-chart" id="rubric-chart"></div>
+          <div class="chart-title"><div><span class="figure-label">Class-level behavior</span><h3>Sensitivity and precision</h3></div><span>0 to 100%</span></div>
+          <div class="class-chart" id="class-performance"></div>
         </article>
       </div>
-      <p class="evaluation-note" id="evaluation-note"></p>
+
+      <article class="audit-panel">
+        <div class="chart-title"><div><span class="figure-label">Evidence integrity</span><h3>Checks applied to the same cohort run</h3></div><span id="report-quality">Report audit loading</span></div>
+        <div class="audit-grid" id="cohort-audits"></div>
+      </article>
+      <p class="evaluation-note" id="cohort-note"></p>
     </section>
 
     <section class="run band" id="run">
       <div class="section-heading">
-        <div><p class="eyebrow">Repository workflow</p><h2>Run, configure, and inspect the model</h2></div>
-        <p>The public demo is deterministic and works without clinical data. Full prediction requires locally mounted licensed datasets and an explicit Agent provider configuration.</p>
+        <div><p class="eyebrow">Reproducibility</p><h2>Run the demonstration and inspect the implementation</h2></div>
+        <p>The browser demonstration runs from packaged synthetic cases. A licensed dataset is mounted locally for cohort execution; raw participant files are never committed.</p>
       </div>
       <div class="run-grid">
         <article class="command-panel">
-          <span class="step-tag">Quick start</span>
+          <span class="step-tag">Start the browser demo</span>
           <pre><code>git clone https://github.com/Jewelina95/advoice-research-harness.git
 cd advoice-research-harness
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 make demo</code></pre>
-          <p>Open <code>http://127.0.0.1:8765</code>.</p>
+          <p>Open <code>http://127.0.0.1:8765</code>, select a recording, and press <strong>Run selected recording</strong>.</p>
         </article>
         <article class="command-panel">
-          <span class="step-tag">One dataset</span>
-          <pre><code>make validate DATASET=PREPARE_DrivenData
-make full DATASET=PREPARE_DrivenData
-make evaluate DATASET=PREPARE_DrivenData
-make report DATASET=PREPARE_DrivenData</code></pre>
-          <p>Raw data remain outside Git and are mounted through <code>configs/datasets/</code>.</p>
+          <span class="step-tag">Run the ADReSS cohort</span>
+          <pre><code>make validate DATASET=ADReSS_2020
+make full DATASET=ADReSS_2020
+make evaluate DATASET=ADReSS_2020
+make report DATASET=ADReSS_2020</code></pre>
+          <p>The dataset path and exclusions are declared in <code>configs/datasets/ADReSS_2020.yaml</code>.</p>
         </article>
         <article class="code-map">
-          <span class="step-tag">Model and Agent controls</span>
+          <span class="step-tag">System implementation</span>
           <dl>
-            <div><dt>Model architecture</dt><dd><code>configs/models/default.yaml</code></dd></div>
-            <div><dt>Agent provider and model</dt><dd><code>configs/agents/default.yaml</code></dd></div>
+            <div><dt>Pipeline orchestration</dt><dd><code>src/advoice/pipeline.py</code></dd></div>
+            <div><dt>Evidence construction</dt><dd><code>src/advoice/evidence.py</code></dd></div>
+            <div><dt>Cognitive states</dt><dd><code>src/advoice/states.py</code></dd></div>
             <div><dt>Training and fusion</dt><dd><code>src/advoice/condition_c.py</code></dd></div>
-            <div><dt>Evidence schema</dt><dd><code>schemas/case_evidence_package.schema.json</code></dd></div>
-            <div><dt>Evaluation endpoints</dt><dd><code>configs/evaluation/default.yaml</code></dd></div>
-            <div><dt>Locked report renderer</dt><dd><code>src/advoice/diagnostic_agent_report.py</code></dd></div>
+            <div><dt>Diagnostic Agent</dt><dd><code>src/advoice/cognitive_agent.py</code></dd></div>
+            <div><dt>Model configuration</dt><dd><code>configs/models/default.yaml</code></dd></div>
+            <div><dt>Agent configuration</dt><dd><code>configs/agents/default.yaml</code></dd></div>
             <div><dt>Demo API</dt><dd><code>demo/server.py</code></dd></div>
           </dl>
         </article>
@@ -219,7 +245,7 @@ make report DATASET=PREPARE_DrivenData</code></pre>
   </main>
 
   <footer>
-    <div><strong>ADvoice research harness</strong><p>Evidence-governed speech screening research. Not a diagnostic medical device.</p></div>
+    <div><strong>ADvoice research demonstration</strong><p>Speech-based cognitive screening and referral research. Not a diagnostic medical device.</p></div>
     <div><a href="https://github.com/Jewelina95/advoice-research-harness">GitHub</a><a href="https://github.com/Jewelina95/advoice-research-harness/blob/main/DATA_AVAILABILITY.md">Data policy</a></div>
   </footer>
 

@@ -346,7 +346,7 @@ def _assemble_result(
             "mode": "public_offline_demo" if synthetic else "local_restricted_demo",
             "trained_prediction_loaded": False,
             "diagnostic_agent_invoked": False,
-            "full_run_command": "make full DATASET=PREPARE_DrivenData",
+            "full_run_command": "make full DATASET=ADReSS_2020",
         },
         "disclaimer": (
             "Synthetic non-patient demonstration. Illustrative references are not clinical norms and no diagnosis is produced."

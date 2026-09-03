@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -101,3 +102,19 @@ def test_audio_byte_ranges_support_browser_seeking() -> None:
     assert parse_byte_range("bytes=10-19", 100) == (10, 19)
     assert parse_byte_range("bytes=90-", 100) == (90, 99)
     assert parse_byte_range("bytes=-10", 100) == (90, 99)
+
+
+def test_public_demo_uses_one_system_result_without_internal_comparators() -> None:
+    cohort = json.loads((ROOT / "demo" / "output" / "adress_2020_cohort_summary.json").read_text())
+    page = (ROOT / "demo" / "web" / "index.html").read_text()
+
+    assert cohort["dataset_id"] == "ADReSS_2020"
+    assert cohort["evaluation_scope"] == "held_out_test"
+    assert cohort["cohort"]["n"] == 27
+    assert len(cohort["confusion_matrix"]["values"]) == 2
+    assert "comparison" not in cohort
+    assert "Demonstration 01" in page
+    assert "Demonstration 02" in page
+    assert "PREPARE" not in page
+    assert "SpeechCARE" not in page
+    assert all(token not in page for token in (">B1<", ">B2<", ">B3<"))

@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 ASSETS = ROOT / "assets"
 OUTPUT = ROOT / "output"
-EVALUATION = OUTPUT / "prepare_evaluation_summary.json"
+COHORT_RESULT = OUTPUT / "adress_2020_cohort_summary.json"
 LOCAL_MANIFEST = ROOT / "local_cases.json"
 LOCAL_OUTPUT = ROOT / "local_output"
 DEMO_ANALYZER_CODE = Path(analyze_local_manifest_case.__code__.co_filename)
@@ -157,8 +157,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
             except KeyError:
                 self._json({"error": "case_not_found"}, HTTPStatus.NOT_FOUND)
             return
-        if path == "/api/evaluation":
-            self._json(json.loads(EVALUATION.read_text(encoding="utf-8")))
+        if path == "/api/cohort":
+            self._json(json.loads(COHORT_RESULT.read_text(encoding="utf-8")))
             return
         if path.startswith("/assets/"):
             selected = ASSETS / path.rsplit("/", 1)[-1]
@@ -173,7 +173,18 @@ class DemoHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/analyze":
+        path = unquote(urlparse(self.path).path)
+        if path.startswith("/api/run-case/"):
+            case_id = path.rsplit("/", 1)[-1]
+            try:
+                if case_id in PUBLIC_DEMO_CASES:
+                    self._json(analyze_public_case(case_id, ASSETS))
+                else:
+                    self._json(analyze_local(case_id))
+            except KeyError:
+                self._json({"error": "case_not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        if path != "/api/analyze":
             self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
             return
         try:

@@ -19,6 +19,7 @@ const formatNumber = (value, digits = 2) => value === null || value === undefine
   ? "N/A"
   : Number(value).toFixed(digits);
 const percent = (value, digits = 1) => `${(Number(value) * 100).toFixed(digits)}%`;
+const sleep = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 const evidenceRole = {
   clinical_state: "Clinical state",
@@ -56,6 +57,16 @@ async function fetchCaseResult(caseId) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.message || result.error || "Case analysis failed.");
   return result;
+}
+
+async function runPackagedCase(caseId) {
+  try {
+    const response = await fetch(`/api/run-case/${encodeURIComponent(caseId)}`, { method: "POST" });
+    if (response.ok) return response.json();
+  } catch (_) {
+    // Static hosting uses the deterministic packaged result.
+  }
+  return fetchCaseResult(caseId);
 }
 
 async function drawWaveform(source) {
@@ -112,8 +123,8 @@ function renderReport(result) {
   byId("agent-report").innerHTML = `
     <article class="report-sheet">
       <header class="report-header">
-        <div><span class="mono-label">EVIDENCE-CONSTRAINED OUTPUT</span><h4>${escapeHtml(report.title)}</h4></div>
-        <span>OFFLINE PREVIEW</span>
+        <div><span class="mono-label">EVIDENCE-CONSTRAINED OUTPUT</span><h4>Clinician-facing cognitive screening summary</h4></div>
+        <span>PACKAGED EXAMPLE</span>
       </header>
       <section class="report-section"><h4>Screening impression</h4><p>${escapeHtml(report.screening_impression)}</p></section>
       <section class="report-section"><h4>Observed cognitive-state evidence</h4><ul>${report.observations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><div class="evidence-citations">${report.evidence_ids.map((id) => `<code>${escapeHtml(id)}</code>`).join("")}</div></section>
@@ -223,7 +234,7 @@ function renderResult(result) {
     <div><strong>${result.segments.length}</strong><span>Segments</span></div>
     <div><strong>${formatNumber(result.quality.audio_reliability)}</strong><span>Audio reliability</span></div>
   `;
-  byId("run-status").textContent = `${duration} / no diagnosis`;
+  byId("run-status").textContent = `${duration} / result ready`;
   renderReport(result);
   renderStates(result);
   renderEvidence(result);
@@ -264,31 +275,50 @@ async function fileToDataUrl(file) {
   });
 }
 
-function renderEvaluation(payload) {
-  byId("evaluation-status").textContent = payload.status.statement;
+function renderCohort(payload) {
+  byId("cohort-title").textContent = payload.dataset;
+  byId("cohort-task").textContent = payload.task;
+  byId("cohort-n").textContent = payload.cohort.n;
+  byId("cohort-status").textContent = payload.status.statement;
+
   const metrics = [
     ["accuracy", "Accuracy"],
-    ["micro_auroc", "Micro AUROC"],
-    ["micro_auprc", "Micro AUPRC"],
+    ["balanced_accuracy", "Balanced accuracy"],
     ["macro_f1", "Macro F1"],
+    ["macro_auroc", "Macro AUROC"],
+    ["macro_auprc", "Macro AUPRC"],
   ];
-  byId("performance-chart").innerHTML = metrics.map(([key, label]) => `
-    <div class="metric-group">
-      <div class="metric-name">${label}</div>
-      <div>${payload.models.map((model) => {
-        const value = model[key];
-        const modelClass = model.id === "B3" ? "ours" : model.id === "SpeechCARE" ? "speechcare" : "";
-        return `<div class="bar-row ${modelClass}"><label>${escapeHtml(model.id)}</label><div class="bar-track"><div class="bar-fill" style="width:${value === null ? 0 : value * 100}%"></div></div><output>${value === null ? "N/A" : formatNumber(value, 3)}</output></div>`;
-      }).join("")}</div>
-    </div>
+  byId("cohort-metrics").innerHTML = metrics.map(([key, label]) => {
+    const interval = payload.confidence_intervals[key];
+    return `<article class="cohort-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${formatNumber(payload.performance[key], 3)}</strong>
+      <small>${interval ? `95% CI ${formatNumber(interval[0], 3)}-${formatNumber(interval[1], 3)}` : "Held-out estimate"}</small>
+    </article>`;
+  }).join("");
+
+  const labels = payload.confusion_matrix.labels;
+  const values = payload.confusion_matrix.values;
+  byId("confusion-matrix").innerHTML = `
+    <table class="matrix-table" aria-label="Confusion matrix">
+      <thead><tr><th>Reference</th>${labels.map((label) => `<th>Predicted ${escapeHtml(label)}</th>`).join("")}</tr></thead>
+      <tbody>${labels.map((label, row) => `<tr><th>${escapeHtml(label)}</th>${values[row].map((value, column) => `<td class="${row === column ? "correct" : "error-cell"}"><strong>${value}</strong><span>${row === column ? "correct" : "error"}</span></td>`).join("")}</tr>`).join("")}</tbody>
+    </table>`;
+
+  byId("class-performance").innerHTML = payload.class_performance.map((item) => `
+    <section class="class-block">
+      <header><strong>${escapeHtml(item.label)}</strong><span>F1 ${formatNumber(item.f1, 3)}</span></header>
+      <div class="class-row"><label>Sensitivity</label><div class="cohort-track"><span style="width:${item.sensitivity * 100}%"></span></div><output>${percent(item.sensitivity)}</output></div>
+      <div class="class-row"><label>Precision</label><div class="cohort-track precision"><span style="width:${item.precision * 100}%"></span></div><output>${percent(item.precision)}</output></div>
+      <div class="class-row"><label>Specificity</label><div class="cohort-track specificity"><span style="width:${item.specificity * 100}%"></span></div><output>${percent(item.specificity)}</output></div>
+    </section>
   `).join("");
-  byId("validation-grid").innerHTML = payload.framework_validation.map((item) => `
-    <div class="validation-item"><strong>${item.format === "delta" ? `+${formatNumber(item.value, 3)}` : percent(item.value)}</strong><span>${escapeHtml(item.label)}</span></div>
+
+  byId("cohort-audits").innerHTML = payload.evidence_audits.map((item) => `
+    <div class="audit-item"><span class="audit-check" aria-hidden="true">&#10003;</span><div><strong>${percent(item.value)}</strong><span>${escapeHtml(item.label)}</span></div></div>
   `).join("");
-  byId("rubric-chart").innerHTML = `<span class="figure-label">Paired report rubric / ${payload.report_rubric.matched_cases} cases</span>${payload.report_rubric.dimensions.map((item) => `
-    <div class="rubric-row"><label>${escapeHtml(item.name)}</label><div class="rubric-track"><div class="rubric-fill" style="width:${item.ours / 5 * 100}%"></div></div><output>${formatNumber(item.ours, 2)}</output><div class="rubric-track baseline"><div class="rubric-fill baseline" style="width:${item.direct_llm / 5 * 100}%"></div></div><output>${formatNumber(item.direct_llm, 2)}</output></div>
-  `).join("")}`;
-  byId("evaluation-note").textContent = `Source snapshot: ${payload.provenance.snapshot}. ADvoice report rubric ${payload.report_rubric.ours_total_25}/25 versus direct LLM ${payload.report_rubric.direct_llm_total_25}/25. The report rubric is an automated structural audit, not a completed clinician study.`;
+  byId("report-quality").textContent = `Report structure ${payload.report_quality.score}/${payload.report_quality.maximum} · ${payload.report_quality.reviewed_cases} audited cases`;
+  byId("cohort-note").textContent = `${payload.provenance.note} Source snapshot: ${payload.provenance.snapshot}. This cohort result is a research demonstration, not confirmatory clinical validation.`;
 }
 
 async function initialize() {
@@ -298,8 +328,14 @@ async function initialize() {
   renderCaseSelector();
   await Promise.all([
     loadCase(state.activeCaseId),
-    fetchJsonWithFallback("/api/evaluation", "output/prepare_evaluation_summary.json").then(renderEvaluation),
+    fetchJsonWithFallback("/api/cohort", "output/adress_2020_cohort_summary.json").then(renderCohort),
   ]);
+}
+
+function setProgress(message, active = false) {
+  const progress = byId("analysis-progress");
+  progress.classList.toggle("active", active);
+  progress.querySelector("span:last-child").textContent = message;
 }
 
 byId("audio").addEventListener("change", async (event) => {
@@ -317,9 +353,22 @@ byId("analyze").addEventListener("click", async () => {
   byId("error").textContent = "";
   try {
     if (!state.uploadedFile) {
-      await loadCase(state.activeCaseId);
+      const stages = [
+        "Routing task, language, and source role...",
+        "Building segment-level measurements...",
+        "Constructing MetricEvidence and cognitive states...",
+        "Validating evidence links and rendering the report...",
+      ];
+      for (const stage of stages) {
+        setProgress(stage, true);
+        await sleep(180);
+      }
+      const result = await runPackagedCase(state.activeCaseId);
+      renderResult(result);
+      setProgress("Analysis complete. The clinician report and source trace are ready.");
       return;
     }
+    setProgress("Processing the local recording with the public evidence extractor...", true);
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -333,10 +382,12 @@ byId("analyze").addEventListener("click", async () => {
     const result = await response.json();
     if (!response.ok) throw new Error(result.message || result.error || "Analysis failed.");
     renderResult(result);
+    setProgress("Local evidence analysis complete. No clinical model probability was generated.");
   } catch (error) {
     byId("error").textContent = window.location.hostname.endsWith("github.io")
       ? "Static hosting displays packaged cases. Run `make demo` locally to analyze an uploaded WAV."
       : error.message;
+    setProgress("The analysis did not complete.");
   } finally {
     button.disabled = false;
   }

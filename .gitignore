@@ -18,7 +18,7 @@ reports/latest_run.json
 .env.*
 demo/output/*
 !demo/output/public_cases.json
-!demo/output/prepare_evaluation_summary.json
+!demo/output/adress_2020_cohort_summary.json
 !demo/output/synthetic_clinical_interview.json
 !demo/output/synthetic_picture_description.json
 !demo/output/synthetic_structured_task.json

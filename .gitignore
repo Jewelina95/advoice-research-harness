@@ -17,8 +17,16 @@ reports/latest_run.json
 .env
 .env.*
 demo/output/*
-!demo/output/synthetic_case_result.json
+!demo/output/public_cases.json
+!demo/output/prepare_evaluation_summary.json
+!demo/output/synthetic_clinical_interview.json
+!demo/output/synthetic_picture_description.json
+!demo/output/synthetic_structured_task.json
+!demo/output/synthetic_public_speech.json
 demo/local_cases.json
 demo/local_output/
 *.wav
+!demo/assets/synthetic_clinical_interview.wav
 !demo/assets/synthetic_picture_description.wav
+!demo/assets/synthetic_structured_task.wav
+!demo/assets/synthetic_public_speech.wav

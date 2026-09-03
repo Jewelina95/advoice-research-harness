@@ -9,29 +9,33 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from advoice.demo import (
+    PUBLIC_DEMO_CASES,
     analyze_base64_wav,
     analyze_local_manifest_case,
+    analyze_public_case,
     parse_byte_range,
-    write_demo_result,
+    public_case_summaries,
+    write_public_demo_bundle,
 )
 
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
-SAMPLE_AUDIO = ROOT / "assets" / "synthetic_picture_description.wav"
-SAMPLE_TRANSCRIPT = ROOT / "assets" / "synthetic_picture_description.txt"
-SAMPLE_RESULT = ROOT / "output" / "synthetic_case_result.json"
+ASSETS = ROOT / "assets"
+OUTPUT = ROOT / "output"
+EVALUATION = OUTPUT / "prepare_evaluation_summary.json"
 LOCAL_MANIFEST = ROOT / "local_cases.json"
 LOCAL_OUTPUT = ROOT / "local_output"
 DEMO_ANALYZER_CODE = Path(analyze_local_manifest_case.__code__.co_filename)
 
 
-def ensure_sample() -> None:
-    if not SAMPLE_AUDIO.exists():
-        from generate_sample import main as generate_sample
+def ensure_public_bundle() -> None:
+    required_audio = [ASSETS / str(case["audio_file"]) for case in PUBLIC_DEMO_CASES.values()]
+    if not all(path.exists() for path in required_audio):
+        from generate_sample import main as generate_samples
 
-        generate_sample()
-    write_demo_result(SAMPLE_AUDIO, SAMPLE_TRANSCRIPT, SAMPLE_RESULT)
+        generate_samples()
+    write_public_demo_bundle(ASSETS, OUTPUT)
 
 
 def local_cases() -> dict[str, dict]:
@@ -41,20 +45,21 @@ def local_cases() -> dict[str, dict]:
     return {str(case["demo_case_id"]): case for case in payload.get("cases", [])}
 
 
-def public_case_summary(case: dict) -> dict:
+def _local_case_summary(case: dict) -> dict:
+    def value(key: str, legacy: str, default: object) -> object:
+        return case[key] if key in case else case.get(legacy, default)
+
     return {
-        key: case[key]
-        for key in (
-            "demo_case_id",
-            "dataset_id",
-            "channel_id",
-            "channel_name_zh",
-            "task_name_zh",
-            "description_zh",
-            "evidence_focus_zh",
-            "research_label",
-            "language",
-        )
+        "case_id": str(case["demo_case_id"]),
+        "dataset_id": str(case["dataset_id"]),
+        "channel_id": str(case["channel_id"]),
+        "channel_name": str(value("channel_name", "channel_name_zh", case["channel_id"])),
+        "task_name": str(value("task_name", "task_name_zh", case.get("task_type", "Task"))),
+        "description": str(value("description", "description_zh", "Restricted local case")),
+        "evidence_focus": list(value("evidence_focus", "evidence_focus_zh", [])),
+        "research_label": str(case.get("research_label", "UNAVAILABLE")),
+        "language": str(case.get("language", "")),
+        "data_scope": "local_restricted_not_for_redistribution",
     }
 
 
@@ -73,6 +78,24 @@ def analyze_local(case_id: str) -> dict:
         LOCAL_OUTPUT.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return json.loads(output.read_text(encoding="utf-8"))
+
+
+def case_result(case_id: str) -> dict:
+    if case_id in PUBLIC_DEMO_CASES:
+        path = OUTPUT / f"{case_id}.json"
+        if not path.exists():
+            return analyze_public_case(case_id, ASSETS)
+        return json.loads(path.read_text(encoding="utf-8"))
+    return analyze_local(case_id)
+
+
+def case_audio(case_id: str) -> Path:
+    if case_id in PUBLIC_DEMO_CASES:
+        return ASSETS / str(PUBLIC_DEMO_CASES[case_id]["audio_file"])
+    case = local_cases().get(case_id)
+    if case is None:
+        raise KeyError(case_id)
+    return Path(str(case["audio_path"]))
 
 
 class DemoHandler(SimpleHTTPRequestHandler):
@@ -95,13 +118,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value)
             return
         start, end = selected or (0, size - 1)
-        self.send_response(
-            HTTPStatus.PARTIAL_CONTENT.value if selected else HTTPStatus.OK.value
-        )
-        self.send_header(
-            "Content-Type",
-            mimetypes.guess_type(file_path.name)[0] or "application/octet-stream",
-        )
+        self.send_response(HTTPStatus.PARTIAL_CONTENT.value if selected else HTTPStatus.OK.value)
+        self.send_header("Content-Type", mimetypes.guess_type(file_path.name)[0] or "application/octet-stream")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         if selected:
@@ -118,67 +136,40 @@ class DemoHandler(SimpleHTTPRequestHandler):
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
-            # Browsers commonly cancel the initial full media request before
-            # reopening it as a byte-range request for seeking.
             return
 
     def do_GET(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        path = unquote(parsed.path)
-        if path == "/api/sample":
-            self._json(json.loads(SAMPLE_RESULT.read_text(encoding="utf-8")))
-            return
+        path = unquote(urlparse(self.path).path)
         if path == "/api/cases":
-            cases = [
-                {
-                    "demo_case_id": "synthetic_case_001",
-                    "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
-                    "channel_id": "public_demo",
-                    "channel_name_zh": "合成公开案例",
-                    "task_name_zh": "公开流程验证",
-                    "description_zh": "不含患者数据，用于检查公开代码和回溯界面。",
-                    "evidence_focus_zh": ["指标证据", "状态卡", "片段回溯"],
-                    "research_label": "UNLABELED",
-                    "language": "en",
-                }
-            ]
-            cases.extend(public_case_summary(case) for case in local_cases().values())
+            cases = public_case_summaries()
+            cases.extend(_local_case_summary(case) for case in local_cases().values())
             self._json({"cases": cases, "local_restricted_cases_available": bool(local_cases())})
             return
         if path.startswith("/api/case/"):
             try:
-                self._json(analyze_local(path.rsplit("/", 1)[-1]))
+                self._json(case_result(path.rsplit("/", 1)[-1]))
             except KeyError:
                 self._json({"error": "case_not_found"}, HTTPStatus.NOT_FOUND)
             return
         if path.startswith("/api/case-audio/"):
-            case_id = path.rsplit("/", 1)[-1]
-            case = local_cases().get(case_id)
-            if case is None:
+            try:
+                self._file(case_audio(path.rsplit("/", 1)[-1]))
+            except KeyError:
                 self._json({"error": "case_not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        if path == "/api/evaluation":
+            self._json(json.loads(EVALUATION.read_text(encoding="utf-8")))
+            return
+        if path.startswith("/assets/"):
+            selected = ASSETS / path.rsplit("/", 1)[-1]
+            if selected.is_file():
+                self._file(selected)
                 return
-            audio_path = Path(str(case["audio_path"]))
-            self._file(audio_path)
-            return
-        if path == "/api/sample-audio":
-            raw = SAMPLE_AUDIO.read_bytes()
-            self.send_response(HTTPStatus.OK.value)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-            return
-        if path == "/assets/synthetic_picture_description.wav":
-            raw = SAMPLE_AUDIO.read_bytes()
-            self.send_response(HTTPStatus.OK.value)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-            return
-        if path == "/output/synthetic_case_result.json":
-            self._json(json.loads(SAMPLE_RESULT.read_text(encoding="utf-8")))
-            return
+        if path.startswith("/output/"):
+            selected = OUTPUT / path.rsplit("/", 1)[-1]
+            if selected.is_file():
+                self._json(json.loads(selected.read_text(encoding="utf-8")))
+                return
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
@@ -200,7 +191,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    ensure_sample()
+    ensure_public_bundle()
     server = ThreadingHTTPServer((args.host, args.port), DemoHandler)
     print(f"ADvoice demo: http://{args.host}:{args.port}")
     server.serve_forever()

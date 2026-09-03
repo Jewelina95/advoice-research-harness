@@ -12,25 +12,25 @@ from .transcripts import read_transcript
 
 
 DEMO_REFERENCES: dict[str, dict[str, Any]] = {
-    "silence_fraction": {"name_zh": "静音比例", "median": 0.34, "scale": 0.12, "direction": 1, "unit": "比例", "source": "audio", "role": "clinical_state"},
-    "long_pause_rate_min": {"name_zh": "每分钟长停顿", "median": 5.0, "scale": 3.0, "direction": 1, "unit": "次/分钟", "source": "audio", "role": "clinical_state"},
-    "speech_run_mean_sec": {"name_zh": "平均连续发声时长", "median": 2.2, "scale": 0.8, "direction": -1, "unit": "秒", "source": "audio", "role": "clinical_state"},
-    "voiced_fraction": {"name_zh": "发声时间占比", "median": 0.66, "scale": 0.12, "direction": -1, "unit": "比例", "source": "audio", "role": "clinical_state"},
-    "speech_rate_wpm": {"name_zh": "每分钟词数", "median": 118.0, "scale": 28.0, "direction": -1, "unit": "词/分钟", "source": "transcript", "role": "clinical_state"},
-    "filler_rate_100w": {"name_zh": "每百词填充语", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "次/百词", "source": "transcript", "role": "clinical_state"},
-    "lexical_ttr": {"name_zh": "词汇多样性", "median": 0.58, "scale": 0.12, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
-    "patient_turn_share": {"name_zh": "患者话轮占比", "median": 0.75, "scale": 0.15, "direction": -1, "unit": "比例", "source": "dialogue", "role": "clinical_state"},
-    "mean_utterance_words": {"name_zh": "平均话轮词数", "median": 10.0, "scale": 4.0, "direction": -1, "unit": "词/话轮", "source": "dialogue", "role": "clinical_state"},
-    "repair_rate_100w": {"name_zh": "每百词修正次数", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "次/百词", "source": "transcript", "role": "clinical_state"},
-    "lexical_mattr50": {"name_zh": "移动平均词汇多样性", "median": 0.70, "scale": 0.12, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
-    "content_word_ratio": {"name_zh": "内容词比例", "median": 0.55, "scale": 0.10, "direction": -1, "unit": "比例", "source": "transcript", "role": "clinical_state"},
-    "picture_content_unit_coverage": {"name_zh": "图片内容单元覆盖率", "median": 0.70, "scale": 0.20, "direction": -1, "unit": "比例", "source": "task_score", "role": "clinical_state"},
-    "picture_information_density": {"name_zh": "图片信息密度", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "单元/百词", "source": "task_score", "role": "clinical_state"},
-    "picture_content_redundancy": {"name_zh": "内容重复比例", "median": 0.15, "scale": 0.10, "direction": 1, "unit": "比例", "source": "task_score", "role": "clinical_state"},
-    "picture_uncertainty_rate_100w": {"name_zh": "不确定表达率", "median": 3.0, "scale": 3.0, "direction": 1, "unit": "次/百词", "source": "task_score", "role": "clinical_state"},
-    "rms_db_std": {"name_zh": "响度变化", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "分贝", "source": "audio", "role": "model_auxiliary"},
-    "f0_iqr_hz": {"name_zh": "基频变化范围", "median": 40.0, "scale": 20.0, "direction": -1, "unit": "赫兹", "source": "audio", "role": "model_auxiliary"},
-    "snr_proxy_db": {"name_zh": "信噪比估计", "median": 15.0, "scale": 5.0, "direction": -1, "unit": "分贝", "source": "audio", "role": "quality_control"},
+    "silence_fraction": {"name": "Silence fraction", "median": 0.34, "scale": 0.12, "direction": 1, "unit": "ratio", "source": "audio", "role": "clinical_state"},
+    "long_pause_rate_min": {"name": "Long pauses per minute", "median": 5.0, "scale": 3.0, "direction": 1, "unit": "events/min", "source": "audio", "role": "clinical_state"},
+    "speech_run_mean_sec": {"name": "Mean speech-run duration", "median": 2.2, "scale": 0.8, "direction": -1, "unit": "seconds", "source": "audio", "role": "clinical_state"},
+    "voiced_fraction": {"name": "Voiced-time fraction", "median": 0.66, "scale": 0.12, "direction": -1, "unit": "ratio", "source": "audio", "role": "clinical_state"},
+    "speech_rate_wpm": {"name": "Speech rate", "median": 118.0, "scale": 28.0, "direction": -1, "unit": "words/min", "source": "transcript", "role": "clinical_state"},
+    "filler_rate_100w": {"name": "Fillers per 100 words", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "events/100 words", "source": "transcript", "role": "clinical_state"},
+    "lexical_ttr": {"name": "Lexical diversity", "median": 0.58, "scale": 0.12, "direction": -1, "unit": "ratio", "source": "transcript", "role": "clinical_state"},
+    "patient_turn_share": {"name": "Participant turn share", "median": 0.75, "scale": 0.15, "direction": -1, "unit": "ratio", "source": "dialogue", "role": "clinical_state"},
+    "mean_utterance_words": {"name": "Mean utterance length", "median": 10.0, "scale": 4.0, "direction": -1, "unit": "words/turn", "source": "dialogue", "role": "clinical_state"},
+    "repair_rate_100w": {"name": "Repairs per 100 words", "median": 2.0, "scale": 2.0, "direction": 1, "unit": "events/100 words", "source": "transcript", "role": "clinical_state"},
+    "lexical_mattr50": {"name": "Moving-average lexical diversity", "median": 0.70, "scale": 0.12, "direction": -1, "unit": "ratio", "source": "transcript", "role": "clinical_state"},
+    "content_word_ratio": {"name": "Content-word ratio", "median": 0.55, "scale": 0.10, "direction": -1, "unit": "ratio", "source": "transcript", "role": "clinical_state"},
+    "picture_content_unit_coverage": {"name": "Picture content-unit coverage", "median": 0.70, "scale": 0.20, "direction": -1, "unit": "ratio", "source": "task_score", "role": "clinical_state"},
+    "picture_information_density": {"name": "Picture information density", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "units/100 words", "source": "task_score", "role": "clinical_state"},
+    "picture_content_redundancy": {"name": "Content redundancy", "median": 0.15, "scale": 0.10, "direction": 1, "unit": "ratio", "source": "task_score", "role": "clinical_state"},
+    "picture_uncertainty_rate_100w": {"name": "Uncertainty expressions", "median": 3.0, "scale": 3.0, "direction": 1, "unit": "events/100 words", "source": "task_score", "role": "clinical_state"},
+    "rms_db_std": {"name": "Loudness variability", "median": 8.0, "scale": 4.0, "direction": -1, "unit": "dB", "source": "audio", "role": "model_auxiliary"},
+    "f0_iqr_hz": {"name": "Pitch interquartile range", "median": 40.0, "scale": 20.0, "direction": -1, "unit": "Hz", "source": "audio", "role": "model_auxiliary"},
+    "snr_proxy_db": {"name": "Signal-to-noise proxy", "median": 15.0, "scale": 5.0, "direction": -1, "unit": "dB", "source": "audio", "role": "quality_control"},
 }
 
 BASE_DEMO_METRICS = [
@@ -53,44 +53,103 @@ CHANNEL_EXTRA_METRICS = {
 STATE_DEFINITIONS: list[dict[str, Any]] = [
     {
         "id": "S01",
-        "name": "停顿与连续性",
-        "question": "发言中是否出现较多停顿、较短连续发声或启动中断？",
+        "name": "Pausing and continuity",
+        "question": "Are pauses, shortened speech runs, or interrupted starts elevated?",
         "metrics": [("silence_fraction", 0.40), ("long_pause_rate_min", 0.35), ("speech_run_mean_sec", 0.25)],
     },
     {
         "id": "S02",
-        "name": "输出效率",
-        "question": "单位时间内的有效言语输出是否减少？",
+        "name": "Output efficiency",
+        "question": "Is effective spoken output reduced for the available task time?",
         "metrics": [("voiced_fraction", 0.45), ("speech_rate_wpm", 0.55)],
     },
     {
         "id": "S08",
-        "name": "词汇提取与多样性",
-        "question": "表达中是否出现填充增加或词汇多样性降低？",
+        "name": "Lexical retrieval and diversity",
+        "question": "Are fillers increased or lexical diversity reduced?",
         "metrics": [("filler_rate_100w", 0.45), ("lexical_ttr", 0.55)],
     },
     {
         "id": "S10",
-        "name": "任务信息密度",
-        "question": "标准图片描述中是否遗漏关键信息、重复内容或增加不确定表达？",
+        "name": "Task information density",
+        "question": "Does the picture description omit content, repeat information, or use uncertain wording?",
         "metrics": [("picture_content_unit_coverage", 0.45), ("picture_information_density", 0.35), ("picture_content_redundancy", 0.10), ("picture_uncertainty_rate_100w", 0.10)],
         "channels": {"picture_description"},
     },
     {
         "id": "S12",
-        "name": "访谈互动负担",
-        "question": "患者在访谈中的发言占比、单次回答长度和自我修正是否提示较高互动负担？",
+        "name": "Interview interaction burden",
+        "question": "Do participant share, response length, and repairs indicate increased interaction burden?",
         "metrics": [("patient_turn_share", 0.50), ("mean_utterance_words", 0.30), ("repair_rate_100w", 0.20)],
         "channels": {"clinical_interview"},
     },
     {
         "id": "S07",
-        "name": "任务内词汇检索",
-        "question": "语义流畅性任务中的词汇检索、多样性和有效内容输出是否降低？",
+        "name": "Task-specific lexical retrieval",
+        "question": "Is lexical retrieval, diversity, or content production reduced within the cognitive task?",
         "metrics": [("lexical_mattr50", 0.45), ("content_word_ratio", 0.35), ("repair_rate_100w", 0.20)],
         "channels": {"structured_multitask"},
     },
 ]
+
+PUBLIC_DEMO_CASES: dict[str, dict[str, Any]] = {
+    "synthetic_clinical_interview": {
+        "case_id": "synthetic_clinical_interview",
+        "dataset_id": "PUBLIC_SYNTHETIC_INTERVIEW",
+        "channel_id": "clinical_interview",
+        "channel_name": "Clinical interview",
+        "task_name": "Structured participant interview",
+        "description": "Demonstrates participant-role routing and dialogue evidence without clinical data.",
+        "evidence_focus": ["participant turns", "response length", "repairs", "pausing"],
+        "task_type": "structured_clinical_interview",
+        "language": "en",
+        "research_label": "UNLABELED",
+        "audio_file": "synthetic_clinical_interview.wav",
+        "transcript_file": "synthetic_clinical_interview.txt",
+    },
+    "synthetic_picture_description": {
+        "case_id": "synthetic_picture_description",
+        "dataset_id": "PUBLIC_SYNTHETIC_PICTURE",
+        "channel_id": "picture_description",
+        "channel_name": "Picture description",
+        "task_name": "Cookie Theft-style description",
+        "description": "Demonstrates content-unit, information-density, lexical, and speech evidence.",
+        "evidence_focus": ["content units", "information density", "lexical diversity", "pausing"],
+        "task_type": "cookie_theft_picture_description",
+        "language": "en",
+        "research_label": "UNLABELED",
+        "audio_file": "synthetic_picture_description.wav",
+        "transcript_file": "synthetic_picture_description.txt",
+    },
+    "synthetic_structured_task": {
+        "case_id": "synthetic_structured_task",
+        "dataset_id": "PUBLIC_SYNTHETIC_TASK",
+        "channel_id": "structured_multitask",
+        "channel_name": "Structured cognitive task",
+        "task_name": "Semantic fluency-style response",
+        "description": "Demonstrates task-specific lexical retrieval and state aggregation.",
+        "evidence_focus": ["lexical retrieval", "content words", "repairs", "output efficiency"],
+        "task_type": "semantic_fluency",
+        "language": "en",
+        "research_label": "UNLABELED",
+        "audio_file": "synthetic_structured_task.wav",
+        "transcript_file": "synthetic_structured_task.txt",
+    },
+    "synthetic_public_speech": {
+        "case_id": "synthetic_public_speech",
+        "dataset_id": "PUBLIC_SYNTHETIC_NATURAL",
+        "channel_id": "public_speech",
+        "channel_name": "Natural speech",
+        "task_name": "Non-standard spontaneous speech",
+        "description": "Demonstrates conservative use of prosody and recording-quality evidence.",
+        "evidence_focus": ["speech continuity", "prosody", "signal quality", "report permissions"],
+        "task_type": "nonstandard_public_speech",
+        "language": "en",
+        "research_label": "UNLABELED",
+        "audio_file": "synthetic_public_speech.wav",
+        "transcript_file": "synthetic_public_speech.txt",
+    },
+}
 
 
 def parse_byte_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -105,6 +164,15 @@ def parse_byte_range(header: str | None, size: int) -> tuple[int, int] | None:
     if start < 0 or start >= size or end < start:
         raise ValueError("invalid byte range")
     return start, end
+
+
+def public_case_summaries() -> list[dict[str, Any]]:
+    summaries = []
+    for case in PUBLIC_DEMO_CASES.values():
+        summary = {key: value for key, value in case.items() if key not in {"audio_file", "transcript_file"}}
+        summary["data_scope"] = "public_synthetic"
+        summaries.append(summary)
+    return summaries
 
 
 def _finite(value: Any) -> float | None:
@@ -128,7 +196,7 @@ def _evidence(feature: dict[str, Any], metric_id: str) -> dict[str, Any]:
     return {
         "id": f"demo:{metric_id}",
         "metric_id": metric_id,
-        "name_zh": reference["name_zh"],
+        "name": reference["name"],
         "value": value,
         "unit": reference["unit"],
         "reference_median": reference["median"],
@@ -140,6 +208,43 @@ def _evidence(feature: dict[str, Any], metric_id: str) -> dict[str, Any]:
         "reportable": reference["role"] == "clinical_state",
         "missing": missing,
         "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+    }
+
+
+def _agent_report_preview(
+    states: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    quality: dict[str, Any],
+    *,
+    synthetic: bool,
+) -> dict[str, Any]:
+    ranked_states = sorted(states, key=lambda item: abs(float(item["score"])), reverse=True)
+    reportable = [item for item in evidence if item["reportable"] and not item["missing"]]
+    cited_ids = [item["id"] for item in sorted(reportable, key=lambda item: abs(float(item["directional_z"])), reverse=True)[:5]]
+    observations = [
+        f"{item['id']} {item['name']}: evidence score {item['score']:+.2f}, completeness {item['confidence']:.2f}."
+        for item in ranked_states[:3]
+    ]
+    return {
+        "status": "offline_preview",
+        "title": "Evidence-constrained Agent report preview",
+        "screening_impression": (
+            "This synthetic case is unlabeled. The report demonstrates the output contract and does not assign a diagnosis or disease probability."
+            if synthetic
+            else "This restricted local case is shown for pipeline inspection only. No new cohort prediction is generated by the demo."
+        ),
+        "observations": observations,
+        "evidence_ids": cited_ids,
+        "quality_statement": (
+            f"Audio reliability {quality['audio_reliability']:.2f}; text reliability {quality['text_reliability']:.2f}. "
+            "Quality-control and model-auxiliary measures are not presented as disease evidence."
+        ),
+        "next_action": "Use the full, frozen research pipeline for cohort-level prediction. Clinical interpretation requires task context and independent assessment.",
+        "generation": {
+            "mode": "deterministic_offline_preview",
+            "live_model_invoked": False,
+            "full_pipeline_model": "configured in configs/agents/default.yaml",
+        },
     }
 
 
@@ -186,28 +291,40 @@ def _assemble_result(
         }
         for index, row in enumerate(segments)
     ]
+    if synthetic and compact_segments:
+        words = transcript.strip().split()
+        chunk_size = max(1, math.ceil(len(words) / len(compact_segments)))
+        for index, segment in enumerate(compact_segments):
+            segment["text"] = " ".join(words[index * chunk_size : (index + 1) * chunk_size])
+            segment["text_alignment"] = "synthetic_demo_partition"
+    else:
+        for segment in compact_segments:
+            segment["text"] = ""
+            segment["text_alignment"] = "not_available_in_demo"
+    audio_segment_ids = [item["segment_id"] for item in compact_segments[:4]]
+    for item in evidence.values():
+        item["segment_ids"] = audio_segment_ids if item["source"] == "audio" else []
+
+    quality = {
+        "audio_reliability": round(float(feature["audio_reliability"]), 3),
+        "text_reliability": round(float(feature["text_reliability"]), 3),
+        "snr_proxy_db": round(float(feature["snr_proxy_db"]), 2),
+        "clipping_fraction": round(float(feature["clipping_fraction"]), 5),
+        "vad_backend": feature["vad_backend"],
+    }
+    evidence_values = list(evidence.values())
     return {
-        "schema_version": "public-demo-v2",
+        "schema_version": "public-demo-v3",
         "case": {
             **case,
             "duration_sec": round(float(feature["duration_sec"]), 3),
-            "original_duration_sec": round(
-                float(feature.get("original_duration_sec", feature["duration_sec"])), 3
-            ),
+            "original_duration_sec": round(float(feature.get("original_duration_sec", feature["duration_sec"])), 3),
             "role_filtered_audio": bool(feature.get("role_filtered_audio", False)),
-            "role_coverage_fraction": round(
-                float(feature.get("role_coverage_fraction", 1.0)), 3
-            ),
+            "role_coverage_fraction": round(float(feature.get("role_coverage_fraction", 1.0)), 3),
             "transcript": transcript.strip(),
         },
-        "quality": {
-            "audio_reliability": round(float(feature["audio_reliability"]), 3),
-            "text_reliability": round(float(feature["text_reliability"]), 3),
-            "snr_proxy_db": round(float(feature["snr_proxy_db"]), 2),
-            "clipping_fraction": round(float(feature["clipping_fraction"]), 5),
-            "vad_backend": feature["vad_backend"],
-        },
-        "metric_evidence": list(evidence.values()),
+        "quality": quality,
+        "metric_evidence": evidence_values,
         "state_cards": states,
         "segments": compact_segments,
         "decision": {
@@ -215,21 +332,71 @@ def _assemble_result(
             "reason": (
                 "The public synthetic demo validates the evidence pipeline only; it is not a clinical prediction."
                 if synthetic
-                else "This local restricted case demonstrates channel processing only; it is not a 9.2 cohort prediction."
+                else "This local restricted case demonstrates channel processing only; it is not a cohort prediction."
             ),
         },
+        "agent_report": _agent_report_preview(states, evidence_values, quality, synthetic=synthetic),
         "trace": [
-            {"from": item["id"], "to": state["id"]}
+            {"from": item["id"], "to": state["id"], "segment_ids": item["segment_ids"]}
             for state in states
             for item in evidence.values()
             if item["id"] in state["evidence_ids"]
         ],
+        "execution": {
+            "mode": "public_offline_demo" if synthetic else "local_restricted_demo",
+            "trained_prediction_loaded": False,
+            "diagnostic_agent_invoked": False,
+            "full_run_command": "make full DATASET=PREPARE_DrivenData",
+        },
         "disclaimer": (
             "Synthetic non-patient demonstration. Illustrative references are not clinical norms and no diagnosis is produced."
             if synthetic
             else "Local restricted-data demonstration. Audio is not copied into the repository; illustrative demo references are not cohort norms."
         ),
     }
+
+
+def _extract_case(
+    audio_path: Path,
+    transcript: str,
+    case: dict[str, Any],
+    *,
+    synthetic: bool,
+    analysis_intervals: str = "[]",
+    role_filter_required: bool = False,
+    transcript_reliability: float = 0.95,
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="advoice-demo-") as directory:
+        transcript_path = Path(directory) / "transcript.txt"
+        transcript_path.write_text(transcript.strip(), encoding="utf-8")
+        feature, segments = extract_audio_file(
+            {
+                "dataset_id": str(case["dataset_id"]),
+                "case_id": str(case["case_id"]),
+                "subject_id": str(case["case_id"]),
+                "label": str(case.get("research_label", "UNLABELED")),
+                "split": "demo",
+                "audio_path": str(audio_path),
+                "transcript_path": str(transcript_path),
+                "transcript_reliability": transcript_reliability if transcript.strip() else 0.0,
+                "task_type": str(case.get("task_type", "")),
+                "language": str(case.get("language", "en")),
+                "channel": str(case.get("channel_id", "public_demo")),
+                "analysis_intervals": analysis_intervals,
+                "role_filter_required": role_filter_required,
+            }
+        )
+    return _assemble_result(feature, segments, transcript, case, synthetic=synthetic)
+
+
+def analyze_public_case(case_id: str, assets_dir: Path) -> dict[str, Any]:
+    definition = PUBLIC_DEMO_CASES.get(case_id)
+    if definition is None:
+        raise KeyError(case_id)
+    transcript = (assets_dir / str(definition["transcript_file"])).read_text(encoding="utf-8")
+    case = {key: value for key, value in definition.items() if key not in {"audio_file", "transcript_file"}}
+    case["data_scope"] = "public_synthetic"
+    return _extract_case(assets_dir / str(definition["audio_file"]), transcript, case, synthetic=True)
 
 
 def analyze_demo_audio(
@@ -239,45 +406,35 @@ def analyze_demo_audio(
     language: str = "en",
     task_type: str = "cookie_theft_picture_description",
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="advoice-demo-") as directory:
-        transcript_path = Path(directory) / "transcript.txt"
-        transcript_path.write_text(transcript.strip(), encoding="utf-8")
-        feature, segments = extract_audio_file(
-            {
-                "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
-                "case_id": "synthetic_case_001",
-                "subject_id": "synthetic_subject_001",
-                "label": "UNLABELED",
-                "split": "demo",
-                "audio_path": str(audio_path),
-                "transcript_path": str(transcript_path),
-                "transcript_reliability": 0.95 if transcript.strip() else 0.0,
-                "task_type": task_type,
-                "language": language,
-                "channel": "public_demo",
-                "analysis_intervals": "[]",
-                "role_filter_required": False,
-            }
-        )
-    return _assemble_result(
-        feature,
-        segments,
-        transcript,
-        {
-            "case_id": "synthetic_case_001",
-            "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
-            "channel_id": "public_demo",
-            "channel_name_zh": "合成公开案例",
-            "task_name_zh": "合成图片描述流程验证",
-            "description_zh": "用于公开复现音频读取、指标证据、状态聚合和回溯链，不代表患者或临床任务分布。",
-            "evidence_focus_zh": ["音频读取", "指标证据", "状态卡", "片段回溯"],
-            "task_type": task_type,
-            "language": language,
-            "research_label": "UNLABELED",
-            "data_scope": "public_synthetic",
-        },
-        synthetic=True,
-    )
+    channel_id = {
+        "structured_clinical_interview": "clinical_interview",
+        "cookie_theft_picture_description": "picture_description",
+        "ctd": "picture_description",
+        "semantic_fluency": "structured_multitask",
+        "sft": "structured_multitask",
+        "pft": "structured_multitask",
+        "nonstandard_public_speech": "public_speech",
+        "spontaneous_speech": "public_speech",
+    }.get(task_type, "picture_description")
+    case = {
+        "case_id": "uploaded_demo_case",
+        "dataset_id": "LOCAL_UPLOAD",
+        "channel_id": channel_id,
+        "channel_name": "Uploaded local audio",
+        "task_name": task_type.replace("_", " ").title(),
+        "description": "Locally processed upload. The browser demo does not create a clinical prediction.",
+        "evidence_focus": ["audio metrics", "transcript metrics", "state aggregation", "traceability"],
+        "task_type": task_type,
+        "language": language,
+        "research_label": "UNLABELED",
+        "data_scope": "local_upload_not_persisted",
+    }
+    return _extract_case(audio_path, transcript, case, synthetic=True)
+
+
+def _case_value(case: dict[str, Any], key: str, legacy_key: str, default: Any) -> Any:
+    value = case.get(key)
+    return value if value is not None else case.get(legacy_key, default)
 
 
 def analyze_local_manifest_case(case: dict[str, Any]) -> dict[str, Any]:
@@ -291,41 +448,27 @@ def analyze_local_manifest_case(case: dict[str, Any]) -> dict[str, Any]:
         if transcript_path is not None and transcript_path.is_file()
         else ("", "none", 0.0)
     )
-    feature, segments = extract_audio_file(
-        {
-            "dataset_id": str(case["dataset_id"]),
-            "case_id": str(case["demo_case_id"]),
-            "subject_id": str(case["demo_case_id"]),
-            "label": str(case.get("research_label", "UNAVAILABLE")),
-            "split": "local_demo",
-            "audio_path": str(audio_path),
-            "transcript_path": str(transcript_path) if transcript_path is not None and transcript_path.is_file() else "",
-            "transcript_reliability": float(case.get("transcript_reliability", 0.0)),
-            "task_type": str(case.get("task_type", "")),
-            "language": str(case.get("language", "")),
-            "channel": str(case.get("channel", "")),
-            "analysis_intervals": str(case.get("analysis_intervals", "[]")),
-            "role_filter_required": bool(case.get("role_filter_required", False)),
-        }
-    )
-    return _assemble_result(
-        feature,
-        segments,
+    normalized = {
+        "case_id": str(case["demo_case_id"]),
+        "dataset_id": str(case["dataset_id"]),
+        "channel_id": str(case["channel_id"]),
+        "channel_name": str(_case_value(case, "channel_name", "channel_name_zh", case["channel_id"])),
+        "task_name": str(_case_value(case, "task_name", "task_name_zh", case.get("task_type", "Task"))),
+        "description": str(_case_value(case, "description", "description_zh", "Restricted local case")),
+        "evidence_focus": list(_case_value(case, "evidence_focus", "evidence_focus_zh", [])),
+        "task_type": str(case.get("task_type", "")),
+        "language": str(case.get("language", "")),
+        "research_label": str(case.get("research_label", "UNAVAILABLE")),
+        "data_scope": "local_restricted_not_for_redistribution",
+    }
+    return _extract_case(
+        audio_path,
         transcript,
-        {
-            "case_id": str(case["demo_case_id"]),
-            "dataset_id": str(case["dataset_id"]),
-            "channel_id": str(case["channel_id"]),
-            "channel_name_zh": str(case["channel_name_zh"]),
-            "task_name_zh": str(case["task_name_zh"]),
-            "description_zh": str(case["description_zh"]),
-            "evidence_focus_zh": list(case["evidence_focus_zh"]),
-            "task_type": str(case.get("task_type", "")),
-            "language": str(case.get("language", "")),
-            "research_label": str(case.get("research_label", "UNAVAILABLE")),
-            "data_scope": "local_restricted_not_for_redistribution",
-        },
+        normalized,
         synthetic=False,
+        analysis_intervals=str(case.get("analysis_intervals", "[]")),
+        role_filter_required=bool(case.get("role_filter_required", False)),
+        transcript_reliability=float(case.get("transcript_reliability", 0.0)),
     )
 
 
@@ -345,6 +488,20 @@ def analyze_base64_wav(payload: dict[str, Any]) -> dict[str, Any]:
             language=str(payload.get("language", "en")),
             task_type=str(payload.get("task_type", "cookie_theft_picture_description")),
         )
+
+
+def write_public_demo_bundle(assets_dir: Path, output_dir: Path) -> list[dict[str, Any]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cases = public_case_summaries()
+    for case in cases:
+        result = analyze_public_case(str(case["case_id"]), assets_dir)
+        (output_dir / f"{case['case_id']}.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    (output_dir / "public_cases.json").write_text(
+        json.dumps({"cases": cases}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return cases
 
 
 def write_demo_result(audio_path: Path, transcript_path: Path, output_path: Path) -> dict[str, Any]:

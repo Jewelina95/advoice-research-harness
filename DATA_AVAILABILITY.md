@@ -4,7 +4,7 @@ The repository intentionally contains no participant recording, protected transc
 
 ## Public demonstration
 
-`demo/assets/synthetic_picture_description.wav` is generated deterministically by `demo/generate_sample.py`. It is not human speech and is included only to exercise audio loading, feature extraction, MetricEvidence construction, StateCard aggregation and trace rendering. Its reference values are illustrative and must not be interpreted as clinical norms.
+The four WAV files under `demo/assets/synthetic_*.wav` are generated deterministically by `demo/generate_sample.py`. They are not human speech. They exercise clinical-interview, picture-description, structured-task, and natural-speech routing; feature extraction; MetricEvidence construction; StateCard aggregation; report contracts; and trace rendering. Their reference values are illustrative and must not be interpreted as clinical norms.
 
 ## Restricted research datasets
 

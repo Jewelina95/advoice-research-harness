@@ -3,221 +3,226 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ADvoice 四通道可复现案例</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --ink: #17212b;
-      --muted: #5f6e7d;
-      --line: #cfd8df;
-      --paper: #f7f9fa;
-      --white: #fff;
-      --green: #28755b;
-      --green-soft: #e8f2ed;
-      --blue: #346aa0;
-      --blue-soft: #e9f0f8;
-      --amber: #a26715;
-      --amber-soft: #fbf1df;
-      --red: #9a4545;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
-    header { border-bottom: 1px solid var(--line); background: var(--white); }
-    .header-inner, main { width: min(1320px, calc(100% - 36px)); margin: 0 auto; }
-    .header-inner { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-    h1 { margin: 0; font-size: 24px; font-weight: 720; }
-    h2 { margin: 0 0 16px; font-size: 18px; }
-    h3 { margin: 0 0 8px; font-size: 14px; }
-    .subtitle, .meta, .hint { color: var(--muted); }
-    .subtitle { margin-top: 2px; }
-    .status { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; color: var(--green); }
-    .status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
-    main { padding: 26px 0 60px; }
-    .notice { border-left: 4px solid var(--amber); background: var(--amber-soft); padding: 12px 16px; margin-bottom: 22px; }
-    .workspace { display: grid; grid-template-columns: minmax(330px, .72fr) minmax(560px, 1.28fr); gap: 20px; align-items: start; }
-    .panel { background: var(--white); border: 1px solid var(--line); border-radius: 6px; }
-    .panel-head { padding: 16px 18px; border-bottom: 1px solid var(--line); }
-    .panel-body { padding: 18px; }
-    label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 680; }
-    select, textarea, input[type="file"] { width: 100%; border: 1px solid #aebbc5; border-radius: 4px; background: #fff; color: var(--ink); font: inherit; }
-    select, input[type="file"] { min-height: 42px; padding: 8px 10px; }
-    textarea { min-height: 148px; padding: 10px 12px; resize: vertical; }
-    .field { margin-bottom: 16px; }
-    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    button { min-height: 42px; border: 1px solid transparent; border-radius: 4px; padding: 0 16px; font: inherit; font-weight: 700; cursor: pointer; }
-    button.primary { background: var(--green); color: #fff; }
-    button.secondary { border-color: #9dacb6; background: #fff; color: var(--ink); }
-    button:disabled { opacity: .55; cursor: wait; }
-    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
-    audio { width: 100%; height: 42px; }
-    canvas { width: 100%; height: 92px; display: block; background: #f2f5f6; border: 1px solid var(--line); border-radius: 4px; }
-    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
-    .summary > div { min-height: 82px; padding: 14px 16px; border-right: 1px solid var(--line); }
-    .summary > div:last-child { border-right: 0; }
-    .summary strong { display: block; font-size: 22px; line-height: 1.2; }
-    .summary span { color: var(--muted); font-size: 12px; }
-    .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 18px; }
-    .tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
-    .tab.active { color: var(--ink); border-bottom-color: var(--green); }
-    .view { display: none; padding: 18px; }
-    .view.active { display: block; }
-    .state-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .state { border: 1px solid var(--line); border-top: 4px solid var(--blue); border-radius: 5px; padding: 14px; }
-    .state-score { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 10px 0; }
-    .state-score strong { font-size: 26px; }
-    .meter { height: 8px; background: #e6ebee; overflow: hidden; border-radius: 4px; }
-    .meter > span { display: block; height: 100%; background: var(--blue); }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-weight: 700; background: #f6f8f9; }
-    .trace { width: 100%; min-height: 330px; overflow-x: auto; }
-    .trace svg { min-width: 760px; width: 100%; height: 330px; }
-    .segment-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 6px; }
-    .segment { min-height: 70px; border: 1px solid var(--line); border-bottom: 5px solid var(--blue); padding: 8px; font-size: 11px; }
-    .empty { padding: 56px 20px; text-align: center; color: var(--muted); }
-    .error { color: var(--red); font-weight: 650; margin-top: 12px; }
-    footer { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
-    @media (max-width: 980px) {
-      .workspace { grid-template-columns: 1fr; }
-      .state-grid { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 620px) {
-      .header-inner, main { width: min(100% - 22px, 1320px); }
-      .header-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
-      .field-row, .summary { grid-template-columns: 1fr 1fr; }
-      .summary > div:nth-child(2) { border-right: 0; }
-      .summary > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-      .tabs { overflow-x: auto; }
-      .tab { white-space: nowrap; }
-    }
-  </style>
+  <meta name="description" content="ADvoice evidence-governed speech screening research demo">
+  <title>ADvoice | Reproducible research demo</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header>
-    <div class="header-inner">
-      <div><h1>ADvoice 四通道可复现案例</h1><div class="subtitle">音频与转录 → 指标证据 → 认知状态 → 可回溯证据图</div></div>
-      <div class="status">本地研究环境</div>
-    </div>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="ADvoice home">
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <span><strong>ADvoice</strong><small>Research harness 9.2</small></span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#method">Method</a>
+      <a href="#demo">Demo</a>
+      <a href="#evaluation">Evaluation</a>
+      <a href="#run">Run locally</a>
+    </nav>
+    <a class="header-link" href="https://github.com/Jewelina95/advoice-research-harness">View repository</a>
   </header>
-  <main>
-    <div class="notice" id="scope-notice"><strong>研究演示。</strong>公开样例为合成音频；本地四通道案例从受控数据目录读取，不复制到代码仓库。当前页面展示处理链，不生成新的 9.2 数据集性能结论。</div>
-    <div class="workspace">
-      <section class="panel">
-        <div class="panel-head"><h2>案例输入</h2><div class="meta">选择一个数据通道案例，或上传 20 MB 以内的 WAV。</div></div>
-        <div class="panel-body">
-          <div class="field"><label for="example">数据通道与案例</label><select id="example"><option value="synthetic_case_001">合成公开案例 · 流程验证</option></select><div class="hint" id="case-description">不含患者数据，用于检查公开代码和回溯界面。</div></div>
-          <div class="field"><label for="audio">音频</label><input id="audio" type="file" accept="audio/wav,.wav"><div class="hint" id="audio-name">仓库内合成音频</div></div>
-          <div class="field"><canvas id="waveform" width="900" height="184"></canvas></div>
-          <div class="field"><audio id="player" controls></audio></div>
-          <div class="field-row">
-            <div class="field"><label for="task">任务</label><select id="task"><option value="cookie_theft_picture_description">图片描述</option><option value="structured_clinical_interview">结构化访谈</option><option value="multi_task_cognitive_speech">结构化多任务</option><option value="ctd">图片描述认知任务</option><option value="pft">语音流畅性任务</option><option value="sft">语义流畅性任务</option><option value="spontaneous_speech">自发讲话</option><option value="nonstandard_public_speech">非标准化公开讲话</option></select></div>
-            <div class="field"><label for="language">语言</label><select id="language"><option value="en">英语</option><option value="zh">中文</option><option value="es">西班牙语</option></select></div>
-          </div>
-          <div class="field"><label for="transcript">转录文本</label><textarea id="transcript">The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.</textarea></div>
-          <div class="actions"><button class="primary" id="analyze">运行证据分析</button><button class="secondary" id="reset">恢复当前案例</button></div>
-          <div id="error" class="error" aria-live="polite"></div>
+
+  <main id="top">
+    <section class="intro band">
+      <div class="intro-copy">
+        <p class="eyebrow">Evidence-governed cognitive screening from speech</p>
+        <h1>One auditable path from recording to cognitive-state evidence.</h1>
+        <p class="lede">ADvoice routes each speech task through modality-specific processing, converts measurements into typed evidence, aggregates them into cognitive StateCards, and constrains a single diagnostic Agent to cite the evidence it uses.</p>
+        <div class="status-row">
+          <span class="status-pill">Four public synthetic channels</span>
+          <span class="status-pill neutral">No participant data in this repository</span>
+          <span class="status-pill warning">Research use only</span>
         </div>
-      </section>
-      <section class="panel" id="results">
-        <div class="panel-head"><h2>可回溯输出</h2><div class="meta" id="run-meta">等待分析</div></div>
-        <div id="empty" class="empty">运行案例后可查看指标、状态和片段级来源。</div>
-        <div id="result-content" hidden>
-          <div class="summary" id="summary"></div>
-          <div class="tabs">
-            <button class="tab active" data-view="states">认知状态</button>
-            <button class="tab" data-view="evidence">指标证据</button>
-            <button class="tab" data-view="trace">回溯图</button>
-            <button class="tab" data-view="segments">音频片段</button>
+      </div>
+      <aside class="scope-panel" aria-label="Public demo scope">
+        <span class="scope-kicker">This page runs</span>
+        <strong>Audio and transcript evidence extraction</strong>
+        <p>It does not load clinical weights or emit a disease probability. Full cohort prediction and the configured GPT Agent require licensed datasets and the frozen research command.</p>
+      </aside>
+    </section>
+
+    <section class="method band" id="method">
+      <div class="section-heading">
+        <div><p class="eyebrow">System architecture</p><h2>Task-aware processing before prediction</h2></div>
+        <p>The public demo exposes the same evidence contract used by the research harness. The trained pipeline adds out-of-fold prediction, a validation-frozen correction policy, and locked report rendering.</p>
+      </div>
+
+      <div class="channel-row" aria-label="Supported data channels">
+        <article><span class="channel-index">01</span><strong>Clinical interview</strong><small>speaker roles + interaction</small></article>
+        <article><span class="channel-index">02</span><strong>Picture description</strong><small>content units + language</small></article>
+        <article><span class="channel-index">03</span><strong>Structured task</strong><small>task-specific retrieval</small></article>
+        <article><span class="channel-index">04</span><strong>Natural speech</strong><small>conservative auxiliary audio</small></article>
+      </div>
+
+      <div class="pipeline" aria-label="ADvoice processing pipeline">
+        <article class="pipeline-step input-step"><span>01</span><h3>Route the case</h3><p>Dataset, task, language, modality, and speaker role.</p><code>src/advoice/data.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step"><span>02</span><h3>Normalize inputs</h3><p>ASR, transcript normalization, participant isolation, and task-aware segments.</p><code>src/advoice/asr.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step"><span>03</span><h3>Build evidence</h3><p>Acoustic, language, dialogue, and task metrics become typed MetricEvidence.</p><code>src/advoice/evidence.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step state-step"><span>04</span><h3>Form StateCards</h3><p>Reliability-weighted metrics form shared and task-specific cognitive states.</p><code>src/advoice/states.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step model-step"><span>05</span><h3>Learn the prior</h3><p>Text, audio, state, and segment branches produce out-of-fold probabilities.</p><code>src/advoice/models.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step agent-step"><span>06</span><h3>Constrain the Agent</h3><p>The Agent scores evidence with typed IDs; validation-frozen fusion can fail closed.</p><code>src/advoice/condition_c.py</code></article>
+        <div class="pipeline-arrow" aria-hidden="true">&#8594;</div>
+        <article class="pipeline-step report-step"><span>07</span><h3>Lock and report</h3><p>The decision is locked before clinician and participant reports are rendered.</p><code>src/advoice/diagnostic_agent_report.py</code></article>
+      </div>
+
+      <div class="model-contracts">
+        <article>
+          <div class="contract-label fixed">Fixed contract</div>
+          <h3>Clinical evidence boundaries</h3>
+          <p>Reference scope, abnormal direction, reliability, confounds, task, segment, and report permission travel with each metric.</p>
+        </article>
+        <article>
+          <div class="contract-label learned">Learned components</div>
+          <h3>Prediction and fusion weights</h3>
+          <p>Five-fold subject-level training fits the statistical prior and selects low-capacity fusion candidates on development data.</p>
+        </article>
+        <article>
+          <div class="contract-label agent">Agent contract</div>
+          <h3>Evidence scoring, not free diagnosis</h3>
+          <p>The configured Agent reads a blinded evidence workspace and returns ordinal class evidence plus valid source IDs.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="demo band" id="demo">
+      <div class="section-heading">
+        <div><p class="eyebrow">Interactive repository demo</p><h2>Inspect four data channels in one workspace</h2></div>
+        <p>Select a synthetic case to see how routing changes the visible evidence. Use the local server to process an uploaded WAV; static hosting displays packaged results only.</p>
+      </div>
+
+      <div class="case-selector" id="case-selector" aria-label="Public demo cases"></div>
+
+      <div class="demo-workspace">
+        <section class="input-console" aria-label="Case input">
+          <div class="console-head">
+            <div><span class="mono-label" id="case-dataset">Loading</span><h3 id="case-task">Loading case</h3></div>
+            <span class="data-badge" id="case-scope">PUBLIC</span>
           </div>
-          <div class="view active" id="view-states"><div class="state-grid" id="states"></div></div>
-          <div class="view" id="view-evidence"><div style="overflow:auto"><table><thead><tr><th>指标</th><th>证据身份</th><th>观测值</th><th>演示参照</th><th>异常方向标准分</th><th>证据可靠度</th><th>来源</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
-          <div class="view" id="view-trace"><div class="trace" id="trace"></div></div>
-          <div class="view" id="view-segments"><div class="segment-strip" id="segments"></div></div>
-        </div>
-      </section>
-    </div>
-    <footer>ADvoice 研究工程 · 受限临床数据只在本地挂载，不随代码仓库分发 · 完整预测必须使用相应许可数据和冻结运行清单。</footer>
+          <p class="case-description" id="case-description"></p>
+          <div class="focus-list" id="case-focus"></div>
+
+          <div class="audio-block">
+            <canvas id="waveform" width="1000" height="180" aria-label="Audio waveform"></canvas>
+            <audio id="player" controls preload="metadata"></audio>
+            <div class="time-readout"><span id="audio-name">Packaged synthetic audio</span><span id="playback-time">0.0 s</span></div>
+          </div>
+
+          <label for="transcript">Transcript</label>
+          <textarea id="transcript" spellcheck="false"></textarea>
+
+          <details class="upload-panel">
+            <summary>Process a local WAV with the public evidence extractor</summary>
+            <div class="upload-grid">
+              <label>WAV file<input id="audio" type="file" accept="audio/wav,.wav"></label>
+              <label>Task<select id="task">
+                <option value="cookie_theft_picture_description">Picture description</option>
+                <option value="structured_clinical_interview">Clinical interview</option>
+                <option value="semantic_fluency">Structured cognitive task</option>
+                <option value="nonstandard_public_speech">Natural speech</option>
+              </select></label>
+              <label>Language<select id="language"><option value="en">English</option><option value="zh">Chinese</option><option value="es">Spanish</option></select></label>
+            </div>
+          </details>
+
+          <div class="actions">
+            <button class="primary" id="analyze">Run evidence analysis</button>
+            <button class="secondary" id="reset">Reset selected case</button>
+          </div>
+          <p id="error" class="error" aria-live="polite"></p>
+        </section>
+
+        <section class="output-console" aria-label="Evidence output">
+          <div class="output-head">
+            <div><span class="mono-label">OUTPUT / PUBLIC-DEMO-V3</span><h3>Traceable analysis result</h3></div>
+            <span class="run-status" id="run-status">Loading</span>
+          </div>
+          <div class="summary-strip" id="summary"></div>
+          <div class="tabs" role="tablist" aria-label="Output views">
+            <button class="tab active" data-view="report" role="tab">Agent report</button>
+            <button class="tab" data-view="states" role="tab">StateCards</button>
+            <button class="tab" data-view="evidence" role="tab">MetricEvidence</button>
+            <button class="tab" data-view="trace" role="tab">Trace map</button>
+            <button class="tab" data-view="segments" role="tab">Segments</button>
+          </div>
+          <div class="view active" id="view-report"><div id="agent-report"></div></div>
+          <div class="view" id="view-states"><div class="state-grid" id="states"></div></div>
+          <div class="view" id="view-evidence"><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Role</th><th>Observed</th><th>Demo reference</th><th>Directional z</th><th>Reliability</th><th>Source</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
+          <div class="view" id="view-trace"><div class="trace-legend"><span class="legend-metric">MetricEvidence</span><span class="legend-state">StateCard</span><span class="legend-segment">Audio segment</span></div><div class="trace" id="trace"></div></div>
+          <div class="view" id="view-segments"><div class="segment-layout"><div class="segment-strip" id="segments"></div><article class="segment-detail" id="segment-detail"><span class="mono-label">SELECT A SEGMENT</span><p>Click a segment to seek the packaged audio and inspect its linked text.</p></article></div></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="evaluation band" id="evaluation">
+      <div class="section-heading">
+        <div><p class="eyebrow">PREPARE evaluation snapshot</p><h2>Prediction performance and framework checks</h2></div>
+        <p>Official test cohort, n=412. The comparison is retrospective: the test outcomes have been inspected during development and are not an untouched confirmatory validation.</p>
+      </div>
+
+      <div class="evaluation-status" id="evaluation-status"></div>
+      <div class="evaluation-grid">
+        <article class="chart-panel">
+          <div class="chart-title"><div><span class="figure-label">Layer A</span><h3>Screening and classification</h3></div><span>Higher is better</span></div>
+          <div class="bar-chart" id="performance-chart"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-title"><div><span class="figure-label">Layer B</span><h3>Evidence and report validation</h3></div><span>Framework-specific checks</span></div>
+          <div class="validation-grid" id="validation-grid"></div>
+          <div class="rubric-chart" id="rubric-chart"></div>
+        </article>
+      </div>
+      <p class="evaluation-note" id="evaluation-note"></p>
+    </section>
+
+    <section class="run band" id="run">
+      <div class="section-heading">
+        <div><p class="eyebrow">Repository workflow</p><h2>Run, configure, and inspect the model</h2></div>
+        <p>The public demo is deterministic and works without clinical data. Full prediction requires locally mounted licensed datasets and an explicit Agent provider configuration.</p>
+      </div>
+      <div class="run-grid">
+        <article class="command-panel">
+          <span class="step-tag">Quick start</span>
+          <pre><code>git clone https://github.com/Jewelina95/advoice-research-harness.git
+cd advoice-research-harness
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+make demo</code></pre>
+          <p>Open <code>http://127.0.0.1:8765</code>.</p>
+        </article>
+        <article class="command-panel">
+          <span class="step-tag">One dataset</span>
+          <pre><code>make validate DATASET=PREPARE_DrivenData
+make full DATASET=PREPARE_DrivenData
+make evaluate DATASET=PREPARE_DrivenData
+make report DATASET=PREPARE_DrivenData</code></pre>
+          <p>Raw data remain outside Git and are mounted through <code>configs/datasets/</code>.</p>
+        </article>
+        <article class="code-map">
+          <span class="step-tag">Model and Agent controls</span>
+          <dl>
+            <div><dt>Model architecture</dt><dd><code>configs/models/default.yaml</code></dd></div>
+            <div><dt>Agent provider and model</dt><dd><code>configs/agents/default.yaml</code></dd></div>
+            <div><dt>Training and fusion</dt><dd><code>src/advoice/condition_c.py</code></dd></div>
+            <div><dt>Evidence schema</dt><dd><code>schemas/case_evidence_package.schema.json</code></dd></div>
+            <div><dt>Evaluation endpoints</dt><dd><code>configs/evaluation/default.yaml</code></dd></div>
+            <div><dt>Locked report renderer</dt><dd><code>src/advoice/diagnostic_agent_report.py</code></dd></div>
+            <div><dt>Demo API</dt><dd><code>demo/server.py</code></dd></div>
+          </dl>
+        </article>
+      </div>
+    </section>
   </main>
-  <script>
-    const $ = (id) => document.getElementById(id);
-    let currentFile = null;
-    let sampleBuffer = null;
-    let caseIndex = {};
-    let activeCaseId = 'synthetic_case_001';
-    let loadSequence = 0;
-    const staticAudioUrl = new URL('../assets/synthetic_picture_description.wav', window.location.href).href;
-    const staticResultUrl = new URL('../output/synthetic_case_result.json', window.location.href).href;
 
-    async function fetchSampleResult() {
-      try { const response = await fetch('/api/sample'); if (response.ok) return await response.json(); } catch (_) {}
-      const response = await fetch(staticResultUrl); if (!response.ok) throw new Error('Packaged demo result is unavailable.'); return response.json();
-    }
-    async function fetchCaseResult(caseId) {
-      if (caseId === 'synthetic_case_001') return fetchSampleResult();
-      const response = await fetch(`/api/case/${encodeURIComponent(caseId)}`);
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.message || result.error || '案例分析失败');
-      return result;
-    }
-    function caseAudioUrl(caseId) { return caseId === 'synthetic_case_001' ? staticAudioUrl : `/api/case-audio/${encodeURIComponent(caseId)}`; }
+  <footer>
+    <div><strong>ADvoice research harness</strong><p>Evidence-governed speech screening research. Not a diagnostic medical device.</p></div>
+    <div><a href="https://github.com/Jewelina95/advoice-research-harness">GitHub</a><a href="https://github.com/Jewelina95/advoice-research-harness/blob/main/DATA_AVAILABILITY.md">Data policy</a></div>
+  </footer>
 
-    async function fileToDataUrl(file) {
-      return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
-    }
-    async function drawWaveform(source) {
-      const buffer = source instanceof File ? await source.arrayBuffer() : await fetch(source).then(r => r.arrayBuffer());
-      const audioContext = new AudioContext();
-      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
-      const data = decoded.getChannelData(0);
-      const canvas = $('waveform'); const ctx = canvas.getContext('2d'); const w = canvas.width; const h = canvas.height;
-      ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#f2f5f6'; ctx.fillRect(0, 0, w, h); ctx.strokeStyle = '#28755b'; ctx.lineWidth = 2; ctx.beginPath();
-      const step = Math.max(1, Math.floor(data.length / w));
-      for (let x = 0; x < w; x++) { let min = 1, max = -1; for (let i = x * step; i < Math.min((x + 1) * step, data.length); i++) { min = Math.min(min, data[i]); max = Math.max(max, data[i]); } ctx.moveTo(x, (1 + min) * h / 2); ctx.lineTo(x, (1 + max) * h / 2); }
-      ctx.stroke(); ctx.strokeStyle = '#9dacb6'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
-      await audioContext.close();
-    }
-    function fmt(value, digits = 2) { return value === null || value === undefined ? 'N/A' : Number(value).toFixed(digits); }
-    const evidenceRoleZh = {clinical_state:'临床状态证据',model_auxiliary:'模型辅助',quality_control:'质量控制'};
-    const evidenceSourceZh = {audio:'音频',transcript:'转录文本',dialogue:'对话结构',task_score:'任务评分'};
-    function render(result) {
-      const durationText = result.case.original_duration_sec > result.case.duration_sec + 0.1
-        ? `原始 ${fmt(result.case.original_duration_sec, 1)} 秒 · 纳入患者区间 ${fmt(result.case.duration_sec, 1)} 秒`
-        : `分析时长 ${fmt(result.case.duration_sec, 1)} 秒`;
-      $('empty').hidden = true; $('result-content').hidden = false; $('run-meta').textContent = `${result.case.case_id} · ${durationText} · ${result.case.language}`;
-      $('summary').innerHTML = `<div><strong>${result.metric_evidence.length}</strong><span>指标证据</span></div><div><strong>${result.state_cards.length}</strong><span>认知状态</span></div><div><strong>${result.segments.length}</strong><span>音频片段</span></div><div><strong>${fmt(result.quality.audio_reliability)}</strong><span>音频可靠度</span></div>`;
-      $('states').innerHTML = result.state_cards.map(s => `<article class="state"><h3>${s.id} · ${s.name}</h3><div class="meta">${s.clinical_question}</div><div class="state-score"><strong>${fmt(s.score)}</strong><span>证据完整度 ${fmt(s.confidence)}</span></div><div class="meter"><span style="width:${Math.max(0, Math.min(100, s.confidence * 100))}%"></span></div><div class="hint" style="margin-top:10px">${s.evidence_ids.join(' · ')}</div></article>`).join('');
-      $('evidence').innerHTML = result.metric_evidence.map(e => `<tr><td><strong>${e.name_zh || e.metric_id}</strong><br><span class="hint">${e.metric_id}</span></td><td>${evidenceRoleZh[e.evidence_role] || e.evidence_role}</td><td>${fmt(e.value, 3)} ${e.unit}</td><td>${fmt(e.reference_median, 3)} ± ${fmt(e.reference_scale, 3)}</td><td>${fmt(e.directional_z, 3)}</td><td>${fmt(e.reliability, 3)}</td><td>${evidenceSourceZh[e.source] || e.source}</td></tr>`).join('');
-      $('segments').innerHTML = result.segments.map((s, i) => `<div class="segment" style="border-bottom-color:hsl(${205 - Math.round(s.voiced_fraction * 80)},48%,45%)"><strong>片段 ${i + 1}</strong><br>${fmt(s.start_sec, 1)}–${fmt(s.end_sec, 1)} 秒<br>发声占比 ${fmt(s.voiced_fraction)}</div>`).join('');
-      const metrics = result.metric_evidence; const states = result.state_cards; const height = Math.max(330, metrics.length * 42, states.length * 70); const leftX = 140; const rightX = 610; const mGap = height / (metrics.length + 1); const sGap = height / (states.length + 1);
-      const metricY = Object.fromEntries(metrics.map((m, i) => [m.id, (i + 1) * mGap])); const stateY = Object.fromEntries(states.map((s, i) => [s.id, (i + 1) * sGap]));
-      const lines = result.trace.map(t => `<path d="M ${leftX + 150} ${metricY[t.from]} C 410 ${metricY[t.from]}, 420 ${stateY[t.to]}, ${rightX - 85} ${stateY[t.to]}" fill="none" stroke="#b4c0c8" stroke-width="1.5"/>`).join('');
-      const metricNodes = metrics.map(m => `<g><rect x="${leftX}" y="${metricY[m.id] - 15}" width="150" height="30" rx="4" fill="#e9f0f8" stroke="#346aa0"/><text x="${leftX + 8}" y="${metricY[m.id] + 5}" font-size="12" fill="#17212b">${m.name_zh || m.metric_id}</text></g>`).join('');
-      const stateNodes = states.map(s => `<g><rect x="${rightX - 85}" y="${stateY[s.id] - 22}" width="210" height="44" rx="4" fill="#e8f2ed" stroke="#28755b"/><text x="${rightX - 73}" y="${stateY[s.id] - 2}" font-size="12" font-weight="700" fill="#17212b">${s.id} · ${s.name}</text><text x="${rightX - 73}" y="${stateY[s.id] + 14}" font-size="11" fill="#5f6e7d">状态分 ${fmt(s.score)} · 完整度 ${fmt(s.confidence)}</text></g>`).join('');
-      $('trace').innerHTML = `<svg viewBox="0 0 820 ${height}" role="img" aria-label="从指标证据到认知状态的回溯图"><text x="${leftX}" y="18" font-size="12" font-weight="700">指标证据</text><text x="${rightX - 85}" y="18" font-size="12" font-weight="700">认知状态卡</text>${lines}${metricNodes}${stateNodes}</svg>`;
-    }
-    async function loadCase(caseId) {
-      const sequence = ++loadSequence;
-      $('error').textContent = ''; currentFile = null; $('audio').value = ''; activeCaseId = caseId;
-      const meta = caseIndex[caseId] || {}; const audioUrl = caseAudioUrl(caseId);
-      $('audio-name').textContent = caseId === 'synthetic_case_001' ? '仓库内合成音频' : `${meta.dataset_id} · 本地受限音频，不上传仓库`;
-      $('case-description').textContent = `${meta.description_zh || ''}${meta.evidence_focus_zh ? ' 重点：' + meta.evidence_focus_zh.join('、') + '。' : ''}`;
-      $('player').src = audioUrl;
-      const [, result] = await Promise.all([drawWaveform(audioUrl), fetchCaseResult(caseId)]);
-      if (sequence !== loadSequence) return;
-      $('transcript').value = result.case.transcript || ''; $('task').value = result.case.task_type || $('task').value; $('language').value = result.case.language || $('language').value; render(result);
-      $('scope-notice').innerHTML = caseId === 'synthetic_case_001' ? '<strong>公开合成案例。</strong>不含患者数据，只验证音频、指标证据、状态卡和回溯界面。' : `<strong>本地受限案例。</strong>${result.case.channel_name_zh} · ${result.case.task_name_zh} · 研究标签 ${result.case.research_label}。本页只展示单例处理链，不代表 9.2 整库评估。`;
-    }
-    async function loadCases() {
-      let cases = [{demo_case_id:'synthetic_case_001',dataset_id:'PUBLIC_SYNTHETIC_DEMO',channel_name_zh:'合成公开案例',task_name_zh:'流程验证',description_zh:'不含患者数据，用于检查公开代码和回溯界面。',evidence_focus_zh:['指标证据','状态卡','片段回溯']}];
-      try { const response = await fetch('/api/cases'); if (response.ok) cases = (await response.json()).cases; } catch (_) {}
-      caseIndex = Object.fromEntries(cases.map(c => [c.demo_case_id, c])); $('example').innerHTML = cases.map(c => `<option value="${c.demo_case_id}">${c.channel_name_zh} · ${c.dataset_id}</option>`).join(''); await loadCase(activeCaseId);
-    }
-    $('audio').addEventListener('change', async (event) => { currentFile = event.target.files[0] || null; if (!currentFile) return; $('audio-name').textContent = currentFile.name; $('player').src = URL.createObjectURL(currentFile); await drawWaveform(currentFile); });
-    $('example').addEventListener('change', event => loadCase(event.target.value).catch(error => $('error').textContent = error.message));
-    $('analyze').addEventListener('click', async () => { const button = $('analyze'); button.disabled = true; $('error').textContent = ''; try { if (!currentFile) { await loadCase(activeCaseId); return; } const response = await fetch('/api/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ audio_base64: await fileToDataUrl(currentFile), transcript: $('transcript').value, task_type: $('task').value, language: $('language').value }) }); const result = await response.json(); if (!response.ok) throw new Error(result.message || result.error); render(result); } catch (error) { $('error').textContent = window.location.hostname.endsWith('github.io') ? 'GitHub Pages 只展示合成案例；本地运行 `make demo` 后可分析上传音频。' : error.message; } finally { button.disabled = false; } });
-    $('reset').addEventListener('click', () => loadCase(activeCaseId));
-    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab)); document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${tab.dataset.view}`)); }));
-    loadCases().catch(error => $('error').textContent = error.message);
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>

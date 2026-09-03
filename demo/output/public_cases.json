@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "case_id": "synthetic_clinical_interview",
+      "dataset_id": "PUBLIC_SYNTHETIC_INTERVIEW",
+      "channel_id": "clinical_interview",
+      "channel_name": "Clinical interview",
+      "task_name": "Structured participant interview",
+      "description": "Demonstrates participant-role routing and dialogue evidence without clinical data.",
+      "evidence_focus": [
+        "participant turns",
+        "response length",
+        "repairs",
+        "pausing"
+      ],
+      "task_type": "structured_clinical_interview",
+      "language": "en",
+      "research_label": "UNLABELED",
+      "data_scope": "public_synthetic"
+    },
+    {
+      "case_id": "synthetic_picture_description",
+      "dataset_id": "PUBLIC_SYNTHETIC_PICTURE",
+      "channel_id": "picture_description",
+      "channel_name": "Picture description",
+      "task_name": "Cookie Theft-style description",
+      "description": "Demonstrates content-unit, information-density, lexical, and speech evidence.",
+      "evidence_focus": [
+        "content units",
+        "information density",
+        "lexical diversity",
+        "pausing"
+      ],
+      "task_type": "cookie_theft_picture_description",
+      "language": "en",
+      "research_label": "UNLABELED",
+      "data_scope": "public_synthetic"
+    },
+    {
+      "case_id": "synthetic_structured_task",
+      "dataset_id": "PUBLIC_SYNTHETIC_TASK",
+      "channel_id": "structured_multitask",
+      "channel_name": "Structured cognitive task",
+      "task_name": "Semantic fluency-style response",
+      "description": "Demonstrates task-specific lexical retrieval and state aggregation.",
+      "evidence_focus": [
+        "lexical retrieval",
+        "content words",
+        "repairs",
+        "output efficiency"
+      ],
+      "task_type": "semantic_fluency",
+      "language": "en",
+      "research_label": "UNLABELED",
+      "data_scope": "public_synthetic"
+    },
+    {
+      "case_id": "synthetic_public_speech",
+      "dataset_id": "PUBLIC_SYNTHETIC_NATURAL",
+      "channel_id": "public_speech",
+      "channel_name": "Natural speech",
+      "task_name": "Non-standard spontaneous speech",
+      "description": "Demonstrates conservative use of prosody and recording-quality evidence.",
+      "evidence_focus": [
+        "speech continuity",
+        "prosody",
+        "signal quality",
+        "report permissions"
+      ],
+      "task_type": "nonstandard_public_speech",
+      "language": "en",
+      "research_label": "UNLABELED",
+      "data_scope": "public_synthetic"
+    }
+  ]
+}

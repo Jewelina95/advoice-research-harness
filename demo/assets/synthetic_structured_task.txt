@@ -1,0 +1,1 @@
+Dog, cat, horse, sheep, cow, goat, rabbit, tiger, lion, elephant, giraffe, monkey, bear, fox, deer, zebra.

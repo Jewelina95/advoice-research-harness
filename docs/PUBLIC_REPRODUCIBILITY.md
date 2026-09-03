@@ -1,46 +1,49 @@
 # Public reproducibility workflow
 
-## What can be reproduced without clinical data
+## Packaged demonstration
 
-The synthetic demo runs the same low-level audio and transcript feature extractor used by the research harness, constructs typed MetricEvidence records, aggregates three illustrative cognitive StateCards and renders the evidence trace. It does not load a trained diagnostic model and does not emit disease probability or stage.
+The repository includes four deterministic synthetic fixtures covering clinical interview, picture description, structured cognitive task, and natural speech. Each fixture runs through the low-level audio and transcript extractor, channel-specific metric routing, typed `MetricEvidence`, cognitive `StateCards`, segment links, trace rendering, and the report output contract.
+
+The public fixtures contain no participant data. They do not load trained diagnostic weights, call a live Agent, or produce disease probability.
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 make demo
 ```
 
-Open `http://127.0.0.1:8765`. The page can run the packaged sample or accept a local WAV and transcript. Uploaded material is processed by the local Python process and is not sent to an external API.
+Open `http://127.0.0.1:8765`.
 
-## Local four-channel case gallery
+The same page works as a static site using the committed JSON outputs. Static hosting cannot process uploaded files; the local server can process a WAV and transcript through `POST /api/analyze`.
 
-Researchers with authorized local access can generate an ignored manifest that points to one pseudonymized AD-labelled example from each established data channel:
+## Full research run
+
+1. Obtain each dataset under its original license.
+2. Mount it under `data/raw/` or change the corresponding `raw_path` in `configs/datasets/`.
+3. Run `make validate DATASET=<dataset>`.
+4. Run `make full DATASET=<dataset>`.
+5. Run `make evaluate DATASET=<dataset>`.
+6. Run `make report DATASET=<dataset>`.
+
+The full command loads the configured encoders, produces subject-level out-of-fold predictions, builds the Agent evidence workspace, invokes the configured Agent provider, applies validation-frozen constrained fusion, locks decisions, and renders reports. The public demo intentionally stops before these clinical prediction stages.
+
+## Local restricted examples
+
+Authorized researchers can generate an ignored manifest that points to selected local examples:
 
 ```bash
 python demo/build_local_case_manifest.py --advoice-root "/path/to/AD voice"
 make demo
 ```
 
-The four channels are clinical interview (IAEAV), standard picture description (ADReSS 2020), structured cognitive tasks (PROCESS-2), and non-standard public speech (DementiaNet). Channel routing changes the visible evidence set: interviews add dialogue burden measures; picture tasks add content-unit and information-density measures; public speech adds auxiliary prosody and recording-quality measures that are not marked as reportable disease evidence. The server analyzes these files on demand with the current feature code and supports HTTP byte ranges for audio playback and seeking. This gallery demonstrates channel routing and evidence traceability; it is not a replacement for dataset-level 9.2 evaluation.
+`demo/local_cases.json`, `demo/local_output/`, source identifiers, transcripts, and audio remain local-only. They are never copied into the public repository.
 
-`demo/local_cases.json`, `demo/local_output/`, source identifiers, transcripts, and audio remain local-only and are never committed.
+## Local API
 
-## Full research run
+- `GET /api/cases`: packaged public cases plus any authorized local manifest entries.
+- `GET /api/case/<case_id>`: one public or local evidence result.
+- `GET /api/case-audio/<case_id>`: byte-range audio stream for playback and seeking.
+- `GET /api/evaluation`: frozen PREPARE evaluation summary.
+- `POST /api/analyze`: local WAV analysis using `audio_base64`, `transcript`, `task_type`, and `language`.
 
-1. Obtain the datasets under their original licenses.
-2. Mount them under `data/raw/` or change the relative `raw_path` in the relevant dataset YAML.
-3. Validate one dataset with `make validate DATASET=ADReSS_2020`.
-4. Run one full dataset with `make dataset DATASET=ADReSS_2020`.
-5. Run `make evaluate DATASET=ADReSS_2020` and `make report DATASET=ADReSS_2020`.
-
-The PREPARE release gate is a retrospective engineering gate because its official test outcomes have already been inspected during development. It cannot be described as untouched confirmatory external validation.
-
-## API
-
-The local demo server exposes:
-
-- `GET /api/sample`: packaged synthetic result.
-- `GET /api/sample-audio`: packaged synthetic WAV.
-- `POST /api/analyze`: JSON containing `audio_base64`, `transcript`, `task_type` and `language`.
-
-The upload limit is 20 MB. The endpoint is a local demonstrator, not a hardened clinical service.
+The upload limit is 20 MB. The server is a local research demonstrator, not a hardened clinical service.

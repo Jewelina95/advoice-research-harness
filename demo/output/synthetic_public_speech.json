@@ -1,0 +1,386 @@
+{
+  "schema_version": "public-demo-v3",
+  "case": {
+    "case_id": "synthetic_public_speech",
+    "dataset_id": "PUBLIC_SYNTHETIC_NATURAL",
+    "channel_id": "public_speech",
+    "channel_name": "Natural speech",
+    "task_name": "Non-standard spontaneous speech",
+    "description": "Demonstrates conservative use of prosody and recording-quality evidence.",
+    "evidence_focus": [
+      "speech continuity",
+      "prosody",
+      "signal quality",
+      "report permissions"
+    ],
+    "task_type": "nonstandard_public_speech",
+    "language": "en",
+    "research_label": "UNLABELED",
+    "data_scope": "public_synthetic",
+    "duration_sec": 28.5,
+    "original_duration_sec": 28.5,
+    "role_filtered_audio": false,
+    "role_coverage_fraction": 1.0,
+    "transcript": "Today I want to describe the work we completed over the past year. We met with several groups, reviewed the evidence, and changed the plan when the results did not support the first approach."
+  },
+  "quality": {
+    "audio_reliability": 0.908,
+    "text_reliability": 0.95,
+    "snr_proxy_db": 68.92,
+    "clipping_fraction": 0.0,
+    "vad_backend": "webrtc_energy_hybrid"
+  },
+  "metric_evidence": [
+    {
+      "id": "demo:silence_fraction",
+      "metric_id": "silence_fraction",
+      "name": "Silence fraction",
+      "value": 0.22787921348314608,
+      "unit": "ratio",
+      "reference_median": 0.34,
+      "reference_scale": 0.12,
+      "directional_z": -0.934,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:long_pause_rate_min",
+      "metric_id": "long_pause_rate_min",
+      "name": "Long pauses per minute",
+      "value": 16.842105263157894,
+      "unit": "events/min",
+      "reference_median": 5.0,
+      "reference_scale": 3.0,
+      "directional_z": 3.947,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:speech_run_mean_sec",
+      "metric_id": "speech_run_mean_sec",
+      "name": "Mean speech-run duration",
+      "value": 1.9990909090909093,
+      "unit": "seconds",
+      "reference_median": 2.2,
+      "reference_scale": 0.8,
+      "directional_z": 0.251,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:voiced_fraction",
+      "metric_id": "voiced_fraction",
+      "name": "Voiced-time fraction",
+      "value": 0.7721207865168539,
+      "unit": "ratio",
+      "reference_median": 0.66,
+      "reference_scale": 0.12,
+      "directional_z": -0.934,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:speech_rate_wpm",
+      "metric_id": "speech_rate_wpm",
+      "name": "Speech rate",
+      "value": 71.57894736842105,
+      "unit": "words/min",
+      "reference_median": 118.0,
+      "reference_scale": 28.0,
+      "directional_z": 1.658,
+      "reliability": 0.95,
+      "source": "transcript",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": []
+    },
+    {
+      "id": "demo:filler_rate_100w",
+      "metric_id": "filler_rate_100w",
+      "name": "Fillers per 100 words",
+      "value": 0.0,
+      "unit": "events/100 words",
+      "reference_median": 2.0,
+      "reference_scale": 2.0,
+      "directional_z": -1.0,
+      "reliability": 0.95,
+      "source": "transcript",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": []
+    },
+    {
+      "id": "demo:lexical_ttr",
+      "metric_id": "lexical_ttr",
+      "name": "Lexical diversity",
+      "value": 0.8235294117647058,
+      "unit": "ratio",
+      "reference_median": 0.58,
+      "reference_scale": 0.12,
+      "directional_z": -2.029,
+      "reliability": 0.95,
+      "source": "transcript",
+      "evidence_role": "clinical_state",
+      "reportable": true,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": []
+    },
+    {
+      "id": "demo:rms_db_std",
+      "metric_id": "rms_db_std",
+      "name": "Loudness variability",
+      "value": 24.56300163269043,
+      "unit": "dB",
+      "reference_median": 8.0,
+      "reference_scale": 4.0,
+      "directional_z": -4.141,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "model_auxiliary",
+      "reportable": false,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:f0_iqr_hz",
+      "metric_id": "f0_iqr_hz",
+      "name": "Pitch interquartile range",
+      "value": 19.73572427539787,
+      "unit": "Hz",
+      "reference_median": 40.0,
+      "reference_scale": 20.0,
+      "directional_z": 1.013,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "model_auxiliary",
+      "reportable": false,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "id": "demo:snr_proxy_db",
+      "metric_id": "snr_proxy_db",
+      "name": "Signal-to-noise proxy",
+      "value": 68.9249038696289,
+      "unit": "dB",
+      "reference_median": 15.0,
+      "reference_scale": 5.0,
+      "directional_z": -10.785,
+      "reliability": 0.908,
+      "source": "audio",
+      "evidence_role": "quality_control",
+      "reportable": false,
+      "missing": false,
+      "reference_scope": "illustrative_demo_reference_not_a_clinical_norm",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    }
+  ],
+  "state_cards": [
+    {
+      "id": "S01",
+      "name": "Pausing and continuity",
+      "clinical_question": "Are pauses, shortened speech runs, or interrupted starts elevated?",
+      "score": 1.071,
+      "confidence": 0.908,
+      "evidence_ids": [
+        "demo:silence_fraction",
+        "demo:long_pause_rate_min",
+        "demo:speech_run_mean_sec"
+      ]
+    },
+    {
+      "id": "S02",
+      "name": "Output efficiency",
+      "clinical_question": "Is effective spoken output reduced for the available task time?",
+      "score": 0.521,
+      "confidence": 0.931,
+      "evidence_ids": [
+        "demo:voiced_fraction",
+        "demo:speech_rate_wpm"
+      ]
+    },
+    {
+      "id": "S08",
+      "name": "Lexical retrieval and diversity",
+      "clinical_question": "Are fillers increased or lexical diversity reduced?",
+      "score": -1.566,
+      "confidence": 0.95,
+      "evidence_ids": [
+        "demo:filler_rate_100w",
+        "demo:lexical_ttr"
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "segment_id": "synthetic_public_speech:S01",
+      "start_sec": 0.0,
+      "end_sec": 10.0,
+      "rms_db": -40.78,
+      "voiced_fraction": 0.761,
+      "text": "Today I want to describe the work we completed over the past",
+      "text_alignment": "synthetic_demo_partition"
+    },
+    {
+      "segment_id": "synthetic_public_speech:S02",
+      "start_sec": 10.0,
+      "end_sec": 20.0,
+      "rms_db": -39.68,
+      "voiced_fraction": 0.597,
+      "text": "year. We met with several groups, reviewed the evidence, and changed the",
+      "text_alignment": "synthetic_demo_partition"
+    },
+    {
+      "segment_id": "synthetic_public_speech:S03",
+      "start_sec": 20.0,
+      "end_sec": 28.5,
+      "rms_db": -40.26,
+      "voiced_fraction": 0.632,
+      "text": "plan when the results did not support the first approach.",
+      "text_alignment": "synthetic_demo_partition"
+    }
+  ],
+  "decision": {
+    "status": "not_generated",
+    "reason": "The public synthetic demo validates the evidence pipeline only; it is not a clinical prediction."
+  },
+  "agent_report": {
+    "status": "offline_preview",
+    "title": "Evidence-constrained Agent report preview",
+    "screening_impression": "This synthetic case is unlabeled. The report demonstrates the output contract and does not assign a diagnosis or disease probability.",
+    "observations": [
+      "S08 Lexical retrieval and diversity: evidence score -1.57, completeness 0.95.",
+      "S01 Pausing and continuity: evidence score +1.07, completeness 0.91.",
+      "S02 Output efficiency: evidence score +0.52, completeness 0.93."
+    ],
+    "evidence_ids": [
+      "demo:long_pause_rate_min",
+      "demo:lexical_ttr",
+      "demo:speech_rate_wpm",
+      "demo:filler_rate_100w",
+      "demo:silence_fraction"
+    ],
+    "quality_statement": "Audio reliability 0.91; text reliability 0.95. Quality-control and model-auxiliary measures are not presented as disease evidence.",
+    "next_action": "Use the full, frozen research pipeline for cohort-level prediction. Clinical interpretation requires task context and independent assessment.",
+    "generation": {
+      "mode": "deterministic_offline_preview",
+      "live_model_invoked": false,
+      "full_pipeline_model": "configured in configs/agents/default.yaml"
+    }
+  },
+  "trace": [
+    {
+      "from": "demo:silence_fraction",
+      "to": "S01",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "from": "demo:long_pause_rate_min",
+      "to": "S01",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "from": "demo:speech_run_mean_sec",
+      "to": "S01",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "from": "demo:voiced_fraction",
+      "to": "S02",
+      "segment_ids": [
+        "synthetic_public_speech:S01",
+        "synthetic_public_speech:S02",
+        "synthetic_public_speech:S03"
+      ]
+    },
+    {
+      "from": "demo:speech_rate_wpm",
+      "to": "S02",
+      "segment_ids": []
+    },
+    {
+      "from": "demo:filler_rate_100w",
+      "to": "S08",
+      "segment_ids": []
+    },
+    {
+      "from": "demo:lexical_ttr",
+      "to": "S08",
+      "segment_ids": []
+    }
+  ],
+  "execution": {
+    "mode": "public_offline_demo",
+    "trained_prediction_loaded": false,
+    "diagnostic_agent_invoked": false,
+    "full_run_command": "make full DATASET=PREPARE_DrivenData"
+  },
+  "disclaimer": "Synthetic non-patient demonstration. Illustrative references are not clinical norms and no diagnosis is produced."
+}

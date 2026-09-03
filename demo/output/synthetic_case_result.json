@@ -1,10 +1,26 @@
 {
-  "schema_version": "public-demo-v1",
+  "schema_version": "public-demo-v2",
   "case": {
     "case_id": "synthetic_case_001",
+    "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
+    "channel_id": "public_demo",
+    "channel_name_zh": "合成公开案例",
+    "task_name_zh": "合成图片描述流程验证",
+    "description_zh": "用于公开复现音频读取、指标证据、状态聚合和回溯链，不代表患者或临床任务分布。",
+    "evidence_focus_zh": [
+      "音频读取",
+      "指标证据",
+      "状态卡",
+      "片段回溯"
+    ],
     "task_type": "cookie_theft_picture_description",
     "language": "en",
+    "research_label": "UNLABELED",
+    "data_scope": "public_synthetic",
     "duration_sec": 30.3,
+    "original_duration_sec": 30.3,
+    "role_filtered_audio": false,
+    "role_coverage_fraction": 1.0,
     "transcript": "The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window."
   },
   "quality": {

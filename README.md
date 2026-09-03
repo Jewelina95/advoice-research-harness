@@ -41,6 +41,15 @@ python3 -m venv .venv
 make demo
 ```
 
+本地研究环境还可以挂载四类受限数据案例，而不复制原始音频到仓库：
+
+```bash
+python demo/build_local_case_manifest.py --advoice-root "/path/to/AD voice"
+make demo
+```
+
+页面会同时提供临床访谈、标准图片描述、结构化认知任务和自然公开讲话四个中文案例。生成的 `demo/local_cases.json`、分析缓存和原始音频均被 Git 忽略；公开仓库仍只包含合成案例。
+
 随后打开 `http://127.0.0.1:8765`。网页支持直接运行仓库样例，也支持在本地上传 WAV 和转录文本。接口和可复现边界见 [docs/PUBLIC_REPRODUCIBILITY.md](docs/PUBLIC_REPRODUCIBILITY.md)。
 
 ## Run

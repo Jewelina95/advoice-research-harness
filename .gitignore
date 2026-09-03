@@ -18,5 +18,7 @@ reports/latest_run.json
 .env.*
 demo/output/*
 !demo/output/synthetic_case_result.json
+demo/local_cases.json
+demo/local_output/
 *.wav
 !demo/assets/synthetic_picture_description.wav

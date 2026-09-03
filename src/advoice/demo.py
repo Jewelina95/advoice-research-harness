@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .features import extract_audio_file
+from .transcripts import read_transcript
 
 
 DEMO_REFERENCES: dict[str, dict[str, float | str]] = {
@@ -73,34 +74,14 @@ def _evidence(feature: dict[str, Any], metric_id: str) -> dict[str, Any]:
     }
 
 
-def analyze_demo_audio(
-    audio_path: Path,
+def _assemble_result(
+    feature: dict[str, Any],
+    segments: list[dict[str, Any]],
     transcript: str,
+    case: dict[str, Any],
     *,
-    language: str = "en",
-    task_type: str = "cookie_theft_picture_description",
+    synthetic: bool,
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="advoice-demo-") as directory:
-        transcript_path = Path(directory) / "transcript.txt"
-        transcript_path.write_text(transcript.strip(), encoding="utf-8")
-        feature, segments = extract_audio_file(
-            {
-                "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
-                "case_id": "synthetic_case_001",
-                "subject_id": "synthetic_subject_001",
-                "label": "UNLABELED",
-                "split": "demo",
-                "audio_path": str(audio_path),
-                "transcript_path": str(transcript_path),
-                "transcript_reliability": 0.95 if transcript.strip() else 0.0,
-                "task_type": task_type,
-                "language": language,
-                "channel": "public_demo",
-                "analysis_intervals": "[]",
-                "role_filter_required": False,
-            }
-        )
-
     evidence = {metric: _evidence(feature, metric) for metric in DEMO_REFERENCES}
     states: list[dict[str, Any]] = []
     for definition in STATE_DEFINITIONS:
@@ -133,12 +114,17 @@ def analyze_demo_audio(
         for index, row in enumerate(segments)
     ]
     return {
-        "schema_version": "public-demo-v1",
+        "schema_version": "public-demo-v2",
         "case": {
-            "case_id": "synthetic_case_001",
-            "task_type": task_type,
-            "language": language,
+            **case,
             "duration_sec": round(float(feature["duration_sec"]), 3),
+            "original_duration_sec": round(
+                float(feature.get("original_duration_sec", feature["duration_sec"])), 3
+            ),
+            "role_filtered_audio": bool(feature.get("role_filtered_audio", False)),
+            "role_coverage_fraction": round(
+                float(feature.get("role_coverage_fraction", 1.0)), 3
+            ),
             "transcript": transcript.strip(),
         },
         "quality": {
@@ -153,7 +139,11 @@ def analyze_demo_audio(
         "segments": compact_segments,
         "decision": {
             "status": "not_generated",
-            "reason": "The public synthetic demo validates the evidence pipeline only; it is not a clinical prediction.",
+            "reason": (
+                "The public synthetic demo validates the evidence pipeline only; it is not a clinical prediction."
+                if synthetic
+                else "This local restricted case demonstrates channel processing only; it is not a 9.2 cohort prediction."
+            ),
         },
         "trace": [
             {"from": item["id"], "to": state["id"]}
@@ -161,8 +151,109 @@ def analyze_demo_audio(
             for item in evidence.values()
             if item["id"] in state["evidence_ids"]
         ],
-        "disclaimer": "Synthetic non-patient demonstration. Illustrative references are not clinical norms and no diagnosis is produced.",
+        "disclaimer": (
+            "Synthetic non-patient demonstration. Illustrative references are not clinical norms and no diagnosis is produced."
+            if synthetic
+            else "Local restricted-data demonstration. Audio is not copied into the repository; illustrative demo references are not cohort norms."
+        ),
     }
+
+
+def analyze_demo_audio(
+    audio_path: Path,
+    transcript: str,
+    *,
+    language: str = "en",
+    task_type: str = "cookie_theft_picture_description",
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="advoice-demo-") as directory:
+        transcript_path = Path(directory) / "transcript.txt"
+        transcript_path.write_text(transcript.strip(), encoding="utf-8")
+        feature, segments = extract_audio_file(
+            {
+                "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
+                "case_id": "synthetic_case_001",
+                "subject_id": "synthetic_subject_001",
+                "label": "UNLABELED",
+                "split": "demo",
+                "audio_path": str(audio_path),
+                "transcript_path": str(transcript_path),
+                "transcript_reliability": 0.95 if transcript.strip() else 0.0,
+                "task_type": task_type,
+                "language": language,
+                "channel": "public_demo",
+                "analysis_intervals": "[]",
+                "role_filter_required": False,
+            }
+        )
+    return _assemble_result(
+        feature,
+        segments,
+        transcript,
+        {
+            "case_id": "synthetic_case_001",
+            "dataset_id": "PUBLIC_SYNTHETIC_DEMO",
+            "channel_id": "public_demo",
+            "channel_name_zh": "合成公开案例",
+            "task_name_zh": "合成图片描述流程验证",
+            "description_zh": "用于公开复现音频读取、指标证据、状态聚合和回溯链，不代表患者或临床任务分布。",
+            "evidence_focus_zh": ["音频读取", "指标证据", "状态卡", "片段回溯"],
+            "task_type": task_type,
+            "language": language,
+            "research_label": "UNLABELED",
+            "data_scope": "public_synthetic",
+        },
+        synthetic=True,
+    )
+
+
+def analyze_local_manifest_case(case: dict[str, Any]) -> dict[str, Any]:
+    audio_path = Path(str(case["audio_path"]))
+    transcript_value = str(case.get("transcript_path", "")).strip()
+    transcript_path = Path(transcript_value) if transcript_value else None
+    if not audio_path.exists():
+        raise FileNotFoundError(audio_path)
+    transcript, _, _ = (
+        read_transcript(str(transcript_path))
+        if transcript_path is not None and transcript_path.is_file()
+        else ("", "none", 0.0)
+    )
+    feature, segments = extract_audio_file(
+        {
+            "dataset_id": str(case["dataset_id"]),
+            "case_id": str(case["demo_case_id"]),
+            "subject_id": str(case["demo_case_id"]),
+            "label": str(case.get("research_label", "UNAVAILABLE")),
+            "split": "local_demo",
+            "audio_path": str(audio_path),
+            "transcript_path": str(transcript_path) if transcript_path is not None and transcript_path.is_file() else "",
+            "transcript_reliability": float(case.get("transcript_reliability", 0.0)),
+            "task_type": str(case.get("task_type", "")),
+            "language": str(case.get("language", "")),
+            "channel": str(case.get("channel", "")),
+            "analysis_intervals": str(case.get("analysis_intervals", "[]")),
+            "role_filter_required": bool(case.get("role_filter_required", False)),
+        }
+    )
+    return _assemble_result(
+        feature,
+        segments,
+        transcript,
+        {
+            "case_id": str(case["demo_case_id"]),
+            "dataset_id": str(case["dataset_id"]),
+            "channel_id": str(case["channel_id"]),
+            "channel_name_zh": str(case["channel_name_zh"]),
+            "task_name_zh": str(case["task_name_zh"]),
+            "description_zh": str(case["description_zh"]),
+            "evidence_focus_zh": list(case["evidence_focus_zh"]),
+            "task_type": str(case.get("task_type", "")),
+            "language": str(case.get("language", "")),
+            "research_label": str(case.get("research_label", "UNAVAILABLE")),
+            "data_scope": "local_restricted_not_for_redistribution",
+        },
+        synthetic=False,
+    )
 
 
 def analyze_base64_wav(payload: dict[str, Any]) -> dict[str, Any]:

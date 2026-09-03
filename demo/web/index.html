@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ADvoice Reproducibility Demo</title>
+  <title>ADvoice 四通道可复现案例</title>
   <style>
     :root {
       color-scheme: light;
@@ -95,52 +95,56 @@
 <body>
   <header>
     <div class="header-inner">
-      <div><h1>ADvoice reproducibility demo</h1><div class="subtitle">Audio → MetricEvidence → cognitive StateCards → traceable evidence graph</div></div>
-      <div class="status">Local research runtime</div>
+      <div><h1>ADvoice 四通道可复现案例</h1><div class="subtitle">音频与转录 → 指标证据 → 认知状态 → 可回溯证据图</div></div>
+      <div class="status">本地研究环境</div>
     </div>
   </header>
   <main>
-    <div class="notice"><strong>Research demonstration only.</strong> The packaged recording is synthetic and contains no patient data. Demo references are illustrative, not clinical norms; this page does not produce an AD diagnosis.</div>
+    <div class="notice" id="scope-notice"><strong>研究演示。</strong>公开样例为合成音频；本地四通道案例从受控数据目录读取，不复制到代码仓库。当前页面展示处理链，不生成新的 9.2 数据集性能结论。</div>
     <div class="workspace">
       <section class="panel">
-        <div class="panel-head"><h2>Case input</h2><div class="meta">Run the packaged sample or upload a mono/stereo WAV under 20 MB.</div></div>
+        <div class="panel-head"><h2>案例输入</h2><div class="meta">选择一个数据通道案例，或上传 20 MB 以内的 WAV。</div></div>
         <div class="panel-body">
-          <div class="field"><label for="audio">Audio recording</label><input id="audio" type="file" accept="audio/wav,.wav"><div class="hint" id="audio-name">Packaged synthetic picture-description sample</div></div>
+          <div class="field"><label for="example">数据通道与案例</label><select id="example"><option value="synthetic_case_001">合成公开案例 · 流程验证</option></select><div class="hint" id="case-description">不含患者数据，用于检查公开代码和回溯界面。</div></div>
+          <div class="field"><label for="audio">音频</label><input id="audio" type="file" accept="audio/wav,.wav"><div class="hint" id="audio-name">仓库内合成音频</div></div>
           <div class="field"><canvas id="waveform" width="900" height="184"></canvas></div>
           <div class="field"><audio id="player" controls></audio></div>
           <div class="field-row">
-            <div class="field"><label for="task">Task</label><select id="task"><option value="cookie_theft_picture_description">Picture description</option><option value="structured_clinical_interview">Structured interview</option><option value="spontaneous_speech">Spontaneous speech</option></select></div>
-            <div class="field"><label for="language">Language</label><select id="language"><option value="en">English</option><option value="zh">Chinese</option><option value="es">Spanish</option></select></div>
+            <div class="field"><label for="task">任务</label><select id="task"><option value="cookie_theft_picture_description">图片描述</option><option value="structured_clinical_interview">结构化访谈</option><option value="multi_task_cognitive_speech">结构化多任务</option><option value="ctd">图片描述认知任务</option><option value="pft">语音流畅性任务</option><option value="sft">语义流畅性任务</option><option value="spontaneous_speech">自发讲话</option><option value="nonstandard_public_speech">非标准化公开讲话</option></select></div>
+            <div class="field"><label for="language">语言</label><select id="language"><option value="en">英语</option><option value="zh">中文</option><option value="es">西班牙语</option></select></div>
           </div>
-          <div class="field"><label for="transcript">Transcript</label><textarea id="transcript">The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.</textarea></div>
-          <div class="actions"><button class="primary" id="analyze">Run evidence analysis</button><button class="secondary" id="reset">Load packaged sample</button></div>
+          <div class="field"><label for="transcript">转录文本</label><textarea id="transcript">The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.</textarea></div>
+          <div class="actions"><button class="primary" id="analyze">运行证据分析</button><button class="secondary" id="reset">恢复当前案例</button></div>
           <div id="error" class="error" aria-live="polite"></div>
         </div>
       </section>
       <section class="panel" id="results">
-        <div class="panel-head"><h2>Traceable output</h2><div class="meta" id="run-meta">Waiting for analysis</div></div>
-        <div id="empty" class="empty">Run the sample to inspect metrics, states and segment-level provenance.</div>
+        <div class="panel-head"><h2>可回溯输出</h2><div class="meta" id="run-meta">等待分析</div></div>
+        <div id="empty" class="empty">运行案例后可查看指标、状态和片段级来源。</div>
         <div id="result-content" hidden>
           <div class="summary" id="summary"></div>
           <div class="tabs">
-            <button class="tab active" data-view="states">State cards</button>
-            <button class="tab" data-view="evidence">Metric evidence</button>
-            <button class="tab" data-view="trace">Trace map</button>
-            <button class="tab" data-view="segments">Segments</button>
+            <button class="tab active" data-view="states">认知状态</button>
+            <button class="tab" data-view="evidence">指标证据</button>
+            <button class="tab" data-view="trace">回溯图</button>
+            <button class="tab" data-view="segments">音频片段</button>
           </div>
           <div class="view active" id="view-states"><div class="state-grid" id="states"></div></div>
-          <div class="view" id="view-evidence"><div style="overflow:auto"><table><thead><tr><th>Metric</th><th>Observed</th><th>Demo reference</th><th>Directional z</th><th>Reliability</th><th>Source</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
+          <div class="view" id="view-evidence"><div style="overflow:auto"><table><thead><tr><th>指标</th><th>观测值</th><th>演示参照</th><th>异常方向标准分</th><th>证据可靠度</th><th>来源</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
           <div class="view" id="view-trace"><div class="trace" id="trace"></div></div>
           <div class="view" id="view-segments"><div class="segment-strip" id="segments"></div></div>
         </div>
       </section>
     </div>
-    <footer>ADvoice public harness · protected clinical corpora are mounted locally and are never distributed in this repository · predictions from the full research pipeline require the corresponding licensed datasets and frozen run manifests.</footer>
+    <footer>ADvoice 研究工程 · 受限临床数据只在本地挂载，不随代码仓库分发 · 完整预测必须使用相应许可数据和冻结运行清单。</footer>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
     let currentFile = null;
     let sampleBuffer = null;
+    let caseIndex = {};
+    let activeCaseId = 'synthetic_case_001';
+    let loadSequence = 0;
     const staticAudioUrl = new URL('../assets/synthetic_picture_description.wav', window.location.href).href;
     const staticResultUrl = new URL('../output/synthetic_case_result.json', window.location.href).href;
 
@@ -148,6 +152,14 @@
       try { const response = await fetch('/api/sample'); if (response.ok) return await response.json(); } catch (_) {}
       const response = await fetch(staticResultUrl); if (!response.ok) throw new Error('Packaged demo result is unavailable.'); return response.json();
     }
+    async function fetchCaseResult(caseId) {
+      if (caseId === 'synthetic_case_001') return fetchSampleResult();
+      const response = await fetch(`/api/case/${encodeURIComponent(caseId)}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || result.error || '案例分析失败');
+      return result;
+    }
+    function caseAudioUrl(caseId) { return caseId === 'synthetic_case_001' ? staticAudioUrl : `/api/case-audio/${encodeURIComponent(caseId)}`; }
 
     async function fileToDataUrl(file) {
       return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
@@ -166,27 +178,44 @@
     }
     function fmt(value, digits = 2) { return value === null || value === undefined ? 'N/A' : Number(value).toFixed(digits); }
     function render(result) {
-      $('empty').hidden = true; $('result-content').hidden = false; $('run-meta').textContent = `${result.case.case_id} · ${fmt(result.case.duration_sec, 1)} s · ${result.case.language}`;
-      $('summary').innerHTML = `<div><strong>${result.metric_evidence.length}</strong><span>evidence objects</span></div><div><strong>${result.state_cards.length}</strong><span>cognitive states</span></div><div><strong>${result.segments.length}</strong><span>audio segments</span></div><div><strong>${fmt(result.quality.audio_reliability)}</strong><span>audio reliability</span></div>`;
-      $('states').innerHTML = result.state_cards.map(s => `<article class="state"><h3>${s.id} · ${s.name}</h3><div class="meta">${s.clinical_question}</div><div class="state-score"><strong>${fmt(s.score)}</strong><span>confidence ${fmt(s.confidence)}</span></div><div class="meter"><span style="width:${Math.max(0, Math.min(100, s.confidence * 100))}%"></span></div><div class="hint" style="margin-top:10px">${s.evidence_ids.join(' · ')}</div></article>`).join('');
+      const durationText = result.case.original_duration_sec > result.case.duration_sec + 0.1
+        ? `原始 ${fmt(result.case.original_duration_sec, 1)} 秒 · 纳入患者区间 ${fmt(result.case.duration_sec, 1)} 秒`
+        : `分析时长 ${fmt(result.case.duration_sec, 1)} 秒`;
+      $('empty').hidden = true; $('result-content').hidden = false; $('run-meta').textContent = `${result.case.case_id} · ${durationText} · ${result.case.language}`;
+      $('summary').innerHTML = `<div><strong>${result.metric_evidence.length}</strong><span>指标证据</span></div><div><strong>${result.state_cards.length}</strong><span>认知状态</span></div><div><strong>${result.segments.length}</strong><span>音频片段</span></div><div><strong>${fmt(result.quality.audio_reliability)}</strong><span>音频可靠度</span></div>`;
+      $('states').innerHTML = result.state_cards.map(s => `<article class="state"><h3>${s.id} · ${s.name}</h3><div class="meta">${s.clinical_question}</div><div class="state-score"><strong>${fmt(s.score)}</strong><span>证据完整度 ${fmt(s.confidence)}</span></div><div class="meter"><span style="width:${Math.max(0, Math.min(100, s.confidence * 100))}%"></span></div><div class="hint" style="margin-top:10px">${s.evidence_ids.join(' · ')}</div></article>`).join('');
       $('evidence').innerHTML = result.metric_evidence.map(e => `<tr><td><strong>${e.metric_id}</strong><br><span class="hint">${e.id}</span></td><td>${fmt(e.value, 3)} ${e.unit}</td><td>${fmt(e.reference_median, 3)} ± ${fmt(e.reference_scale, 3)}</td><td>${fmt(e.directional_z, 3)}</td><td>${fmt(e.reliability, 3)}</td><td>${e.source}</td></tr>`).join('');
-      $('segments').innerHTML = result.segments.map((s, i) => `<div class="segment" style="border-bottom-color:hsl(${205 - Math.round(s.voiced_fraction * 80)},48%,45%)"><strong>S${i + 1}</strong><br>${fmt(s.start_sec, 1)}–${fmt(s.end_sec, 1)} s<br>voice ${fmt(s.voiced_fraction)}</div>`).join('');
+      $('segments').innerHTML = result.segments.map((s, i) => `<div class="segment" style="border-bottom-color:hsl(${205 - Math.round(s.voiced_fraction * 80)},48%,45%)"><strong>片段 ${i + 1}</strong><br>${fmt(s.start_sec, 1)}–${fmt(s.end_sec, 1)} 秒<br>发声占比 ${fmt(s.voiced_fraction)}</div>`).join('');
       const metrics = result.metric_evidence; const states = result.state_cards; const height = 330; const leftX = 140; const rightX = 610; const mGap = height / (metrics.length + 1); const sGap = height / (states.length + 1);
       const metricY = Object.fromEntries(metrics.map((m, i) => [m.id, (i + 1) * mGap])); const stateY = Object.fromEntries(states.map((s, i) => [s.id, (i + 1) * sGap]));
       const lines = result.trace.map(t => `<path d="M ${leftX + 150} ${metricY[t.from]} C 410 ${metricY[t.from]}, 420 ${stateY[t.to]}, ${rightX - 85} ${stateY[t.to]}" fill="none" stroke="#b4c0c8" stroke-width="1.5"/>`).join('');
       const metricNodes = metrics.map(m => `<g><rect x="${leftX}" y="${metricY[m.id] - 15}" width="150" height="30" rx="4" fill="#e9f0f8" stroke="#346aa0"/><text x="${leftX + 8}" y="${metricY[m.id] + 5}" font-size="12" fill="#17212b">${m.metric_id}</text></g>`).join('');
-      const stateNodes = states.map(s => `<g><rect x="${rightX - 85}" y="${stateY[s.id] - 22}" width="210" height="44" rx="4" fill="#e8f2ed" stroke="#28755b"/><text x="${rightX - 73}" y="${stateY[s.id] - 2}" font-size="12" font-weight="700" fill="#17212b">${s.id} · ${s.name}</text><text x="${rightX - 73}" y="${stateY[s.id] + 14}" font-size="11" fill="#5f6e7d">score ${fmt(s.score)} · confidence ${fmt(s.confidence)}</text></g>`).join('');
-      $('trace').innerHTML = `<svg viewBox="0 0 820 ${height}" role="img" aria-label="Metric evidence to cognitive state trace map"><text x="${leftX}" y="18" font-size="12" font-weight="700">MetricEvidence</text><text x="${rightX - 85}" y="18" font-size="12" font-weight="700">StateCards</text>${lines}${metricNodes}${stateNodes}</svg>`;
+      const stateNodes = states.map(s => `<g><rect x="${rightX - 85}" y="${stateY[s.id] - 22}" width="210" height="44" rx="4" fill="#e8f2ed" stroke="#28755b"/><text x="${rightX - 73}" y="${stateY[s.id] - 2}" font-size="12" font-weight="700" fill="#17212b">${s.id} · ${s.name}</text><text x="${rightX - 73}" y="${stateY[s.id] + 14}" font-size="11" fill="#5f6e7d">状态分 ${fmt(s.score)} · 完整度 ${fmt(s.confidence)}</text></g>`).join('');
+      $('trace').innerHTML = `<svg viewBox="0 0 820 ${height}" role="img" aria-label="从指标证据到认知状态的回溯图"><text x="${leftX}" y="18" font-size="12" font-weight="700">指标证据</text><text x="${rightX - 85}" y="18" font-size="12" font-weight="700">认知状态卡</text>${lines}${metricNodes}${stateNodes}</svg>`;
     }
-    async function loadSample() {
-      $('error').textContent = ''; currentFile = null; $('audio').value = ''; $('audio-name').textContent = 'Packaged synthetic picture-description sample'; $('player').src = staticAudioUrl; $('transcript').value = 'The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.';
-      await drawWaveform(staticAudioUrl); const result = await fetchSampleResult(); render(result);
+    async function loadCase(caseId) {
+      const sequence = ++loadSequence;
+      $('error').textContent = ''; currentFile = null; $('audio').value = ''; activeCaseId = caseId;
+      const meta = caseIndex[caseId] || {}; const audioUrl = caseAudioUrl(caseId);
+      $('audio-name').textContent = caseId === 'synthetic_case_001' ? '仓库内合成音频' : `${meta.dataset_id} · 本地受限音频，不上传仓库`;
+      $('case-description').textContent = `${meta.description_zh || ''}${meta.evidence_focus_zh ? ' 重点：' + meta.evidence_focus_zh.join('、') + '。' : ''}`;
+      $('player').src = audioUrl;
+      const [, result] = await Promise.all([drawWaveform(audioUrl), fetchCaseResult(caseId)]);
+      if (sequence !== loadSequence) return;
+      $('transcript').value = result.case.transcript || ''; $('task').value = result.case.task_type || $('task').value; $('language').value = result.case.language || $('language').value; render(result);
+      $('scope-notice').innerHTML = caseId === 'synthetic_case_001' ? '<strong>公开合成案例。</strong>不含患者数据，只验证音频、指标证据、状态卡和回溯界面。' : `<strong>本地受限案例。</strong>${result.case.channel_name_zh} · ${result.case.task_name_zh} · 研究标签 ${result.case.research_label}。本页只展示单例处理链，不代表 9.2 整库评估。`;
+    }
+    async function loadCases() {
+      let cases = [{demo_case_id:'synthetic_case_001',dataset_id:'PUBLIC_SYNTHETIC_DEMO',channel_name_zh:'合成公开案例',task_name_zh:'流程验证',description_zh:'不含患者数据，用于检查公开代码和回溯界面。',evidence_focus_zh:['指标证据','状态卡','片段回溯']}];
+      try { const response = await fetch('/api/cases'); if (response.ok) cases = (await response.json()).cases; } catch (_) {}
+      caseIndex = Object.fromEntries(cases.map(c => [c.demo_case_id, c])); $('example').innerHTML = cases.map(c => `<option value="${c.demo_case_id}">${c.channel_name_zh} · ${c.dataset_id}</option>`).join(''); await loadCase(activeCaseId);
     }
     $('audio').addEventListener('change', async (event) => { currentFile = event.target.files[0] || null; if (!currentFile) return; $('audio-name').textContent = currentFile.name; $('player').src = URL.createObjectURL(currentFile); await drawWaveform(currentFile); });
-    $('analyze').addEventListener('click', async () => { const button = $('analyze'); button.disabled = true; $('error').textContent = ''; try { if (!currentFile) { render(await fetchSampleResult()); return; } const response = await fetch('/api/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ audio_base64: await fileToDataUrl(currentFile), transcript: $('transcript').value, task_type: $('task').value, language: $('language').value }) }); const result = await response.json(); if (!response.ok) throw new Error(result.message || result.error); render(result); } catch (error) { $('error').textContent = window.location.hostname.endsWith('github.io') ? 'GitHub Pages shows the packaged result. Run `make demo` locally to analyze an uploaded WAV.' : error.message; } finally { button.disabled = false; } });
-    $('reset').addEventListener('click', loadSample);
+    $('example').addEventListener('change', event => loadCase(event.target.value).catch(error => $('error').textContent = error.message));
+    $('analyze').addEventListener('click', async () => { const button = $('analyze'); button.disabled = true; $('error').textContent = ''; try { if (!currentFile) { await loadCase(activeCaseId); return; } const response = await fetch('/api/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ audio_base64: await fileToDataUrl(currentFile), transcript: $('transcript').value, task_type: $('task').value, language: $('language').value }) }); const result = await response.json(); if (!response.ok) throw new Error(result.message || result.error); render(result); } catch (error) { $('error').textContent = window.location.hostname.endsWith('github.io') ? 'GitHub Pages 只展示合成案例；本地运行 `make demo` 后可分析上传音频。' : error.message; } finally { button.disabled = false; } });
+    $('reset').addEventListener('click', () => loadCase(activeCaseId));
     document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab)); document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${tab.dataset.view}`)); }));
-    loadSample().catch(error => $('error').textContent = error.message);
+    loadCases().catch(error => $('error').textContent = error.message);
   </script>
 </body>
 </html>

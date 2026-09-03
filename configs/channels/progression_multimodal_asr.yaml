@@ -1,0 +1,16 @@
+display_name: Longitudinal progression audio with unreviewed ASR
+enabled_states: [S01, S02, S03, S05, S06, S07, S08]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Longitudinal semantic change requires paired task calibration.
+  S10: Longitudinal content-unit change requires a task scoring key.
+  S11: ASR punctuation and utterance segmentation are not reliable enough for syntax scoring.
+  S12: ASR can delete fillers and repairs, so disfluency is not interpreted from generated text.
+  S13: Speaker-role interaction is unavailable.
+  S14: No paired task score is distributed.
+metric_overrides:
+  speech_rate_wpm: {reliability_multiplier: 0.75, confounds_add: [ASR_error, visit_effect]}
+  pronoun_ratio: {reliability_multiplier: 0.60, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, visit_effect]}
+  content_word_ratio: {reliability_multiplier: 0.50, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, visit_effect]}
+  lexical_mattr50: {reliability_multiplier: 0.65, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, visit_effect]}
+  lexical_ttr: {reliability_multiplier: 0.50, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, visit_effect]}

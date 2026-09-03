@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this research harness, please cite the repository and the associated manuscript."
+title: "ADvoice: evidence-governed speech screening research harness"
+type: software
+authors:
+  - family-names: Wen
+    given-names: Jewelina
+version: 0.2.0
+date-released: 2026-09-03
+repository-code: "https://github.com/Jewelina95/advoice-research-harness"

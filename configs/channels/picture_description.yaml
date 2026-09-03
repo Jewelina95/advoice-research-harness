@@ -1,0 +1,8 @@
+display_name: Picture description with audio and human transcript
+enabled_states: [S01, S02, S03, S05, S06, S07, S08, S11, S12]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Semantic coherence remains planned until task relevance and drift scoring are human-validated.
+  S10: Standard picture-content units have not yet been encoded in this harness.
+  S13: Interaction is not a target construct for the picture-description response.
+  S14: A validated task scoring key is not available in the local release.

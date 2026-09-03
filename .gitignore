@@ -13,3 +13,10 @@ runs/
 reports/latest/
 reports/latest_run.json
 *.log
+*.egg-info/
+.env
+.env.*
+demo/output/*
+!demo/output/synthetic_case_result.json
+*.wav
+!demo/assets/synthetic_picture_description.wav

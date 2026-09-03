@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only diagnostic Agent tool registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tools", "default_timeout_ms", "max_retries"],
+  "properties": {
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "read_only", "input_fields", "output_schema", "failure_codes"],
+        "properties": {
+          "name": {"enum": ["inspect_quality", "list_states", "inspect_state", "inspect_metric", "inspect_segment", "compare_tasks", "inspect_prior", "submit_candidate_decision"]},
+          "read_only": {"type": "boolean"},
+          "input_fields": {"type": "array", "items": {"type": "string"}},
+          "output_schema": {"type": "string"},
+          "failure_codes": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "default_timeout_ms": {"type": "integer", "minimum": 1},
+    "max_retries": {"type": "integer", "minimum": 0, "maximum": 2}
+  }
+}

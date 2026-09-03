@@ -1,7 +1,14 @@
 metrics:
+  # Quality-control variables never add disease risk directly.
   - {id: duration_sec, state: QC, branch: qc, direction: 0, reliability: 0.99, role: qc_only, report_permission: false, confounds: [task_duration]}
+  - {id: original_duration_sec, state: QC, branch: qc, direction: 0, reliability: 0.99, role: qc_only, report_permission: false, confounds: [task_duration]}
   - {id: clipping_fraction, state: QC, branch: qc, direction: 1, reliability: 0.95, role: qc_only, report_permission: false, confounds: [recording_device]}
   - {id: snr_proxy_db, state: QC, branch: qc, direction: -1, reliability: 0.80, role: qc_only, report_permission: false, confounds: [background_noise, recording_device]}
+  - {id: role_coverage_fraction, state: QC, branch: qc, direction: 0, reliability: 0.90, role: qc_only, report_permission: false, confounds: [speaker_diarization]}
+  - {id: transcript_available, state: QC, branch: qc, direction: 0, reliability: 0.99, role: qc_only, report_permission: false, confounds: [transcript_availability]}
+  - {id: word_count, state: QC, branch: qc, direction: 0, reliability: 0.90, role: qc_only, report_permission: false, confounds: [task_duration, prompt_count, transcript_completeness]}
+
+  # Clinically interpretable acoustic-behaviour evidence.
   - {id: silence_fraction, state: S01, branch: speech_behavior, direction: 1, reliability: 0.85, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_duration]}
   - {id: long_pause_rate_min, state: S01, branch: speech_behavior, direction: 1, reliability: 0.82, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_type]}
   - {id: pause_mean_sec, state: S01, branch: speech_behavior, direction: 1, reliability: 0.80, role: clinical_support, report_permission: true, confounds: [vad_threshold]}
@@ -9,7 +16,10 @@ metrics:
   - {id: voiced_fraction, state: S02, branch: speech_behavior, direction: -1, reliability: 0.84, role: clinical_support, report_permission: true, confounds: [task_type, microphone_gain]}
   - {id: speech_run_mean_sec, state: S02, branch: speech_behavior, direction: -1, reliability: 0.78, role: clinical_support, report_permission: true, confounds: [vad_threshold, task_type]}
   - {id: speech_run_rate_min, state: S02, branch: speech_behavior, direction: 1, reliability: 0.72, role: clinical_support, report_permission: true, confounds: [task_type]}
-  - {id: speech_run_cv, state: S03, branch: speech_behavior, direction: 1, reliability: 0.74, role: clinical_support, report_permission: true, confounds: [task_type]}
+  - {id: speech_rate_wpm, state: S02, branch: speech_behavior, direction: -1, reliability: 0.82, role: clinical_support, report_permission: true, confounds: [task_type, transcript_quality]}
+  - {id: speech_run_cv, state: S03, branch: speech_behavior, direction: 1, reliability: 0.74, role: clinical_support, report_permission: true, confounds: [task_type, vad_threshold]}
+
+  # Device-sensitive acoustic evidence is auxiliary and is never presented as a disease mechanism.
   - {id: rms_db_mean, state: S04, branch: auxiliary_acoustic, direction: 0, reliability: 0.65, role: model_auxiliary, report_permission: false, confounds: [microphone_gain, distance]}
   - {id: rms_db_std, state: S04, branch: auxiliary_acoustic, direction: 0, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [microphone_gain]}
   - {id: f0_median_hz, state: S05, branch: auxiliary_acoustic, direction: 0, reliability: 0.62, role: model_auxiliary, report_permission: false, confounds: [sex, pitch_tracking]}
@@ -20,3 +30,16 @@ metrics:
   - {id: spectral_rolloff_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [recording_device]}
   - {id: spectral_flatness_mean, state: S06, branch: auxiliary_acoustic, direction: 0, reliability: 0.66, role: model_auxiliary, report_permission: false, confounds: [noise]}
 
+  # Language and interaction metrics follow the enabled 7.16 evidence set. Coarse proxies are marked cautiously.
+  - {id: pronoun_ratio, state: S07, branch: language, direction: 1, reliability: 0.78, role: clinical_support, report_permission: true, confounds: [language, transcript_quality, task_type]}
+  - {id: content_word_ratio, state: S07, branch: language, direction: -1, reliability: 0.62, role: cautious_support, report_permission: false, confounds: [language, pos_proxy, transcript_quality]}
+  - {id: lexical_mattr50, state: S08, branch: language, direction: -1, reliability: 0.86, role: clinical_support, report_permission: true, confounds: [language, transcript_quality, sample_length]}
+  - {id: lexical_ttr, state: S08, branch: language, direction: -1, reliability: 0.55, role: model_auxiliary, report_permission: false, confounds: [sample_length, transcript_quality]}
+  - {id: mean_utterance_words, state: S11, branch: language, direction: -1, reliability: 0.72, role: cautious_support, report_permission: true, confounds: [segmentation, language, transcript_quality]}
+  - {id: filler_rate_100w, state: S12, branch: language, direction: 1, reliability: 0.64, role: cautious_support, report_permission: true, confounds: [language, habitual_speech, transcript_quality]}
+  - {id: repair_rate_100w, state: S12, branch: language, direction: 1, reliability: 0.76, role: clinical_support, report_permission: true, confounds: [CHAT_coding, transcript_quality]}
+  - {id: patient_turn_share, state: S13, branch: interaction, direction: -1, reliability: 0.80, role: clinical_support, report_permission: true, confounds: [interview_protocol, role_annotation]}
+  - {id: picture_uncertainty_rate_100w, state: S07, branch: language, direction: 1, reliability: 0.62, role: model_auxiliary, report_permission: false, confounds: [ASR_error, task_type, language]}
+  - {id: picture_information_density, state: S10, branch: language, direction: -1, reliability: 0.78, role: model_auxiliary, report_permission: false, confounds: [ASR_error, task_scoring_key, language]}
+  - {id: picture_content_redundancy, state: S12, branch: language, direction: 1, reliability: 0.68, role: model_auxiliary, report_permission: false, confounds: [ASR_error, task_type, sample_length]}
+  - {id: picture_content_unit_coverage, state: S14, branch: task_performance, direction: -1, reliability: 0.82, role: model_auxiliary, report_permission: false, confounds: [ASR_error, task_scoring_key, language]}

@@ -1,0 +1,18 @@
+dataset_id: IAEAV
+display_name: IAEAV Spanish clinical interviews
+raw_path: data/raw/IAEAV
+source_globs: [transcripts_json/*.json, audio/**/*.wav, extracted/audio_*/**/*.wav]
+language: es
+channel: clinical_interview
+channel_profile: clinical_interview
+task_type: structured_clinical_interview
+unit_of_analysis: subject
+labels: [HC, AD]
+positive_class: AD
+test_size: 0.20
+split_seed: 20260813
+split_policy: deterministic_balanced_acquisition_group_holdout
+speaker_roles: pac_segments
+transcripts: distributed_patient_transcript
+target_description: 二分类认知筛查（健康对照、阿尔茨海默病）
+agent_evaluation_cap: 48

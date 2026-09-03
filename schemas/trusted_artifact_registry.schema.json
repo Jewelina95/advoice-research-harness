@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://advoice.local/schemas/trusted_artifact_registry.schema.json",
+  "title": "Trusted training artifact registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runs"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "config_hash", "data_snapshot_hash", "skill_hash", "reference_artifacts", "metric_validation_artifacts"],
+        "properties": {
+          "run_id": {"type": "string"},
+          "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "data_snapshot_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "skill_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "reference_artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["artifact_id", "artifact_path", "artifact_hash", "fold_id", "population", "status"],
+              "properties": {
+                "artifact_id": {"type": "string"}, "artifact_path": {"type": "string", "pattern": "^tests/fixtures/trusted_artifacts/[A-Za-z0-9_.-]+$"}, "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "fold_id": {"type": "string"}, "population": {"type": "string"}, "status": {"const": "frozen_training_only"}
+              }
+            }
+          },
+          "metric_validation_artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["metric_validation_id", "artifact_path", "artifact_hash", "metric_id", "task_family", "language", "method_version", "status"],
+              "properties": {
+                "metric_validation_id": {"type": "string"}, "artifact_path": {"type": "string"}, "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "metric_id": {"type": "string"}, "task_family": {"type": "string"}, "language": {"type": "string"},
+                "method_version": {"type": "string"}, "status": {"const": "validated"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

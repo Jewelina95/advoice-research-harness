@@ -1,0 +1,31 @@
+{
+  "skill_id": "ad_evidence_diagnostic",
+  "version": "0.1.0-initial",
+  "intended_use": "research cognitive screening and referral support",
+  "prohibited_use": [
+    "biological Alzheimer disease diagnosis",
+    "unsupported disease staging",
+    "treatment prescription"
+  ],
+  "entrypoint": "SKILL.md",
+  "resources": [
+    "MEDICAL_SCOPE.md",
+    "TASK_OBSERVABILITY.md",
+    "STATE_KNOWLEDGE.md",
+    "CONFOUND_AND_DIFFERENTIAL.md",
+    "EVIDENCE_HIERARCHY.md",
+    "COGNITIVE_ROLLBACK_PROTOCOL.md",
+    "REPORT_CONTRACT.md",
+    "REPORT_PERMISSION_POLICY.md",
+    "LABEL_LEAKAGE_POLICY.md",
+    "EVIDENCE_REGISTRY.csv",
+    "TOOLS.json",
+    "REFERENCES.md"
+  ],
+  "output_schema": "../../schemas/agent_decision.schema.json",
+  "case_schema": "../../schemas/case_evidence_package.schema.json",
+  "trace_schema": "../../schemas/cognitive_trace.schema.json",
+  "schema_compatibility": "8.27-contract-1.1",
+  "knowledge_cutoff": "2026-08-27",
+  "evidence_registry_status": "initial; metric-level primary-source verification required before training"
+}

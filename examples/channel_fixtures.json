@@ -1,0 +1,38 @@
+{
+  "schema_version": "public-channel-fixtures-v1",
+  "notice": "Synthetic metadata only. No participant data or diagnostic label is included.",
+  "cases": [
+    {
+      "case_id": "demo_picture_en",
+      "channel": "picture_description",
+      "task_type": "cookie_theft_picture_description",
+      "language": "en",
+      "available_modalities": ["audio", "transcript"],
+      "expected_states": ["S01", "S02", "S07", "S08", "S09", "S10", "S14"]
+    },
+    {
+      "case_id": "demo_interview_es",
+      "channel": "clinical_interview",
+      "task_type": "structured_clinical_interview",
+      "language": "es",
+      "available_modalities": ["patient_audio", "role_aligned_transcript"],
+      "expected_states": ["S01", "S02", "S11", "S12", "S13"]
+    },
+    {
+      "case_id": "demo_multitask_en",
+      "channel": "structured_multitask",
+      "task_type": "multi_task_cognitive_speech",
+      "language": "en",
+      "available_modalities": ["task_audio", "task_transcript", "task_identity"],
+      "expected_states": ["S01", "S02", "S07", "S08", "S09", "S10", "S14"]
+    },
+    {
+      "case_id": "demo_long_picture_zh",
+      "channel": "structured_task_audio",
+      "task_type": "long_picture_description",
+      "language": "zh",
+      "available_modalities": ["audio", "asr_transcript"],
+      "expected_states": ["S01", "S02", "S07", "S08", "S09", "S10"]
+    }
+  ]
+}

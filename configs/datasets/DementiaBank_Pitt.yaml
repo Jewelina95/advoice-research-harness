@@ -1,0 +1,20 @@
+dataset_id: DementiaBank_Pitt
+display_name: DementiaBank Pitt multi-task cohort
+raw_path: data/raw/DementiaBank_TalkBank_media
+source_globs: [talkbank_media_pairing_manifest.csv, Pitt_noise_removed/**/*.wav, Pitt_noise_removed/**/*.mp3]
+language: en
+channel: neuropsychological_multitask
+channel_profile: talkbank_multitask
+task_type: talkbank_multitask
+primary_task: cookie
+require_patient_audio_intervals: true
+unit_of_analysis: participant
+labels: [HC, AD]
+positive_class: AD
+test_size: 0.20
+split_seed: 20260813
+split_policy: deterministic_participant_disjoint_holdout
+speaker_roles: CHAT_PAR_INV
+transcripts: distributed_CHAT
+target_description: 二分类认知筛查（健康对照、阿尔茨海默病）
+agent_evaluation_cap: 60

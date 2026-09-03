@@ -1,0 +1,17 @@
+dataset_id: PROCESS_2
+display_name: PROCESS Challenge 2 multi-task speech
+raw_path: data/raw/PROCESS-2/data
+source_globs: [meta-info.csv, '**/*.wav', '**/*.txt']
+language: en
+channel: structured_multitask
+channel_profile: structured_multitask
+task_type: multi_task_cognitive_speech
+tasks: [CTD, PFT, SFT]
+unit_of_analysis: subject
+labels: [HC, MCI, AD]
+positive_class: AD
+split_policy: official_train_test_subject_disjoint
+speaker_roles: task_recording
+transcripts: distributed_text
+target_description: 三分类认知筛查（健康对照、轻度认知障碍、痴呆）
+agent_evaluation_cap: 80

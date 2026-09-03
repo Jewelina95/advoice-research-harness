@@ -1,0 +1,18 @@
+dataset_id: PREPARE_DrivenData
+display_name: NIA PREPARE challenge
+raw_path: data/raw/DementiaBank_Challenges/PREPARE_DrivenData
+source_globs: [metadata.csv, train_labels.csv, test_labels.csv, train_audios.zip, test_audios.zip]
+reference_files: [references/speechcare/prepare_task_labels.csv]
+language: multilingual
+channel: structured_task_audio
+channel_profile: structured_task_asr
+task_type: prepare_cognitive_task_audio
+task_label_source: SpeechCARE released PREPARE task labels (repository commit bf1281d2e6e3617b3c81d16220a96e02646a570d)
+unit_of_analysis: subject
+labels: [HC, MCI, AD]
+positive_class: AD
+split_policy: official_train_test_subject_disjoint
+speaker_roles: unavailable
+transcripts: generated_asr_only
+target_description: 三分类认知筛查（健康对照、轻度认知障碍、阿尔茨海默病及相关障碍）
+agent_evaluation_cap: 412

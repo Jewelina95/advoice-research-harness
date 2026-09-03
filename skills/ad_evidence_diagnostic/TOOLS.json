@@ -1,0 +1,13 @@
+{
+  "default_timeout_ms": 5000,
+  "max_retries": 1,
+  "tools": [
+    {"name": "inspect_quality", "read_only": true, "input_fields": ["case_id"], "output_schema": "quality_summary", "failure_codes": ["CASE_NOT_FOUND"]},
+    {"name": "list_states", "read_only": true, "input_fields": ["case_id", "session_id", "task_id"], "output_schema": "state_cards[]", "failure_codes": ["CASE_NOT_FOUND", "TASK_NOT_FOUND"]},
+    {"name": "inspect_state", "read_only": true, "input_fields": ["case_id", "state_id", "session_id", "task_id"], "output_schema": "state_card", "failure_codes": ["STATE_NOT_FOUND", "STATE_UNAVAILABLE"]},
+    {"name": "inspect_metric", "read_only": true, "input_fields": ["case_id", "evidence_id"], "output_schema": "metric_evidence", "failure_codes": ["EVIDENCE_NOT_FOUND", "CASE_MISMATCH"]},
+    {"name": "inspect_segment", "read_only": true, "input_fields": ["case_id", "segment_id"], "output_schema": "segment", "failure_codes": ["SEGMENT_NOT_FOUND", "ASSET_UNAVAILABLE"]},
+    {"name": "compare_tasks", "read_only": true, "input_fields": ["case_id", "task_ids", "state_ids"], "output_schema": "task_comparison", "failure_codes": ["TASK_NOT_FOUND", "STATE_UNAVAILABLE"]},
+    {"name": "submit_candidate_decision", "read_only": false, "input_fields": ["agent_decision"], "output_schema": "validator_result", "failure_codes": ["SCHEMA_INVALID", "MEDICAL_RULE_VIOLATION", "CLASS_SCORE_MISMATCH"]}
+  ]
+}

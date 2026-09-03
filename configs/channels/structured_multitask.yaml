@@ -1,0 +1,8 @@
+display_name: Structured multi-task audio with human transcripts
+enabled_states: [S01, S02, S03, S05, S06, S07, S08, S11, S12]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Semantic scoring requires a separate validated reference for each task.
+  S10: Content-unit scoring requires a separate validated key for each task.
+  S13: These recordings do not provide a common interviewer-role protocol.
+  S14: Task-specific scoring keys have not yet been encoded.

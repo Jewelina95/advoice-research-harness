@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Supervised module B correction and calibration output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "config_hash", "data_snapshot_hash", "skill_hash", "module_a_output_id", "agent_decision_id", "validator_result_id", "output_id", "case_id", "endpoint_type", "eligible", "gate", "applied_correction", "calibrated_probabilities", "calibrated_value", "calibrated_interval", "fallback_reason", "fold_provenance", "model_version"],
+  "properties": {
+    "run_id": {"type": "string"}, "config_hash": {"type": "string"},
+    "data_snapshot_hash": {"type": "string"}, "skill_hash": {"type": "string"},
+    "module_a_output_id": {"type": "string"}, "agent_decision_id": {"type": "string"},
+    "validator_result_id": {"type": "string"},
+    "output_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "endpoint_type": {"enum": ["binary_classification", "multiclass_classification", "ordinal_classification", "continuous_regression", "paired_change_classification", "paired_change_regression"]},
+    "eligible": {"type": "boolean"},
+    "gate": {"type": "number", "minimum": 0, "maximum": 1},
+    "applied_correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correction_type", "class_logit_deltas", "value_delta"],
+      "properties": {
+        "correction_type": {"enum": ["none", "class_logit_delta", "value_delta"]},
+        "class_logit_deltas": {"type": ["object", "null"], "additionalProperties": {"type": "number"}},
+        "value_delta": {"type": ["number", "null"]}
+      }
+    },
+    "calibrated_probabilities": {"type": ["object", "null"], "additionalProperties": {"type": "number"}},
+    "calibrated_value": {"type": ["number", "null"]},
+    "calibrated_interval": {"type": ["array", "null"], "items": {"type": "number"}},
+    "fallback_reason": {"type": ["string", "null"]},
+    "fold_provenance": {"type": "string"},
+    "model_version": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"applied_correction": {"properties": {"correction_type": {"const": "none"}}}}},
+      "then": {"properties": {"applied_correction": {"properties": {"class_logit_deltas": {"type": "null"}, "value_delta": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"applied_correction": {"properties": {"correction_type": {"const": "class_logit_delta"}}}}},
+      "then": {
+        "properties": {
+          "endpoint_type": {"enum": ["binary_classification", "multiclass_classification", "ordinal_classification", "paired_change_classification"]},
+          "applied_correction": {"properties": {"class_logit_deltas": {"type": "object", "minProperties": 2}, "value_delta": {"type": "null"}}},
+          "calibrated_probabilities": {"type": "object"},
+          "calibrated_value": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"applied_correction": {"properties": {"correction_type": {"const": "value_delta"}}}}},
+      "then": {
+        "properties": {
+          "endpoint_type": {"enum": ["continuous_regression", "paired_change_regression"]},
+          "applied_correction": {"properties": {"class_logit_deltas": {"type": "null"}, "value_delta": {"type": "number"}}},
+          "calibrated_probabilities": {"type": "null"},
+          "calibrated_value": {"type": "number"}
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+display_name: Audio-only structured or picture-description task
+enabled_states: [S01, S02, S03, S05, S06]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S07: No validated human transcript is available for model training.
+  S08: No validated human transcript is available for model training.
+  S09: No task-validated semantic algorithm is available.
+  S10: No task-specific content-unit scoring key is available.
+  S11: No validated human transcript is available for model training.
+  S12: No validated human transcript is available for model training.
+  S13: Speaker roles and interview turns are unavailable.
+  S14: No task-specific scoring key is available.

@@ -1,0 +1,20 @@
+dataset_id: ADReSSo_2021_progression
+display_name: ADReSSo 2021 cognitive-decline progression task
+raw_path: data/raw/DementiaBank_Challenges
+source_globs: [_extracted_managed/ADReSSo_2021_progression_train/**/*.wav, _extracted_managed/ADReSSo_2021_progression_train/**/*.csv]
+managed_train_root: _extracted_managed/ADReSSo_2021_progression_train/ADReSSo21/progression/train
+folder_labels: {no_decline: no_decline, decline: decline}
+language: en
+channel: longitudinal_progression_audio
+channel_profile: progression_multimodal_asr
+task_type: longitudinal_picture_description
+unit_of_analysis: subject
+labels: [no_decline, decline]
+positive_class: decline
+test_size: 0.25
+split_seed: 20260813
+split_policy: deterministic_holdout_from_official_training_set
+speaker_roles: distributed_segmentation
+transcripts: generated_asr_only
+target_description: 二分类纵向认知变化筛查（未下降、下降）
+agent_evaluation_cap: 26

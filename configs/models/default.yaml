@@ -7,9 +7,101 @@ ours:
   c_grid: [0.01, 0.1, 1.0, 10.0]
   max_iter: 4000
   branch_gate_l2: 0.05
+  min_branch_cv_auroc: 0.52
+  quality_prior_strength: 4.0
+  task_specific_min_cv_gain: 0.0
   auxiliary_weight_cap: 0.35
   calibration: multinomial_logistic_stacking
+  qc_orthogonalization:
+    enabled: true
+    method: fold_internal_ridge_residualization
+    alpha: 1.0
+    features:
+      - original_duration_sec
+      - clipping_fraction
+      - snr_proxy_db
+      - role_coverage_fraction
+      - rms_db_mean
+      - rms_db_std
+      - audio_reliability
+      - text_reliability
+condition_c:
+  architecture: module_a_plus_cognitive_evidence_agent_plus_module_b
+  base_module: oof_selected_logistic_or_dynamic_reliability_gate
+  correction_module: cross_fitted_bounded_logistic_residual
+  c_grid: [0.01, 0.1, 1.0, 10.0]
+  alpha_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+  max_iter: 4000
+  minimum_text_coverage: 0.20
+  max_agent_evidence: 8
+  selection_primary: macro_f1
+  selection_tiebreaker: macro_auroc
+  risk_gate: evidence_coverage_x_reliability_x_one_minus_confound
+  fallback: base_probability_when_alpha_or_gate_is_zero
+  small_sample_correction_guard:
+    enabled: true
+    maximum_training_subjects: 80
+    minimum_noninferior_fold_fraction: 0.60
+    minimum_strict_improvement_fold_fraction: 0.40
+    noninferiority_tolerance: 0.000001
+  minimum_branch_cv_auroc: 0.52
+  qc_shortcut_guard:
+    enabled: true
+    macro_auroc_threshold: 0.75
+    action: exclude_model_only_deep_audio_experts
+  dynamic_gate:
+    enabled: true
+    hidden_dimension: 48
+    epochs: 60
+    batch_size: 64
+    learning_rate: 0.002
+    weight_decay: 0.002
+    reliability_floor: 0.05
+    seed: 20260827
+    device: cpu
+    selection_primary: macro_f1
+    selection_tiebreaker: macro_auroc
+    minimum_offset_direction_agreement: 0.80
+    minimum_offset_supporting_folds: 3
+  deep_text:
+    enabled: true
+    # Same pretrained text backbone as SpeechCARE for matched-encoder isolation.
+    model: Alibaba-NLP/gte-multilingual-base
+    revision: 9bbca17d9273fd0d03d5725c7a4b0f6b45142062
+    code_revision: 40ced75c3017eb27626c9d4ea981bde21a2662f4
+    trust_remote_code: true
+    explicit_position_ids: true
+    text_prefix: ""
+    max_length: 512
+    batch_size: 4
+    device: auto
+    minimum_training_subjects: 100
+  deep_audio:
+    enabled: true
+    model: utter-project/mHuBERT-147
+    revision: 7ad3fc0bc5106c58c9c13526abccad527150d135
+    sample_rate: 16000
+    lowpass_hz: 7999.0
+    window_seconds: 5.0
+    overlap: 0.25
+    max_subject_seconds: 30.0
+    batch_size: 8
+    device: auto
+    minimum_training_subjects: 80
+    minimum_audio_coverage: 0.80
+    segment_attention:
+      enabled: true
+      hidden_dimension: 128
+      epochs: 30
+      batch_size: 64
+      learning_rate: 0.001
+      weight_decay: 0.001
+      seed: 20260827
+      device: cpu
+  demographic_context:
+    age_bins: [0, 66, 81, 200]
+    minimum_age_coverage: 0.50
+  class_offset_grid: [-1.0, -0.5, 0.0, 0.5, 1.0]
 cross_validation:
   folds: 5
   scoring: roc_auc_ovr_weighted
-

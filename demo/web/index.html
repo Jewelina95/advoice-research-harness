@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADvoice Reproducibility Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17212b;
+      --muted: #5f6e7d;
+      --line: #cfd8df;
+      --paper: #f7f9fa;
+      --white: #fff;
+      --green: #28755b;
+      --green-soft: #e8f2ed;
+      --blue: #346aa0;
+      --blue-soft: #e9f0f8;
+      --amber: #a26715;
+      --amber-soft: #fbf1df;
+      --red: #9a4545;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+    header { border-bottom: 1px solid var(--line); background: var(--white); }
+    .header-inner, main { width: min(1320px, calc(100% - 36px)); margin: 0 auto; }
+    .header-inner { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 720; }
+    h2 { margin: 0 0 16px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 14px; }
+    .subtitle, .meta, .hint { color: var(--muted); }
+    .subtitle { margin-top: 2px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; color: var(--green); }
+    .status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
+    main { padding: 26px 0 60px; }
+    .notice { border-left: 4px solid var(--amber); background: var(--amber-soft); padding: 12px 16px; margin-bottom: 22px; }
+    .workspace { display: grid; grid-template-columns: minmax(330px, .72fr) minmax(560px, 1.28fr); gap: 20px; align-items: start; }
+    .panel { background: var(--white); border: 1px solid var(--line); border-radius: 6px; }
+    .panel-head { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .panel-body { padding: 18px; }
+    label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 680; }
+    select, textarea, input[type="file"] { width: 100%; border: 1px solid #aebbc5; border-radius: 4px; background: #fff; color: var(--ink); font: inherit; }
+    select, input[type="file"] { min-height: 42px; padding: 8px 10px; }
+    textarea { min-height: 148px; padding: 10px 12px; resize: vertical; }
+    .field { margin-bottom: 16px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button { min-height: 42px; border: 1px solid transparent; border-radius: 4px; padding: 0 16px; font: inherit; font-weight: 700; cursor: pointer; }
+    button.primary { background: var(--green); color: #fff; }
+    button.secondary { border-color: #9dacb6; background: #fff; color: var(--ink); }
+    button:disabled { opacity: .55; cursor: wait; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    audio { width: 100%; height: 42px; }
+    canvas { width: 100%; height: 92px; display: block; background: #f2f5f6; border: 1px solid var(--line); border-radius: 4px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .summary > div { min-height: 82px; padding: 14px 16px; border-right: 1px solid var(--line); }
+    .summary > div:last-child { border-right: 0; }
+    .summary strong { display: block; font-size: 22px; line-height: 1.2; }
+    .summary span { color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 18px; }
+    .tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
+    .tab.active { color: var(--ink); border-bottom-color: var(--green); }
+    .view { display: none; padding: 18px; }
+    .view.active { display: block; }
+    .state-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .state { border: 1px solid var(--line); border-top: 4px solid var(--blue); border-radius: 5px; padding: 14px; }
+    .state-score { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 10px 0; }
+    .state-score strong { font-size: 26px; }
+    .meter { height: 8px; background: #e6ebee; overflow: hidden; border-radius: 4px; }
+    .meter > span { display: block; height: 100%; background: var(--blue); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 700; background: #f6f8f9; }
+    .trace { width: 100%; min-height: 330px; overflow-x: auto; }
+    .trace svg { min-width: 760px; width: 100%; height: 330px; }
+    .segment-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 6px; }
+    .segment { min-height: 70px; border: 1px solid var(--line); border-bottom: 5px solid var(--blue); padding: 8px; font-size: 11px; }
+    .empty { padding: 56px 20px; text-align: center; color: var(--muted); }
+    .error { color: var(--red); font-weight: 650; margin-top: 12px; }
+    footer { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    @media (max-width: 980px) {
+      .workspace { grid-template-columns: 1fr; }
+      .state-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .header-inner, main { width: min(100% - 22px, 1320px); }
+      .header-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+      .field-row, .summary { grid-template-columns: 1fr 1fr; }
+      .summary > div:nth-child(2) { border-right: 0; }
+      .summary > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .tabs { overflow-x: auto; }
+      .tab { white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div><h1>ADvoice reproducibility demo</h1><div class="subtitle">Audio → MetricEvidence → cognitive StateCards → traceable evidence graph</div></div>
+      <div class="status">Local research runtime</div>
+    </div>
+  </header>
+  <main>
+    <div class="notice"><strong>Research demonstration only.</strong> The packaged recording is synthetic and contains no patient data. Demo references are illustrative, not clinical norms; this page does not produce an AD diagnosis.</div>
+    <div class="workspace">
+      <section class="panel">
+        <div class="panel-head"><h2>Case input</h2><div class="meta">Run the packaged sample or upload a mono/stereo WAV under 20 MB.</div></div>
+        <div class="panel-body">
+          <div class="field"><label for="audio">Audio recording</label><input id="audio" type="file" accept="audio/wav,.wav"><div class="hint" id="audio-name">Packaged synthetic picture-description sample</div></div>
+          <div class="field"><canvas id="waveform" width="900" height="184"></canvas></div>
+          <div class="field"><audio id="player" controls></audio></div>
+          <div class="field-row">
+            <div class="field"><label for="task">Task</label><select id="task"><option value="cookie_theft_picture_description">Picture description</option><option value="structured_clinical_interview">Structured interview</option><option value="spontaneous_speech">Spontaneous speech</option></select></div>
+            <div class="field"><label for="language">Language</label><select id="language"><option value="en">English</option><option value="zh">Chinese</option><option value="es">Spanish</option></select></div>
+          </div>
+          <div class="field"><label for="transcript">Transcript</label><textarea id="transcript">The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.</textarea></div>
+          <div class="actions"><button class="primary" id="analyze">Run evidence analysis</button><button class="secondary" id="reset">Load packaged sample</button></div>
+          <div id="error" class="error" aria-live="polite"></div>
+        </div>
+      </section>
+      <section class="panel" id="results">
+        <div class="panel-head"><h2>Traceable output</h2><div class="meta" id="run-meta">Waiting for analysis</div></div>
+        <div id="empty" class="empty">Run the sample to inspect metrics, states and segment-level provenance.</div>
+        <div id="result-content" hidden>
+          <div class="summary" id="summary"></div>
+          <div class="tabs">
+            <button class="tab active" data-view="states">State cards</button>
+            <button class="tab" data-view="evidence">Metric evidence</button>
+            <button class="tab" data-view="trace">Trace map</button>
+            <button class="tab" data-view="segments">Segments</button>
+          </div>
+          <div class="view active" id="view-states"><div class="state-grid" id="states"></div></div>
+          <div class="view" id="view-evidence"><div style="overflow:auto"><table><thead><tr><th>Metric</th><th>Observed</th><th>Demo reference</th><th>Directional z</th><th>Reliability</th><th>Source</th></tr></thead><tbody id="evidence"></tbody></table></div></div>
+          <div class="view" id="view-trace"><div class="trace" id="trace"></div></div>
+          <div class="view" id="view-segments"><div class="segment-strip" id="segments"></div></div>
+        </div>
+      </section>
+    </div>
+    <footer>ADvoice public harness · protected clinical corpora are mounted locally and are never distributed in this repository · predictions from the full research pipeline require the corresponding licensed datasets and frozen run manifests.</footer>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentFile = null;
+    let sampleBuffer = null;
+    const staticAudioUrl = new URL('../assets/synthetic_picture_description.wav', window.location.href).href;
+    const staticResultUrl = new URL('../output/synthetic_case_result.json', window.location.href).href;
+
+    async function fetchSampleResult() {
+      try { const response = await fetch('/api/sample'); if (response.ok) return await response.json(); } catch (_) {}
+      const response = await fetch(staticResultUrl); if (!response.ok) throw new Error('Packaged demo result is unavailable.'); return response.json();
+    }
+
+    async function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+    }
+    async function drawWaveform(source) {
+      const buffer = source instanceof File ? await source.arrayBuffer() : await fetch(source).then(r => r.arrayBuffer());
+      const audioContext = new AudioContext();
+      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
+      const data = decoded.getChannelData(0);
+      const canvas = $('waveform'); const ctx = canvas.getContext('2d'); const w = canvas.width; const h = canvas.height;
+      ctx.clearRect(0, 0, w, h); ctx.fillStyle = '#f2f5f6'; ctx.fillRect(0, 0, w, h); ctx.strokeStyle = '#28755b'; ctx.lineWidth = 2; ctx.beginPath();
+      const step = Math.max(1, Math.floor(data.length / w));
+      for (let x = 0; x < w; x++) { let min = 1, max = -1; for (let i = x * step; i < Math.min((x + 1) * step, data.length); i++) { min = Math.min(min, data[i]); max = Math.max(max, data[i]); } ctx.moveTo(x, (1 + min) * h / 2); ctx.lineTo(x, (1 + max) * h / 2); }
+      ctx.stroke(); ctx.strokeStyle = '#9dacb6'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+      await audioContext.close();
+    }
+    function fmt(value, digits = 2) { return value === null || value === undefined ? 'N/A' : Number(value).toFixed(digits); }
+    function render(result) {
+      $('empty').hidden = true; $('result-content').hidden = false; $('run-meta').textContent = `${result.case.case_id} · ${fmt(result.case.duration_sec, 1)} s · ${result.case.language}`;
+      $('summary').innerHTML = `<div><strong>${result.metric_evidence.length}</strong><span>evidence objects</span></div><div><strong>${result.state_cards.length}</strong><span>cognitive states</span></div><div><strong>${result.segments.length}</strong><span>audio segments</span></div><div><strong>${fmt(result.quality.audio_reliability)}</strong><span>audio reliability</span></div>`;
+      $('states').innerHTML = result.state_cards.map(s => `<article class="state"><h3>${s.id} · ${s.name}</h3><div class="meta">${s.clinical_question}</div><div class="state-score"><strong>${fmt(s.score)}</strong><span>confidence ${fmt(s.confidence)}</span></div><div class="meter"><span style="width:${Math.max(0, Math.min(100, s.confidence * 100))}%"></span></div><div class="hint" style="margin-top:10px">${s.evidence_ids.join(' · ')}</div></article>`).join('');
+      $('evidence').innerHTML = result.metric_evidence.map(e => `<tr><td><strong>${e.metric_id}</strong><br><span class="hint">${e.id}</span></td><td>${fmt(e.value, 3)} ${e.unit}</td><td>${fmt(e.reference_median, 3)} ± ${fmt(e.reference_scale, 3)}</td><td>${fmt(e.directional_z, 3)}</td><td>${fmt(e.reliability, 3)}</td><td>${e.source}</td></tr>`).join('');
+      $('segments').innerHTML = result.segments.map((s, i) => `<div class="segment" style="border-bottom-color:hsl(${205 - Math.round(s.voiced_fraction * 80)},48%,45%)"><strong>S${i + 1}</strong><br>${fmt(s.start_sec, 1)}–${fmt(s.end_sec, 1)} s<br>voice ${fmt(s.voiced_fraction)}</div>`).join('');
+      const metrics = result.metric_evidence; const states = result.state_cards; const height = 330; const leftX = 140; const rightX = 610; const mGap = height / (metrics.length + 1); const sGap = height / (states.length + 1);
+      const metricY = Object.fromEntries(metrics.map((m, i) => [m.id, (i + 1) * mGap])); const stateY = Object.fromEntries(states.map((s, i) => [s.id, (i + 1) * sGap]));
+      const lines = result.trace.map(t => `<path d="M ${leftX + 150} ${metricY[t.from]} C 410 ${metricY[t.from]}, 420 ${stateY[t.to]}, ${rightX - 85} ${stateY[t.to]}" fill="none" stroke="#b4c0c8" stroke-width="1.5"/>`).join('');
+      const metricNodes = metrics.map(m => `<g><rect x="${leftX}" y="${metricY[m.id] - 15}" width="150" height="30" rx="4" fill="#e9f0f8" stroke="#346aa0"/><text x="${leftX + 8}" y="${metricY[m.id] + 5}" font-size="12" fill="#17212b">${m.metric_id}</text></g>`).join('');
+      const stateNodes = states.map(s => `<g><rect x="${rightX - 85}" y="${stateY[s.id] - 22}" width="210" height="44" rx="4" fill="#e8f2ed" stroke="#28755b"/><text x="${rightX - 73}" y="${stateY[s.id] - 2}" font-size="12" font-weight="700" fill="#17212b">${s.id} · ${s.name}</text><text x="${rightX - 73}" y="${stateY[s.id] + 14}" font-size="11" fill="#5f6e7d">score ${fmt(s.score)} · confidence ${fmt(s.confidence)}</text></g>`).join('');
+      $('trace').innerHTML = `<svg viewBox="0 0 820 ${height}" role="img" aria-label="Metric evidence to cognitive state trace map"><text x="${leftX}" y="18" font-size="12" font-weight="700">MetricEvidence</text><text x="${rightX - 85}" y="18" font-size="12" font-weight="700">StateCards</text>${lines}${metricNodes}${stateNodes}</svg>`;
+    }
+    async function loadSample() {
+      $('error').textContent = ''; currentFile = null; $('audio').value = ''; $('audio-name').textContent = 'Packaged synthetic picture-description sample'; $('player').src = staticAudioUrl; $('transcript').value = 'The boy is reaching for a cookie and the stool is tipping. The mother is washing dishes while the water runs over the sink. The girl is standing beside him and the curtains are moving near the window.';
+      await drawWaveform(staticAudioUrl); const result = await fetchSampleResult(); render(result);
+    }
+    $('audio').addEventListener('change', async (event) => { currentFile = event.target.files[0] || null; if (!currentFile) return; $('audio-name').textContent = currentFile.name; $('player').src = URL.createObjectURL(currentFile); await drawWaveform(currentFile); });
+    $('analyze').addEventListener('click', async () => { const button = $('analyze'); button.disabled = true; $('error').textContent = ''; try { if (!currentFile) { render(await fetchSampleResult()); return; } const response = await fetch('/api/analyze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ audio_base64: await fileToDataUrl(currentFile), transcript: $('transcript').value, task_type: $('task').value, language: $('language').value }) }); const result = await response.json(); if (!response.ok) throw new Error(result.message || result.error); render(result); } catch (error) { $('error').textContent = window.location.hostname.endsWith('github.io') ? 'GitHub Pages shows the packaged result. Run `make demo` locally to analyze an uploaded WAV.' : error.message; } finally { button.disabled = false; } });
+    $('reset').addEventListener('click', loadSample);
+    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab)); document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${tab.dataset.view}`)); }));
+    loadSample().catch(error => $('error').textContent = error.message);
+  </script>
+</body>
+</html>

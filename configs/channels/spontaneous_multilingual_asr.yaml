@@ -1,0 +1,19 @@
+display_name: Spontaneous multilingual speech with unreviewed ASR
+enabled_states: [S01, S02, S03, S06, S07, S08]
+unavailable_reasons:
+  S04: Recording gain is retained as QC/model input, not a clinical state.
+  S05: Prosody requires language- and speaker-specific calibration.
+  S09: There is no common elicitation target for semantic coherence.
+  S10: There is no common content-unit key.
+  S11: ASR punctuation and utterance segmentation are not reliable enough for syntax scoring.
+  S12: ASR can delete fillers and repairs, so disfluency is not interpreted from generated text.
+  S13: Interviewer roles are unavailable.
+  S14: Spontaneous speech has no standard task score.
+metric_overrides:
+  silence_fraction: {reliability_multiplier: 0.80, confounds_add: [speech_context]}
+  long_pause_rate_min: {reliability_multiplier: 0.80, confounds_add: [speech_context]}
+  speech_rate_wpm: {reliability_multiplier: 0.65, confounds_add: [ASR_error, language]}
+  pronoun_ratio: {reliability_multiplier: 0.50, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, language]}
+  content_word_ratio: {reliability_multiplier: 0.45, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, language]}
+  lexical_mattr50: {reliability_multiplier: 0.55, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, language]}
+  lexical_ttr: {reliability_multiplier: 0.45, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, language]}

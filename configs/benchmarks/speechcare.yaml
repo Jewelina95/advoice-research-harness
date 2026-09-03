@@ -1,0 +1,34 @@
+name: SpeechCARE
+publication: SpeechCARE dynamic multimodal modeling for cognitive screening in diverse linguistic and speech task contexts
+doi: 10.1038/s41746-025-02026-x
+url: https://www.nature.com/articles/s41746-025-02026-x
+comparison_rules:
+  - Compare only the same dataset, participant-level split, label space, and metric definition.
+  - Table 2 AUC/F1 values are the paper's mean across 10 runs on the fixed official test set.
+  - The article text reports mean and 95% confidence intervals across 10 runs for micro/weighted AUC and average precision.
+  - ADReSSo values use models fine-tuned exclusively on the ADReSSo training set, not PREPARE zero-shot inference.
+  - A single deterministic ADvoice run is not variance-equivalent to SpeechCARE's 10-run mean.
+prepare_official_test:
+  dataset_id: PREPARE_DrivenData
+  train_n: 1646
+  test_n: 412
+  labels: [HC, MCI, AD]
+  metrics:
+    micro_auroc_ovr: {value: 0.8683, ci_half_width: 0.0046, source: Results, Fig. 1 and Table 2}
+    reported_f1: {value: 0.7211, ci_half_width: 0.0044, source: Table 2; micro-average defined in Methods B.4}
+    weighted_auroc_ovr: {value: 0.8067, ci_half_width: 0.0065, source: Results and Fig. 1}
+    micro_auprc: {value: 0.7473, ci_half_width: 0.0121, source: Results and Fig. 1}
+    weighted_auprc: {value: 0.7350, ci_half_width: 0.0066, source: Results and Fig. 1}
+  table2_reported_metrics:
+    auc_ovr_average_not_explicitly_named: {value: 0.8683, ci_half_width: 0.0046}
+    micro_f1: {value: 0.7211, ci_half_width: 0.0044}
+  validation_metrics:
+    reported_auc_ovr_average_not_explicitly_named: {value: 0.8497, ci_half_width: 0.0157}
+    micro_f1: {value: 0.6812, ci_half_width: 0.0269}
+adresso_2021:
+  dataset_id: ADReSSo_2021_diagnosis
+  protocol: fine_tuned_exclusively_on_official_training_set
+  metrics:
+    auroc: {value: 0.9193, ci_half_width: 0.0092}
+    f1: {value: 0.8508, ci_half_width: 0.0124}
+    accuracy: {value: 0.8662, ci_half_width: 0.0086}

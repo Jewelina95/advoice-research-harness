@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deterministic candidate validation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "config_hash", "data_snapshot_hash", "skill_hash", "validation_id", "case_id", "accepted", "violation_codes", "invalidated_evidence_ids", "invalidated_state_ids", "rollback_required", "fallback_required", "validated_agent_decision_id"],
+  "properties": {
+    "run_id": {"type": "string"}, "config_hash": {"type": "string"},
+    "data_snapshot_hash": {"type": "string"}, "skill_hash": {"type": "string"},
+    "validation_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "accepted": {"type": "boolean"},
+    "violation_codes": {"type": "array", "items": {"type": "string"}},
+    "invalidated_evidence_ids": {"type": "array", "items": {"type": "string"}},
+    "invalidated_state_ids": {"type": "array", "items": {"type": "string"}},
+    "rollback_required": {"type": "boolean"},
+    "fallback_required": {"type": "boolean"},
+    "validated_agent_decision_id": {"type": ["string", "null"]}
+  }
+}

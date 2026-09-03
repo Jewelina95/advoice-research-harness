@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Clinician-facing report data",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "config_hash", "data_snapshot_hash", "skill_hash", "report_id", "decision_id", "case_id", "impression_code", "decision_action", "reported_class", "reported_probability", "reported_value", "render_template_id", "screening_impression", "main_findings", "counterevidence", "collection_limits", "recommendations", "trace_map"],
+  "properties": {
+    "run_id": {"type": "string"}, "config_hash": {"type": "string"},
+    "data_snapshot_hash": {"type": "string"}, "skill_hash": {"type": "string"},
+    "report_id": {"type": "string"},
+    "decision_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "impression_code": {"enum": ["screening_risk_elevated", "screening_risk_not_elevated", "insufficient_evidence", "retest_recommended"]},
+    "decision_action": {"enum": ["classify", "estimate", "hold_prior", "abstain", "retest"]},
+    "reported_class": {"type": ["string", "null"]},
+    "reported_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "reported_value": {"type": ["number", "null"]},
+    "render_template_id": {"type": "string", "minLength": 1},
+    "screening_impression": {"type": "string"},
+    "main_findings": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["finding_id", "state_id", "title", "interpretation", "evidence_ids", "segment_ids"],
+        "properties": {
+          "finding_id": {"type": "string"}, "state_id": {"type": "string"},
+          "title": {"type": "string"}, "interpretation": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}},
+          "segment_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "counterevidence": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["finding_id", "state_id", "interpretation", "evidence_ids", "segment_ids"],
+        "properties": {
+          "finding_id": {"type": "string"}, "state_id": {"type": "string"},
+          "interpretation": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}},
+          "segment_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "collection_limits": {"type": "array", "items": {"type": "string"}},
+    "recommendations": {"type": "array", "items": {"type": "string"}},
+    "trace_map": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["statement_id", "decision_contribution", "state_id", "evidence_ids", "task_ids", "segment_ids"],
+        "properties": {
+          "statement_id": {"type": "string"},
+          "decision_contribution": {"type": "number"},
+          "state_id": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}},
+          "task_ids": {"type": "array", "items": {"type": "string"}},
+          "segment_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

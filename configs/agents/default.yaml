@@ -1,18 +1,49 @@
-provider: codex_cli
-model: gpt-5.5
+provider: openai_api
+model: gpt-5.6-luna
 batch_size: 8
-asr_model: small
-asr_language: zh
+batch_workers: 2
+diagnostic_agent_batch_size: 8
+diagnostic_agent_workers: 4
+# Must be selected on development labels and frozen before official test inference.
+# Zero is the fail-closed default until the calibration stage writes a value.
+diagnostic_agent_correction_strength: 0.0
+diagnostic_agent_strength_grid: [0.0, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5]
+diagnostic_agent_min_calibration_cases: 30
+prototype_minimum_class_support: 8
+# A non-zero correction must improve validation macro F1 while preserving
+# validation macro AUROC within this narrow non-inferiority margin.
+diagnostic_agent_min_macro_f1_gain: 0.01
+diagnostic_agent_auroc_noninferiority_margin: 0.001
+asr_backend: mlx_whisper
+asr_model: mlx-community/whisper-large-v3-turbo
+asr_language: auto
 asr_workers: 2
 asr_cpu_threads: 4
-max_report_cases: 12
+asr_min_success_fraction: 0.90
+# Qualitative report audit uses a deterministic, label-stratified cohort.
+# Numeric evaluation continues to cover every held-out participant.
+max_report_cases: 4
 direct_agent_prompt_version: b2-direct-zh-v1
 report_agent_prompt_version: ours-clinical-zh-v1
+diagnostic_agent_prompt_version: b3-cognitive-evidence-diagnostic-zh-v4-prototype-reference
+report_scoring_prompt_version: blinded-report-rater-zh-v1
+report_scoring_provider: openai_api
 direct_agent_instruction: >-
-  你是一名认知障碍筛查研究助理。你只能依据给定的语音转录文本，在 HC、MCI、AD
-  三类中选择一类，并给出三类概率、支持证据和不确定性。不得使用文件名、真实标签、
+  你是一名认知障碍筛查研究助理。你只能依据给定的语音转录文本，在任务指定的类别中
+  选择一类，并给出全部类别概率、支持证据和不确定性。不得使用文件名、真实标签、
   结构化指标、临床状态或其他模型输出。该结论只用于研究筛查，不能写成确诊。
 report_agent_instruction: >-
   你是一名面向医生的认知筛查报告撰写助理。你只能翻译给定的 MetricEvidence、StateCard、
   片段证据和冻结后的校准概率。不得改变概率，不得把 MFCC、设备噪声或音量解释为疾病机制，
   不得补造病史、量表或症状。报告必须包含筛查结论、主要发现、可核查证据、限制和复核建议。
+diagnostic_agent_instruction: >-
+  你是单一证据诊断 Agent。你只能读取盲化后的 MetricEvidence、StateCard、任务与片段轨迹、
+  反证和质量限制；不能读取监督模型概率。对HC、MCI、AD任务，你必须分别完成HC与认知受损筛查、
+  MCI与AD分期两项证据判断，并引用工作区内可核查的证据 ID。分期证据不足时必须返回undetermined，
+  不得强行区分MCI与AD。质量控制只能降低证据可信度，不能作为疾病证据。输出用于研究筛查和转诊支持，
+  不得写成确诊。离散证据等级由系统在开发集内校准，不能直接解释为概率。
+report_scoring_instruction: >-
+  你是独立的临床报告质量评审代理。对每份报告分别按五个维度评分，每项 0–5：
+  证据完整性、临床可解释性、安全性与校准、筛查/转诊有用性、可追溯性。
+  评分只依据报告中实际写出的内容；没有原始证据、概率边界、限制或复核建议时必须扣分。
+  不评价写作华丽程度，不猜测报告来自哪个系统，不把该自动评分写成医生验证。

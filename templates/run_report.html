@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ dataset.display_name }} | run audit</title>
+  <style>body{margin:0;color:#172126;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;line-height:1.55}header,main{max-width:1120px;margin:auto;padding:32px 22px}header{border-bottom:1px solid #d9dfdc}h1{margin:0;font-size:32px}h2{margin-top:38px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:9px;border-bottom:1px solid #d9dfdc;text-align:left;vertical-align:top}th{background:#f5f7f6}code{font-size:12px;word-break:break-all}.muted{color:#647178}</style>
+</head>
+<body>
+<header><h1>运行与代码审计</h1><p class="muted">{{ dataset.display_name }} · {{ run.run_id }}</p></header>
+<main>
+  <p><a href="system_report.html">系统设计</a> · <a href="evaluation_report.html">评估结果</a></p>
+  <h2>运行配置</h2>
+  <table>
+    <tr><th>Mode</th><td>{{ run.mode }}</td><th>Agent provider</th><td>{{ run.agent_provider }}</td></tr>
+    <tr><th>Created</th><td>{{ run.created_at_utc }}</td><th>Harness version</th><td>{{ run.harness_version }}</td></tr>
+    <tr><th>B2</th><td>{{ b2_status.status }}</td><th>B3 Agent communication</th><td>{{ ours_report_status.status }}</td></tr>
+  </table>
+  <p class="muted">B3 的单一诊断 Agent 已在数值预测阶段参与受证据门控的风险修正；此处的 provider 仅表示同一 Agent 的临床文字沟通阶段是否调用生成模型。</p>
+  <h2>数据审计</h2><pre>{{ dataset_audit }}</pre>
+  <h2>阶段审计</h2>
+  <table><thead><tr><th>Stage</th><th>Status</th><th>Fingerprint</th><th>Outputs</th></tr></thead><tbody>{% for stage in run.stages %}<tr><td>{{ stage.name }}</td><td>{{ stage.status }}</td><td><code>{{ stage.fingerprint }}</code></td><td>{% for output in stage.outputs %}<div><code>{{ output }}</code></div>{% endfor %}</td></tr>{% endfor %}</tbody></table>
+  <h2>配置哈希</h2><table>{% for name,value in run.configs.items() %}<tr><th>{{ name }}</th><td><code>{{ value.path }}</code></td><td><code>{{ value.sha256 }}</code></td></tr>{% endfor %}</table>
+  <h2>源代码哈希</h2><table>{% for file in source_files %}<tr><td><code>{{ file.path }}</code></td><td><code>{{ file.sha256 }}</code></td></tr>{% endfor %}</table>
+  <p class="muted">Project root: <a href="{{ root_uri }}">{{ root_uri }}</a></p>
+</main>
+</body>
+</html>

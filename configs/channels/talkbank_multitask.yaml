@@ -1,0 +1,10 @@
+display_name: TalkBank neuropsychological tasks with aligned audio, CHAT transcript and roles
+enabled_states: [S01, S02, S03, S05, S06, S07, S08, S11, S12, S13]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: A common semantic reference is unavailable across Cookie, recall, fluency and sentence tasks.
+  S10: Content-unit scoring is task-specific and is not yet implemented.
+  S14: Cross-task performance scores are not directly comparable.
+metric_overrides:
+  repair_rate_100w: {reliability_multiplier: 1.10}
+  patient_turn_share: {reliability_multiplier: 0.95}

@@ -1,71 +1,77 @@
-# ADvoice Research Harness
+# ADvoice 9.2 research harness
 
-This repository replaces date-stamped script copies with a traceable, configuration-driven pipeline. A change to data, metric definitions, state definitions, fusion, agent prompts, evaluation, or report templates invalidates only the affected downstream stages.
+[![Reproducibility checks](https://github.com/Jewelina95/advoice-research-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Jewelina95/advoice-research-harness/actions/workflows/ci.yml)
 
-The repository stores code and definitions. Raw audio, ASR text, model artifacts, case reports and immutable run records stay local and are excluded from Git.
+可复现的语音认知筛查研究工程。系统按数据集和受试者独立切分，比较三个条件：传统机器学习 `B1`、直接诊断大模型 `B2`、证据约束单一诊断 Agent `B3/Ours`。输出包括逐数据集报告、全数据集方法报告、Layer A 医学预测评估、Layer B 框架特异验证，以及医生版和患者/家属版病例说明。
 
-## Fixed experimental contract
+本系统用于研究性认知风险筛查和转诊支持，不用于确诊阿尔茨海默病病理，也不输出未经验证的疾病阶段。
 
-- **B1**: traditional acoustic machine learning. It uses hand-crafted acoustic features and does not generate a clinical report.
-- **B2**: real direct transcript agent. It receives only de-identified ASR text and a fixed prompt. A failed or unavailable agent is reported as `not_run`; no deterministic proxy is substituted.
-- **Ours**: MetricEvidence -> StateCard -> reliability-conditioned hierarchical fusion -> calibrated probability. A report agent translates the frozen structured evidence; it cannot change the numeric probability. Whether the gate actually becomes case-adaptive is audited from the learned coefficient and test-set weight variance.
+方法与数据流见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。当前完成范围、未完成数据集和 PREPARE 门禁状态见 [docs/VALIDATION_STATUS.md](docs/VALIDATION_STATUS.md)。
 
-## One-command usage
+## Pipeline
+
+1. 数据路由：识别数据集、任务、语言、模态和说话人角色。
+2. 数据处理：患者语音隔离、ASR/转录规范化、任务感知切分、声学和语言指标抽取。
+3. MetricEvidence：为每个指标保存值、训练折参考、方向、可靠度、缺失、混杂、任务、片段和报告权限。
+4. StateCard：在训练折内部校准指标，生成总体及任务特异认知状态；同一状态的多个任务视图共享一票，避免重复投票。
+5. 监督预测链：融合文本、言语行为、辅助声学和片段表示，产生交叉验证外的统计先验；它不进入 Agent 的首轮证据判断。
+6. Agent 校准集：从训练数据的折外预测和折内参考值构造无标签泄漏的盲化证据工作区。
+7. 单一诊断 Agent：只读取 MetricEvidence、StateCard、任务与片段轨迹、反证、质量限制和医学 Skill，输出 0–4 级类别证据判断及可验证证据 ID，不输出风险概率。
+8. 验证集冻结融合：在保留开发标签的病例上选择一个共享修正强度；测试时以证据覆盖率、可靠度、混杂和病例路由控制对数意见池修正，接口错误自动回退到监督先验。
+9. 输出：锁定预测后分别生成医生版和患者/家属版报告；报告不能修改预测，并必须通过证据角色、回溯、隐私和过度诊断校验。
+10. 评估：Layer A 报告区分度、分类、校准和筛查操作点；Layer B 报告盲化、ID 合法性、修正增量、证据完整性、回溯、消融、干预和负控。
+
+## Data
+
+默认运行十个独立任务：`IAEAV`、`ADReSS_2020`、`ADReSSo_2021_diagnosis`、`ADReSSo_2021_progression`、`PROCESS_2`、`PREPARE_DrivenData`、`TAUKADIAL`、`DementiaBank_Pitt`、`DementiaNet_PublicFigures` 和 `NCMMSC2021_AD`。
+
+`NCMMSC2021_AD` 只纳入 `AD_dataset_long` 的长录音。`AD_dataset_6s` 和无标签测试集在配置中明确排除；原始文件保留用于数据审计，不进入训练或测试。
+
+原始数据不提交到 Git。`data/raw` 通过本地链接或配置连接到受控数据目录。
+
+仓库中的公开语音案例由程序合成，不含患者信息。完整的数据边界和申请要求见 [DATA_AVAILABILITY.md](DATA_AVAILABILITY.md)。
+
+## Public demo
+
+公开演示用于验证“音频与转录 → 指标证据 → 认知状态 → 片段回溯”的工程链路。它使用合成语音，不加载临床诊断权重，也不生成疾病概率。
 
 ```bash
-make validate
-make quick
-make full
-make report
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+make demo
+```
+
+随后打开 `http://127.0.0.1:8765`。网页支持直接运行仓库样例，也支持在本地上传 WAV 和转录文本。接口和可复现边界见 [docs/PUBLIC_REPRODUCIBILITY.md](docs/PUBLIC_REPRODUCIBILITY.md)。
+
+## Run
+
+```bash
+git clone https://github.com/Jewelina95/advoice-research-harness.git
+cd advoice-research-harness
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 make test
+make all-full
 ```
 
-`RUN_FULL.command` runs the full NCMMSC2021_AD pipeline and opens the latest report. Stable output locations are:
+也可以双击 `RUN_ALL_FULL.command`。`all-full` 现在先完整运行 PREPARE，并检查 Micro AUROC、Micro F1 和 Micro AUPRC 是否全部超过 SpeechCARE 论文均值；任一门禁失败即停止，不运行其他数据集。该门禁只是回顾性工程门禁，不等于确认性优效证明。
 
-- `reports/latest/system_report.html`
-- `reports/latest/evaluation_report.html`
-- `reports/latest/index.html`
+只重建本轮 PREPARE 审计报告：
 
-Immutable provenance is stored under `runs/<run_id>/run_manifest.json`. Raw clinical audio remains local and is linked under `data/raw`; it is never committed to Git.
-
-`quick` stops before ASR and agent stages. `full` runs B1, B2, Ours, negative controls, ablations, evaluation and both reports. Content hashes let unchanged upstream stages use cache. `report` rebuilds HTML from the latest immutable run without retraining.
-
-## Current NCMMSC contract
-
-- Uses only `AD_dataset_long`: 280 official training recordings and 119 labelled test recordings.
-- Explicitly excludes all 3,621 six-second clips.
-- Aggregates recordings by composite subject key before modeling.
-- Audits subject overlap, label conflict, duplicate hashes and 16 kHz mono consistency.
-- Disables unvalidated language, semantic, syntax and interaction states for Ours because this local release has no human transcript, answer-unit rubric or speaker-role annotation.
-- B2 receives generated Whisper ASR only; its input and output are cached separately from the report agent used by Ours.
-
-## Project layout
-
-```text
-configs/             dataset, metric, state, model, agent and evaluation contracts
-data/raw/            ignored local links to clinical data
-references/          reviewed 7.16 metric/state source tables
-src/advoice/         executable pipeline stages
-templates/           stable system and evaluation HTML templates
-tests/               unit tests for splits, evidence, states and evaluation
-artifacts/            ignored mutable stage cache
-runs/<run_id>/        ignored immutable run snapshot and manifest
-reports/latest/       ignored stable user-facing HTML output
+```bash
+make prepare-audit
 ```
 
-## Updating the system
+运行采用内容哈希缓存；源代码、配置或输入改变时，只重算受影响的阶段。任何数据集失败都会写入 `reports/batch_run_status.json`，生成可用的部分汇总后以非零状态退出，不再静默标记为全量成功。
 
-- New dataset: add `configs/datasets/<dataset>.yaml` and a manifest adapter in `src/advoice/data.py`.
-- Metric change: edit `configs/metrics/audio_metrics.yaml`.
-- State change: edit `configs/states/audio_states.yaml`.
-- Fusion change: edit `src/advoice/models.py` or `configs/models/default.yaml`.
-- Agent change: edit `configs/agents/default.yaml`.
-- Evaluation change: edit `configs/evaluation/default.yaml`.
+## Outputs
 
-The run manifest records configuration hashes, source hashes, dataset inventory, package versions, stage cache decisions, model parameters, and generated artifacts.
+- `reports/latest/index.html`：最新入口。
+- `reports/latest/system_report.html`：数据、指标、状态、融合、Agent 和报告链路。
+- `reports/latest/evaluation_report.html`：B1/B2/B3、Layer A、Layer B、负控和失败模式。
+- `reports/latest/evaluation_oral_presentation_zh.md`：中文口语汇报。
+- `reports/latest/prepare_9_2_method_audit.html`：七项 Agent 改造、相同编码器隔离和 SpeechCARE 门禁审计。
+- `reports/datasets/<dataset>/latest/`：逐数据集报告和病例示例。
+- `runs/<run_id>/`：不可变运行快照、配置哈希、源码清单和产物。
 
-## Scientific interpretation boundary
-
-The current NCMMSC run does not establish that Ours has better discrimination than B1. Ours improves calibration and structured traceability, while B1 currently has higher test AUROC and accuracy. The QC-only negative control is also strong, so cross-device or clinical robustness cannot be claimed without source-stratified and external validation. These findings are rendered directly in the evaluation HTML instead of being overwritten by a preferred narrative.
-
-The automated clinical-report score is a structural audit, not a completed clinician study. Human evaluation requires a blinded rubric, multiple clinicians and inter-rater agreement.
+SpeechCARE 数值只在同一数据集、同一终点和兼容协议下作描述性对照。开发过程中反复查看过的测试集不能再被称为未触碰外部验证；任何性能提升必须由受试者级配对区间和预先定义的评估支持。

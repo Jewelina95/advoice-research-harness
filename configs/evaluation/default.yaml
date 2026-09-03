@@ -12,6 +12,16 @@ layer_a:
   - multiclass_brier
   - log_loss
   - ece
+  - error_rate
+  - near_threshold_uncertainty_rate
+  - high_confidence_error_rate
+  - macro_fnr
+  - macro_fpr
+  - positive_prevalence
+  - tp
+  - tn
+  - fp
+  - fn
   - per_class_sensitivity
   - per_class_specificity
 layer_b:
@@ -26,4 +36,3 @@ layer_b:
 negative_controls:
   - qc_only
   - no_duration_no_loudness
-

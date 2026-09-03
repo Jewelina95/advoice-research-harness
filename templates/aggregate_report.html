@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ADvoice 全数据集评估报告</title>
+  <style>
+    :root{--ink:#182126;--muted:#66747a;--line:#d9dfdc;--wash:#f5f7f6;--ours:#278c82;--b1:#8a8f98;--b2:#e68178;--warn:#d7a047;--purple:#7864c7}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",Arial,sans-serif;line-height:1.7;background:#fff}
+    header{padding:54px max(26px,calc((100vw - 1280px)/2));background:#f3f6f5;border-bottom:1px solid var(--line)}h1{margin:0 0 8px;font-size:38px;letter-spacing:0}header p{margin:0;color:var(--muted);font-size:16px}
+    nav{position:sticky;top:0;z-index:10;padding:11px max(26px,calc((100vw - 1280px)/2));background:rgba(255,255,255,.97);border-bottom:1px solid var(--line)}nav a{margin-right:19px;color:var(--ink);text-decoration:none;font-size:14px}
+    main{max-width:1280px;margin:auto;padding:0 24px}section{padding:46px 0;border-bottom:1px solid var(--line)}h2{font-size:27px;margin:0 0 12px}h3{font-size:19px;margin:28px 0 10px}.lead{font-size:17px;max-width:1050px}.eyebrow{font-size:12px;text-transform:uppercase;color:var(--ours);font-weight:700;margin-bottom:8px}
+    .figure{width:100%;display:block;margin:20px 0 8px}.caption{font-size:13px;color:var(--muted);max-width:1120px;margin:7px auto 22px}.notice{border-left:4px solid var(--ours);background:#edf6f3;padding:14px 17px;margin:18px 0}.warning{border-left-color:var(--warn);background:#fff8eb}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.card{border:1px solid var(--line);padding:17px;background:#fff;min-height:150px}.card h3{margin:0 0 8px;font-size:17px}.card .value{font-size:30px;font-weight:750;color:var(--ours);line-height:1.1}.card p{margin:8px 0 0;color:#46545a;font-size:14px}.condition{border-top:5px solid var(--b1)}.condition.b2{border-top-color:var(--b2)}.condition.ours{border-top-color:var(--ours)}
+    table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:10px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--wash);font-weight:700}.num{font-variant-numeric:tabular-nums}.ours{color:#176f67;font-weight:700}.tag{display:inline-block;border:1px solid #cfd8d4;background:#f7f9f8;padding:2px 7px;margin:2px;border-radius:3px;font-size:12px}
+    .metric-dictionary td:first-child{font-weight:700;width:190px}.metric-dictionary td:nth-child(2){width:240px}.finding{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:15px 0;border-bottom:1px solid #e8ecea}.finding:last-child{border:0}.finding b{font-size:15px}.finding p{margin:0;color:#46545a}
+    .tabs{display:flex;gap:7px;flex-wrap:wrap;margin:18px 0}.tabs button{border:1px solid #bdc7c3;background:#fff;color:var(--ink);padding:8px 12px;border-radius:4px;cursor:pointer}.tabs button.active{background:var(--ours);border-color:var(--ours);color:#fff}.metric-panel{display:none}.metric-panel.active{display:block}.evidence-plot{margin:18px 0 28px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0}.evidence-row{display:grid;grid-template-columns:190px minmax(220px,1fr) 68px 270px;gap:14px;align-items:center;min-height:34px;font-size:12px}.evidence-name{font-weight:600;overflow-wrap:anywhere}.evidence-track{height:12px;background:#edf0ef;position:relative}.evidence-bar{display:block;height:100%;width:var(--w);background:var(--ours)}.evidence-bar.model{background:#9aa1a7}.evidence-bar.qc{background:#d89a32}.evidence-meta{color:var(--muted)}
+    .footer{padding:28px 0 60px;color:var(--muted);font-size:13px}@media(max-width:900px){h1{font-size:30px}.grid3,.grid5{display:block}.card{margin:10px 0}.evidence-row{grid-template-columns:130px 1fr 46px}.evidence-meta{grid-column:1/-1}nav{overflow:auto;white-space:nowrap}}
+  </style>
+</head>
+<body>
+<header><div class="eyebrow">Full evaluation study</div><h1>ADvoice 全数据集系统评估</h1><p>{{ completed|length }} 个独立任务 · B1 传统声学模型 / B2 直接诊断代理 / B3 单一证据诊断 Agent · {{ generated_at }}</p></header>
+<nav><a href="#revision">本轮修改</a><a href="system_report.html">新架构详解</a><a href="#design">实验设计</a><a href="#standards">评估标准</a><a href="#layer-a">A 层医学评估</a><a href="#layer-b">B 层框架验证</a><a href="#failure">失败模式</a><a href="#datasets">逐数据集</a><a href="failure_mode_analysis/failure_mode_root_cause_report.html">根因报告</a></nav>
+<main>
+  <section id="revision">
+    <div class="eyebrow">Framework revision</div><h2>1. 本轮修改了什么</h2>
+    <p class="lead">本轮没有更换研究目标，而是修正会直接影响证据有效性和结果可信度的环节：病例标识、任务参照组、通道证据权限、质量控制残差化、干预检验和报告边界。新增 NCMMSC 2021 长录音作为独立中文通道，六秒片段不进入主分析。</p>
+    <div class="notice warning"><b>本轮复现实验范围：</b>本报告由 <code>run-all-processed</code> 生成，复用 8.13 已冻结的预处理结果、B1/B2、MetricEvidence 和片段表；本轮重新计算状态校准、条件 C 融合、诊断 Agent、病例报告与评估。它不是从原始音频重新提取全部特征的端到端运行，二者不能混写。</div>
+    <img class="figure" src="{{ assets }}/figure_0_framework_revision.png" alt="Current framework revision">
+    <p class="caption">图 0. 本轮框架修订及其对应防止的失败模式。修改项全部进入可执行流程，而不是只写在汇报文字中。</p>
+    <div class="grid5"><div class="card"><h3>病例与切分</h3><p>跨任务病例编号唯一；训练测试继续按受试者分组，避免同一人跨集合。</p></div><div class="card"><h3>参照校准</h3><p>诊断任务使用配置中的正常组；进展任务使用“未进展组”，不再硬编码健康组。</p></div><div class="card"><h3>证据对象</h3><p>每条指标同时记录方向、可靠度、缺失、混杂和报告权限，并随数据通道变化。</p></div><div class="card"><h3>诊断 Agent</h3><p>Agent 读取病例级状态、任务轨迹和证据质量，在受限范围内修正基础风险；门控为零时严格退回基础模型。</p></div><div class="card"><h3>报告边界</h3><p>报告文本只能使用已锁定的决策轨迹和允许报告的证据；不能在生成阶段再次改变风险。</p></div></div>
+    <img class="figure" src="{{ assets }}/figure_1_system_architecture.png" alt="ADvoice system architecture">
+    <p class="caption">图 1. 当前完整系统。监督学习模块负责稳定的基础概率与受限校准；单一诊断 Agent 读取任务路由、MetricEvidence、StateCard 和片段轨迹，参与受证据门控的风险修正，并把同一条决策轨迹转成医生报告。Agent 不是自由改写分类器输出，也不是只负责写文字。</p>
+    <div class="notice warning"><b>实现与结果边界：</b>传统声学先验作为“仅供模型使用、禁止写入疾病解释”的分支已经进入代码，并在 ADReSSo progression 上完成验证；PREPARE、TAUKADIAL、IAEAV 和 NCMMSC 的本页结果生成早于这项最终集成，因此不把该分支写成这些数据集已经取得的性能增益。</div>
+  </section>
+
+  <section id="design">
+    <div class="eyebrow">Experimental design</div><h2>2. 三个条件比较什么</h2>
+    <div class="grid3"><div class="card condition"><h3>B1：传统声学机器学习</h3><p>以 MFCC、谱特征、能量、过零率等低层声学特征训练正则化分类器。它回答：只依赖传统声学表征时，模型能达到什么水平。</p></div><div class="card condition b2"><h3>B2：直接诊断代理</h3><p>直接读取转录文本或音频摘要，生成风险判断和诊断依据；不经过指标证据、临床状态和报告权限控制。</p></div><div class="card condition ours"><h3>B3：单一证据诊断 Agent</h3><p>两个小型监督模块先在训练折内形成跨分支概率并冻结修正边界；Agent 再读取 MetricEvidence、StateCard 和片段轨迹，在边界内修正风险，并输出同一条可追溯医生报告。</p></div></div>
+    <div class="notice"><b>认知型 Agent 的具体含义：</b>系统把“查哪条证据、比较哪个正常参照、判断证据是否受任务或录音质量污染、何时退回基础模型”写成可执行诊断步骤。Agent 的工作区包含病例事实、状态假设、支持与反向证据、任务范围和不确定性；它调用这些证据参与有限风险修正，再生成初筛与复核建议。这不是给 GPT 一段自由 prompt，也不是把“Cognition AI”当作未经验证的模型名称。</div>
+    <h3>独立数据任务</h3><p>每个数据集分别切分、训练、校准和报告；诊断、疾病进展、二分类与多分类不会混成同一个标签空间。NCMMSC 使用长录音，并以说话者为独立划分单位。</p>
+    <img class="figure" src="{{ assets }}/figure_2_dataset_landscape.png" alt="Dataset landscape"><p class="caption">图 2. 当前纳入数据的通道、受试者规模与测试规模。数据量不等于有效样本量，主评估单位始终是受试者。</p>
+    <h3>与 SpeechCARE 的协议知情比较</h3><img class="figure" src="{{ assets }}/figure_speechcare_protocol_aligned.png" alt="SpeechCARE protocol-aware comparison"><p class="caption">图 2. 仅比较 PREPARE 官方测试集上定义能够对应的终点。SpeechCARE 为 10 次随机训练的均值与论文 95% 置信区间；B1、B2、B3 是本项目单次锁定训练的回顾性官方测试集结果，误差线来自受试者 bootstrap。B3 当前微平均 AUROC 为 {{ '%.3f'|format(evaluation.prepare_micro_auroc) }}、微平均 F1 为 {{ '%.3f'|format(evaluation.prepare_micro_f1) }}。两项研究的有效训练样本、重复次数和决策规则仍不同，因此这里是透明的描述性对照，不写成严格同协议胜负；官方测试集也已在开发中被反复查看，不能作为一次性外部确认。</p>
+    <table><thead><tr><th>差距来源</th><th>SpeechCARE</th><th>当前 ADvoice</th><th>本轮处理</th></tr></thead><tbody>
+      <tr><td>任务信息</td><td>六类认知任务作为门控条件</td><td>旧结果把全部 PREPARE 录音压成一个通用任务</td><td>已恢复逐病例任务标签，并重建任务特异状态</td></tr>
+      <tr><td>表征训练</td><td>mHuBERT 与 mGTE 联合微调</td><td>深层音频与文本表示被冻结，训练证据到状态、状态到风险的低容量模块</td><td>端到端编码器微调不属于当前系统的待完成步骤；如开展，必须作为独立扩展重新锁定训练和评估协议</td></tr>
+      <tr><td>融合目标</td><td>自适应门控直接优化分类性能</td><td>动态门控只有在外层折内优于逻辑堆叠时才启用，并受证据可靠度约束</td><td>保留临床约束，不用官方测试集反向调权</td></tr>
+      <tr><td>重复实验</td><td>10 个随机种子取均值</td><td>当前是一套锁定训练与受试者 bootstrap</td><td>报告保持协议差异，不把两种误差线写成同一件事</td></tr>
+    </tbody></table>
+    <div class="notice"><b>PREPARE 任务路由：</b>{% for dataset in datasets %}{% if dataset.dataset_id=='PREPARE_DrivenData' %}{% for task,count in dataset.task_counts.items() %}<span class="tag">{{ task }}：{{ count }}</span>{% endfor %}{% endif %}{% endfor %}。这些任务分别进入任务特异状态，不再按数据集名称只给一个固定权重。</div>
+    <div class="notice"><b>多语言处理：</b>英文、西班牙语和中文分别使用对应分词与功能词表；语言相关指标只在训练折内使用同语言参照。双语病例保留语言特异证据范围，样本不足的语言指标标记为不可靠，不回退到跨语言伪基线。</div>
+  </section>
+
+  <section id="standards">
+    <div class="eyebrow">Pre-specified endpoints</div><h2>3. 评估标准为什么分成 A 层和 B 层</h2>
+    <p class="lead">A 层回答模型是否具备医学预测与筛查研究的基本完整性；B 层回答我们的结构化证据框架是否真正解决传统声学模型和直接大模型不能解决的问题。两层不能互相替代。</p>
+    <h3>A 层：医学预测与筛查必须报告</h3>
+    <table class="metric-dictionary"><thead><tr><th>指标组</th><th>核心指标</th><th>回答的问题</th></tr></thead><tbody>
+      <tr><td>区分能力</td><td>AUROC + 95% CI、AUPRC</td><td>模型能否把不同临床标签排序分开；类别不平衡时阳性识别是否仍可靠。</td></tr>
+      <tr><td>固定阈值分类</td><td>Accuracy、Balanced Accuracy、Macro F1、MCC</td><td>在实际分类阈值下总体是否判断正确，以及不同类别是否被均衡处理。</td></tr>
+      <tr><td>筛查操作点</td><td>Sensitivity、Specificity、PPV、NPV、Specificity@Sensitivity≥0.85</td><td>高敏感度初筛时会漏掉多少患者、误报多少健康人，阳性与阴性结论是否可信。</td></tr>
+      <tr><td>概率安全</td><td>Brier、ECE、校准斜率/截距、高置信错误</td><td>输出概率能否被当作风险使用；高置信错误定义为最大预测概率至少 0.80 但分类错误。</td></tr>
+      <tr><td>错误结构</td><td>TP/TN/FP/FN、FNR、FPR、阈值附近病例比例</td><td>准确率背后具体是什么错误，是否因类别比例而产生误导。阈值附近病例定义为最高与次高类别概率差不超过 0.10。</td></tr>
+      <tr><td>鲁棒性与负控</td><td>QC-only、去时长/响度控制</td><td>模型是否主要学习了设备、录音质量、时长或能量捷径。</td></tr>
+    </tbody></table>
+    <h3>B 层：框架特有验证</h3>
+    <table class="metric-dictionary"><thead><tr><th>验证对象</th><th>计算指标</th><th>回答的问题</th></tr></thead><tbody>
+      <tr><td>MetricEvidence 完整性</td><td>规定字段完整比例</td><td>每条原始指标是否带有方向、可靠度、缺失、混杂与报告权限。</td></tr>
+      <tr><td>StateCard 完整性</td><td>状态字段完整比例</td><td>状态判断是否包含严重度、置信度、支持证据和反向证据。</td></tr>
+      <tr><td>分支贡献回溯</td><td>病例级贡献覆盖率</td><td>最终风险是否能追到语言、言语行为和辅助声学分支。</td></tr>
+      <tr><td>证据片段忠实度</td><td>有原始时间片段支持的状态比例</td><td>报告结论是否能回到具体音频区间或转录片段。</td></tr>
+      <tr><td>参考状态压力测试</td><td>纠正状态后真实类别概率不下降比例</td><td>命名状态是否实际参与模型决策；这是机制压力测试，不是因果证明。</td></tr>
+      <tr><td>消融实验</td><td>完整融合 − 仅状态 AUROC</td><td>原始表征和动态分支是否提供了状态层之外的增量。</td></tr>
+      <tr><td>医生报告审计</td><td>证据、解释、安全、用途、追溯共 25 分</td><td>报告是否比直接代理更完整、更可核查，并明确不确定性和下一步建议。</td></tr>
+    </tbody></table>
+  </section>
+
+  <section id="layer-a">
+    <div class="eyebrow">Layer A</div><h2>4. 医学预测与筛查结果</h2>
+    <div class="grid3"><div class="card"><div class="value">{{ evaluation.valid_dataset_count }}</div><p>排除采集混杂后进入医学性能概括的独立任务</p></div><div class="card"><div class="value">{{ '%.3f'|format(evaluation.prepare_micro_auroc) }}</div><p>PREPARE 官方测试集 B3 微平均 AUROC</p></div><div class="card"><div class="value">{{ '%+.3f'|format(evaluation.median_auc_gain_vs_legacy) }}</div><p>排除 IAEAV 后，B3 相对旧条件 C 的中位宏平均 AUROC 变化</p></div></div>
+    <div class="notice warning"><b>IAEAV 不作为满分结果宣传。</b>本地 223 名受试者的采访者/采集批次与标签高度共线；此前随机受试者切分得到的 1.000 更符合采集流程捷径，而不是可外推的临床信号。本轮改为完整留出同时含 AD 与对照的平衡采访组，训练与测试不共享采访组；由于测试组很小，该结果仍只作为跨采集鲁棒性审计。</div>
+    <img class="figure" src="{{ assets }}/figure_4b_iaeav_capture_confounding.png" alt="IAEAV capture confounding"><p class="caption">图 A-0. IAEAV 的采访者/采集组标签构成。多数采集组几乎只包含一个诊断类别；当前使用整组留出切断采访者重叠，而不是随机拆分受试者。</p>
+    <img class="figure" src="{{ assets }}/figure_A_layer_medical_standards_summary.png" alt="Layer A medical standards summary"><p class="caption">图 A. 医学评估总图：区分能力、高敏感度筛查点、相对基线增益、固定阈值指标、负控差距与三条件覆盖。图中缺失值保持为空，不用代理值补齐。</p>
+    <div class="finding"><b>区分能力</b><p>AUROC 只回答排序能力，不等同于可用筛查器。必须结合准确率、MCC、AUPRC 和操作点一起解释。</p></div><div class="finding"><b>筛查操作点</b><p>Specificity@Sensitivity≥0.85 直接显示在优先降低漏诊时需要付出多少误报代价；多分类或非筛查任务不强行计算该指标。</p></div><div class="finding"><b>负控</b><p>Ours 与 QC-only 的差距若接近零，该通道即使 AUROC 很高也不能作为强临床证据。</p></div>
+    <h3>A-1. 区分与固定阈值分类</h3><img class="figure" src="{{ assets }}/figure_4_layer_a_performance.png" alt="Discrimination and classification"><p class="caption">图 A-1. AUROC、Accuracy、Macro F1 和 AUPRC。高值表示更好的区分或分类表现；所有点均来自各数据集独立 held-out 受试者。</p>
+    <img class="figure" src="{{ assets }}/figure_A1b_paired_auroc_differences.png" alt="Paired AUROC differences"><p class="caption">图 A-1b. 在完全相同的测试受试者上计算 B3 相对 B1/B2 的宏平均 AUROC 差值及 95% 配对自助法置信区间。点在零右侧但区间跨零，只能说明数值更高，不能声明已经证明优于基线。</p>
+    <h3>A-2. 高敏感度筛查操作点</h3><img class="figure" src="{{ assets }}/figure_9_screening_operating_points.png" alt="Screening operating points"><p class="caption">图 A-2. 在 sensitivity ≥ 0.85 下的 specificity、PPV、NPV，以及 Ours 相对 B1/B2 的 AUROC 变化。</p>
+    <h3>A-3. 校准与概率安全</h3><img class="figure" src="{{ assets }}/figure_5_layer_a_safety.png" alt="Calibration and safety"><p class="caption">图 A-3. ECE 与 Brier 越低越好；MCC 越高越好；负控用于检查录音质量与低层能量捷径。</p>
+    <h3>A-4. 错误结构与类别不平衡</h3><img class="figure" src="{{ assets }}/figure_A4_error_imbalance.png" alt="Error and imbalance"><p class="caption">图 A-4. 总错误率、宏平均漏诊率、宏平均误报率与阳性比例。前三项越低越好；阳性比例只描述任务构成。</p>
+    <h3>A-5. 鲁棒性与捷径负控</h3><img class="figure" src="{{ assets }}/figure_A5_robustness_controls.png" alt="Robustness controls"><p class="caption">图 A-5. 完整模型、QC-only 和去时长/响度控制。Ours 相对负控的 AUROC 差距越大，越支持模型没有只依赖采集捷径。</p>
+  </section>
+
+  <section id="layer-b">
+    <div class="eyebrow">Layer B</div><h2>5. 框架是否解决 B1、B2 与旧系统的失败模式</h2>
+    <p class="lead">B1 可以给出分类，但不能把风险追到语言内容和可审查状态；B2 可以生成文字报告，但报告与预测之间缺少受约束的证据链。B3 的 Agent 必须同时证明两件事：其证据修正确实参与预测，并且每次修正都能回到允许使用的原始指标、状态和片段。</p>
+    <img class="figure" src="{{ assets }}/figure_B_layer_framework_validation_summary.png" alt="Layer B framework validation"><p class="caption">图 B. 框架验证总图：逐数据集证据契约、B2 与 B3 报告质量、相对基线 AUROC 增益，以及状态修正、完整融合、任务路由和原始片段回溯。颜色只表示是否达到预设检查线，格内数字保留实际值。</p>
+    <div class="grid3"><div class="card"><h3>相对 B1 的增量</h3><p>不仅比较 AUROC，还要求最终结论具有状态层、分支贡献和原始证据回溯。</p></div><div class="card"><h3>相对 B2 的增量</h3><p>Agent 不能自由编写理由：输入是结构化证据工作区，风险修正受可靠度和混杂门控，报告只能复述同一条决策轨迹。</p></div><div class="card"><h3>相对旧条件 C 的增量</h3><p>Agent 从报告生成器升级为受约束的诊断参与者；基础预测、证据修正和文字沟通仍保持清晰边界。</p></div></div>
+    <h3>临床报告五维结构</h3><img class="figure" src="{{ assets }}/figure_7_report_rubric.png" alt="Report rubric"><p class="caption">图 B-1. B2 与 Ours 在证据完整性、临床可解释性、安全/校准、诊断用途和可追溯性上的自动化结构审计。该结果不是医生可用性终点，医生盲评仍需单独完成。</p>
+    <h3>不同数据通道的动态分支权重</h3><img class="figure" src="{{ assets }}/figure_8_gate_weights.png" alt="Learned gate weights"><p class="caption">图 B-2. 分支集合和学习到的分配随任务证据变化；权重只表示当前模型依赖，不等同于疾病机制。</p>
+    <h3>当前 B3 与旧条件 C 的锁定结果对照</h3><img class="figure" src="{{ assets }}/figure_B5_current_vs_legacy_c.png" alt="Current B3 versus legacy condition C"><p class="caption">图 B-3. 三个终点均使用同一批受试者，横轴为当前 B3 减去旧条件 C。正值表示当前版本提高，负值表示下降；该图是完成建模后的审计结果，不参与选模或调参。</p>
+  </section>
+
+  <section id="failure">
+    <div class="eyebrow">Failure audit</div><h2>6. 当前仍需保留的限制</h2>
+    <img class="figure" src="{{ assets }}/figure_failure_mode_audit.png" alt="Failure mode audit"><p class="caption">图 F. 预设门槛下的失败模式审计。绿色表示通过，黄色表示需要谨慎解释，灰色表示该任务不适用或缺少可计算终点。</p>
+    <div class="notice warning">某个数据集出现 WATCH 不会被隐藏，也不会通过调权重改成“全部胜出”。它直接决定该通道只能作为探索性结果、需要重新校准，或需要进一步外部验证。</div>
+    <div class="finding"><b>ADReSSo progression</b><p>测试集只有 12 名受试者，宏平均 AUROC 的置信区间极宽。B3 的概率校准较好，但排序被少数病例改变；这个任务需要重复分组交叉验证或官方标签，而不是继续增加模型复杂度。</p></div>
+    <div class="finding"><b>TAUKADIAL</b><p>旧版把中英文录音先汇总成一个病例级语言指标，中文按字符切分，导致词数、词汇多样性和功能词比例不可比。本轮改为语言特异分词、训练折内同语言参照和双语证据范围，再重新训练。</p></div>
+    <div class="finding"><b>PREPARE</b><p>旧版丢失了图片描述、句子朗读、语义流畅性、故事回忆、个人叙事和语音助手之间的任务差异。本轮使用公开逐病例任务标签重建任务特异状态；仍未完成 SpeechCARE 级别的端到端编码器联合微调。</p></div>
+    <div class="finding"><b>NCMMSC 2021</b><p>主分析只使用 30–60 秒长录音。六秒短片段保留在原始归档中，但纳入分析计数必须为 0；删除原始文件不会提高方法有效性，因此采用可审计排除而非物理删除。</p></div>
+    <p><a href="failure_mode_analysis/failure_mode_root_cause_report.html">打开 ADReSSo progression、TAUKADIAL 与 PREPARE 的逐项根因和修复实验报告</a></p>
+  </section>
+
+  <section id="datasets">
+    <div class="eyebrow">Dataset-level results</div><h2>7. 逐数据集 AUROC 与结论入口</h2>
+    <table><thead><tr><th>数据集 / 任务</th><th>B1</th><th>B2</th><th>Ours</th><th>Ours−B1</th><th>Ours−B2</th><th>结果解释</th><th>单数据集报告</th></tr></thead><tbody>{% for row in evaluation.rows %}<tr><td>{{ row.dataset }}</td><td class="num">{{ '%.3f'|format(row.B1) if row.B1==row.B1 else '—' }}</td><td class="num">{{ '%.3f'|format(row.B2) if row.B2==row.B2 else '—' }}</td><td class="num ours">{{ '%.3f'|format(row.Ours) if row.Ours==row.Ours else '—' }}</td><td class="num">{{ '%+.3f'|format(row.delta_b1) if row.delta_b1==row.delta_b1 else '—' }}</td><td class="num">{{ '%+.3f'|format(row.delta_b2) if row.delta_b2==row.delta_b2 else '—' }}</td><td>{{ row.conclusion }}</td><td>{% for dataset in datasets %}{% if dataset.short_name==row.dataset and dataset.status=='completed' %}<a href="../datasets/{{ dataset.dataset_id }}/latest/evaluation_report.html">查看</a>{% endif %}{% endfor %}</td></tr>{% endfor %}</tbody></table>
+    <p class="caption">表 1. 使用每个任务的优先比较范围：三个条件都有结果时使用 matched three-arm；否则使用该任务完整可用测试队列。不同范围不会被混作直接胜负。</p>
+  </section>
+  <div class="footer">研究性认知筛查与转诊支持，不构成临床诊断。所有图由本轮 CSV/JSON 结果自动重建；工程运行细节保存在独立运行审计报告，不进入本展示页。</div>
+</main>
+</body>
+</html>

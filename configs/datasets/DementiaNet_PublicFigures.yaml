@@ -1,0 +1,18 @@
+dataset_id: DementiaNet_PublicFigures
+display_name: DementiaNet public-figure speech
+raw_path: data/raw/DementiaNet_PublicFigures
+source_globs: [local_manifest.csv, audio/**/*.wav, raw_audio/**/*.wav, transcripts/**/*.txt]
+language: en
+channel: public_speech
+channel_profile: public_speech
+task_type: nonstandard_public_speech
+unit_of_analysis: public_figure
+labels: [HC, AD]
+positive_class: AD
+test_size: 0.30
+split_seed: 20260813
+split_policy: deterministic_person_disjoint_holdout
+speaker_roles: unavailable
+transcripts: local_text
+target_description: 公开视频工程外部泛化二分类（对照、痴呆）
+agent_evaluation_cap: 20

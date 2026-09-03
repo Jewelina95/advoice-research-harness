@@ -1,0 +1,9 @@
+display_name: Structured clinical interview with patient/interviewer roles
+enabled_states: [S01, S02, S03, S05, S06, S07, S08, S11, S12, S13]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Cross-language interview coherence has not been clinically calibrated.
+  S10: The interview has no common task-specific content-unit key.
+  S14: The interview is not scored as a single standard task.
+metric_overrides:
+  patient_turn_share: {reliability_multiplier: 0.90, confounds_add: [interviewer_style]}

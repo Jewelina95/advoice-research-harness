@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ADvoice run audit</title>
+  <style>
+    :root{--ink:#172126;--muted:#647178;--line:#d9dfdc;--wash:#f5f7f6;--teal:#278c82}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;line-height:1.6}
+    header,main{max-width:1180px;margin:auto;padding:34px 24px}header{border-bottom:1px solid var(--line)}h1{margin:0;font-size:34px}h2{margin-top:36px}
+    p{color:var(--muted)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    th{background:var(--wash)}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.ok{color:var(--teal);font-weight:700}.bad{color:#a54d48;font-weight:700}
+    .command{padding:14px;background:#f3f5f4;border-left:4px solid var(--teal);overflow:auto}
+  </style>
+</head>
+<body>
+<header><h1>ADvoice 全数据集运行审计</h1><p>代码、配置、数据清单、缓存与失败记录单独存放于此；主评估报告不混入工程日志。生成于 {{ generated_at }}</p></header>
+<main>
+  <p><a href="aggregate_evaluation_report.html">返回主评估报告</a></p>
+  <h2>可复现命令</h2>
+  <div class="command"><code>make all</code><br><code>make all-full</code><br><code>PYTHONPATH=src python -m advoice run-all --mode quick --agent-provider disabled</code><br><code>PYTHONPATH=src python -m advoice run-all --mode full --agent-provider codex_cli</code></div>
+  <h2>系统边界</h2>
+  <table>
+    <tr><th>部分</th><th>实现</th><th>是否参与预测</th></tr>
+    <tr><td>模块一</td><td>受试者级交叉拟合基础模型，融合临床状态、文本表示、音频窗口表示和年龄上下文</td><td>是</td></tr>
+    <tr><td>B2</td><td>直接读取转录并独立输出类别概率和报告</td><td>自由诊断 Agent</td></tr>
+    <tr><td>B3 诊断 Agent</td><td>审理 MetricEvidence、StateCard、任务/片段轨迹、反证与混杂，形成病例级修正变量</td><td>是，受证据门控约束</td></tr>
+    <tr><td>模块二</td><td>仅用训练折外 Agent 变量学习有界风险修正与校准</td><td>是；证据不足时严格退回模块一</td></tr>
+    <tr><td>医生报告</td><td>同一 Agent 使用已锁定的决策轨迹完成临床表达，不进行第二次诊断</td><td>否</td></tr>
+  </table>
+  <h2>数据集执行状态</h2>
+  <table><thead><tr><th>Dataset</th><th>Status</th><th>Subjects</th><th>Test</th><th>Feature failures</th><th>Dataset audit</th><th>Per-dataset run</th></tr></thead><tbody>
+    {% for row in datasets %}<tr><td>{{ row.dataset_id }}</td><td class="{{ 'ok' if row.status=='completed' else 'bad' }}">{{ row.status }}</td><td>{{ row.subjects or '—' }}</td><td>{{ row.test_subjects or '—' }}</td><td>{{ row.feature_failures }}</td><td><code>{{ row.audit_path }}</code></td><td>{% if row.status=='completed' %}<a href="../datasets/{{ row.dataset_id }}/latest/run_report.html">run report</a>{% else %}—{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <h2>缓存与变更策略</h2>
+  <p>每个阶段根据输入文件、配置与实现源码生成指纹。数据、指标、状态、模型或评估代码变化时，仅重跑受影响阶段；未变化的音频特征和转录缓存直接复用。损坏音频被逐文件隔离并写入 <code>feature_extraction_failures.csv</code>，不会再中断整个数据集。</p>
+  <h2>本轮批处理状态</h2><pre>{{ batch_status }}</pre>
+</main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+dataset_id: ADReSSo_2021_diagnosis
+display_name: ADReSSo 2021 diagnosis task
+raw_path: data/raw/DementiaBank_Challenges
+source_globs: [_extracted_managed/ADReSSo_2021_diagnosis_train/**/*.wav, _extracted_managed/ADReSSo_2021_diagnosis_train/**/*.csv]
+managed_train_root: _extracted_managed/ADReSSo_2021_diagnosis_train/ADReSSo21/diagnosis/train
+folder_labels: {cn: HC, ad: AD}
+language: en
+channel: picture_description_audio_only
+channel_profile: picture_description_asr
+task_type: cookie_theft_picture_description
+unit_of_analysis: subject
+labels: [HC, AD]
+positive_class: AD
+test_size: 0.25
+split_seed: 20260813
+split_policy: deterministic_holdout_from_official_training_set
+speaker_roles: distributed_segmentation
+transcripts: generated_asr_only
+target_description: 二分类认知筛查（健康对照、阿尔茨海默病）
+agent_evaluation_cap: 42

@@ -1,0 +1,15 @@
+display_name: Non-standard public speech external-generalization channel
+enabled_states: [S01, S02, S03, S06, S07, S08, S11, S12]
+unavailable_reasons:
+  S04: Recording gain is uncontrolled in public media.
+  S05: Prosody is strongly confounded by venue, emotion and editing.
+  S09: There is no common elicitation target for semantic coherence.
+  S10: There is no common content-unit key.
+  S13: Interviewer roles are incomplete and heterogeneous.
+  S14: Public speech has no standard task score.
+metric_overrides:
+  silence_fraction: {reliability_multiplier: 0.70, confounds_add: [editing, venue]}
+  long_pause_rate_min: {reliability_multiplier: 0.70, confounds_add: [editing, venue]}
+  pause_mean_sec: {reliability_multiplier: 0.70, confounds_add: [editing, venue]}
+  pause_p90_sec: {reliability_multiplier: 0.70, confounds_add: [editing, venue]}
+  speech_rate_wpm: {reliability_multiplier: 0.75, confounds_add: [speech_context]}

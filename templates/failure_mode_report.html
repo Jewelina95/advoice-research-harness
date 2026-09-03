@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ADvoice 失败模式与修复优先级</title>
+  <style>
+    :root{--ink:#182126;--muted:#66747a;--line:#d9dfdc;--wash:#f5f7f6;--ours:#278c82;--warn:#d7a047;--bad:#b95249}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",Arial,sans-serif;line-height:1.7;background:#fff}
+    header{padding:50px max(24px,calc((100vw - 1180px)/2));background:#f3f6f5;border-bottom:1px solid var(--line)}h1{margin:0 0 8px;font-size:36px;letter-spacing:0}header p{margin:0;color:var(--muted)}
+    main{max-width:1180px;margin:auto;padding:0 24px}section{padding:42px 0;border-bottom:1px solid var(--line)}h2{font-size:26px;margin:0 0 12px}h3{font-size:19px;margin:28px 0 10px}.lead{font-size:17px;max-width:1040px}
+    .figure{width:100%;display:block;margin:20px 0 8px}.caption{font-size:13px;color:var(--muted);margin:7px 0 20px}.notice{border-left:4px solid var(--warn);background:#fff8eb;padding:14px 17px;margin:18px 0}.critical{border-left-color:var(--bad);background:#fff2f0}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.card{border:1px solid var(--line);padding:17px;background:#fff}.card h3{margin:0 0 8px}.value{font-size:29px;font-weight:750;color:var(--ours)}
+    table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:10px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--wash)}.num{font-variant-numeric:tabular-nums}
+    .priority{display:grid;grid-template-columns:80px 1fr 1fr;gap:12px;padding:15px 0;border-bottom:1px solid var(--line)}.priority b{color:var(--ours)}.footer{padding:28px 0 60px;color:var(--muted);font-size:13px}@media(max-width:850px){.grid3{display:block}.card{margin:10px 0}.priority{grid-template-columns:60px 1fr}.priority div:last-child{grid-column:2}}
+  </style>
+</head>
+<body>
+<header><h1>B3 失败模式与修复优先级</h1><p>由当前冻结预测、状态表、分支贡献和数据清单自动计算 · {{ generated_at }}</p></header>
+<main>
+  <section><h2>结论不是“B3 整体不工作”，而是三种不同故障</h2>
+    <p class="lead">不同任务暴露的是不同失效机制，不能用同一种调参处理。ADReSSo progression 是小样本、类别不平衡与终点错配；TAUKADIAL 是双语临床指标定义和 Agent 修正失配；PREPARE 的主要差距来自任务路由未落地以及编码器未做联合微调。</p>
+    <img class="figure" src="{{ assets }}/focus_task_performance.png" alt="focus task performance"><p class="caption">图 1. B3 base 是 Agent 风险修正前的监督融合结果。区分 base 与 final，可以判断问题来自表征/融合，还是来自 Agent 修正。</p>
+    <div class="grid3"><div class="card"><h3>ADReSSo progression</h3><div class="value">n=12</div><p>测试集仅 3 个 decline；B3 将 12 人全部判为 no_decline。四个状态在训练与测试间方向反转。</p></div><div class="card"><h3>TAUKADIAL</h3><div class="value">6 次改判</div><p>Agent 改判中 {{ tau_agent.helped }} 次纠正、{{ tau_agent.hurt }} 次伤害；中英文状态没有分别校准。</p></div><div class="card"><h3>PREPARE</h3><div class="value">{{ '%.3f'|format(benchmark['B3 micro AUROC']) }}</div><p>Agent 改判净收益为正，但主要预测能力来自冻结文本/音频表征，状态分支贡献很弱。</p></div></div>
+  </section>
+
+  <section><h2>1. ADReSSo progression：主要是协议与漂移，不是再加一个分类器</h2>
+    <img class="figure" src="{{ assets }}/progression_state_stability.png" alt="progression state stability"><p class="caption">图 2. {{ reversed_states|length }} 个状态（{{ reversed_states|join('、') }}）在训练集与测试集上的关联方向相反。测试 decline 只有 3 人，单个病例即可显著改变 AUROC。</p>
+    <div class="notice critical">训练折内 B3 AUROC 较高，但测试 AUROC 降至 0.556；基础融合已把所有测试病例判为未进展，Agent 没有改变任何标签，只改变概率排序并使 AUROC 再下降 {{ '%.3f'|format(-progression_agent.delta_auroc) }}。这不是阈值错误，而是训练关系没有迁移到测试集。</div>
+    <table><thead><tr><th>根因</th><th>当前证据</th><th>正确修复</th></tr></thead><tbody>
+      <tr><td>测试样本过小且类别不平衡</td><td>35 人训练、12 人测试；测试仅 3 个 decline。</td><td>报告重复分层受试者交叉验证和 bootstrap 分布；取得官方盲测后再锁定结论，不在这 12 人上继续选模。</td></tr>
+      <tr><td>训练测试采集差异</td><td>测试 RMS、停顿、患者语音覆盖率和静音比例均出现明显标准化漂移。</td><td>在训练折内做域/采集批次平衡；把 role coverage 和设备变量仅用于可靠度，不允许进入疾病风险。</td></tr>
+      <tr><td>任务定义过粗</td><td>全部标成 longitudinal picture description，但转录实际包含多种诱发任务。</td><td>按分段文件恢复具体任务与时间点，分别形成任务状态，再做患者级纵向变化建模。</td></tr>
+    </tbody></table>
+  </section>
+
+  <section><h2>2. TAUKADIAL：双语文本被错误地压成英语式指标</h2>
+    <p class="lead">当前中文按单个汉字计词，中文代词、停用词和填充词词典不完整；因此词数、语速、词汇多样性、代词率和内容词率不能与英文使用同一标准。固定 0.75 的 ASR 可靠度也没有反映中文、英文和代码切换的真实识别质量。</p>
+    <table><thead><tr><th>语言</th><th>条件</th><th>n</th><th>AUROC</th><th>Accuracy</th><th>Macro F1</th></tr></thead><tbody>{% for row in tau_subgroups %}<tr><td>{{ row.language }}</td><td>{{ row.condition }}</td><td>{{ row.n }}</td><td class="num">{{ '%.3f'|format(row.macro_auroc) }}</td><td class="num">{{ '%.3f'|format(row.accuracy) }}</td><td class="num">{{ '%.3f'|format(row.macro_f1) }}</td></tr>{% endfor %}</tbody></table>
+    <div class="notice critical">B3 在英文 AUROC 0.660、中文 0.495；B2 分别为 0.755 和 0.556。Agent 在六个改判中伤害多于帮助，说明它接收到的状态证据尚未经过语言条件校准。</div>
+    <p>修复顺序必须是：保留每人三段录音的独立任务/重复结构；使用中文分词、中文填充词/代词/停用词和语言特异 CN 参照；估计每条 ASR 的语言与置信度；最后才训练 task × language 条件门控。未完成前，中文词汇状态应标记为 unreliable，不能进入医生报告。</p>
+  </section>
+
+  <section><h2>3. PREPARE：差距主要在输入路由和表征训练，不在报告 Agent</h2>
+    <img class="figure" src="{{ assets }}/prepare_speechcare_gap.png" alt="PREPARE SpeechCARE gap"><p class="caption">图 3. 论文正文报告的 SpeechCARE 微平均 AUROC 为 0.8683±0.0046，F1 为 0.7211±0.0044。此前配置中的 0.8759 无法由正文核验，现已更正。</p>
+    <img class="figure" src="{{ assets }}/agent_correction_audit.png" alt="Agent correction audit"><p class="caption">图 4. PREPARE 的 Agent 修正有净收益：39 个改判中 {{ prepare_agent.helped }} 个被纠正、{{ prepare_agent.hurt }} 个被破坏；但 AUROC 增量很小，不能弥补输入表征差距。</p>
+    <table><thead><tr><th>SpeechCARE 已做</th><th>当前 B3</th><th>形成的差距</th></tr></thead><tbody>
+      <tr><td>先识别六种认知任务</td><td>2058 条全部标为一个 generic task</td><td>状态校准和门控看不到语义流畅性、图片描述、回忆、阅读等任务需求差异。</td></tr>
+      <tr><td>在训练折内微调 multilingual E5 与 mHuBERT，并训练长时上下文编码</td><td>multilingual E5/mHuBERT 冻结，仅训练浅层分类头与片段注意力</td><td>模型不能根据 PREPARE 的认知标签调整底层表征。</td></tr>
+      <tr><td>LLM 异常检查并移除临床人员单独说话样本</td><td>当前没有同等级任务/异常审计</td><td>非患者语音、任务不匹配和 ASR 异常可能进入训练。</td></tr>
+      <tr><td>十个随机种子与类别阈值优化</td><td>单次锁定运行；Agent 做有界校正</td><td>当前结果缺少随机种子稳定性，MCI 的精确率/召回率权衡仍不充分。</td></tr>
+    </tbody></table>
+    <h3>语言与语料亚组</h3><table><thead><tr><th>语言</th><th>n</th><th>标签数</th><th>AUROC</th><th>Accuracy</th></tr></thead><tbody>{% for row in prepare_subgroups %}<tr><td>{{ row.language }}</td><td>{{ row.n }}</td><td>{{ row.label_count }}</td><td class="num">{{ '%.3f'|format(row.macro_auroc) if row.macro_auroc==row.macro_auroc else '不可计算' }}</td><td class="num">{{ '%.3f'|format(row.accuracy) }}</td></tr>{% endfor %}</tbody></table>
+    <p class="caption">普通话测试样本全部为 MCI，单语言内部 AUROC 不可计算；其 100% accuracy 不能解释为跨语言泛化。西班牙语 AUROC 明显低于英语，后续必须作为预设亚组终点。</p>
+  </section>
+
+  <section><h2>4. 可执行修复顺序</h2>
+    <div class="priority"><b>P0</b><div><strong>修协议和证据定义</strong><br>保留可信语言元数据；恢复 PREPARE 六任务与 progression 分段任务；中文指标在完成语言专用算法前标记 unreliable。</div><div>验收：语言覆盖错误为 0；任务路由人工抽检 ≥95%；所有状态有 task × language 参照来源。</div></div>
+    <div class="priority"><b>P1</b><div><strong>修表征</strong><br>在训练折内微调 multilingual E5/mHuBERT，保留现有 MetricEvidence/StateCard 作为约束和辅助损失；不复制 SpeechCARE 的无约束模态权重。</div><div>验收：10 seed PREPARE 均值与置信区间；状态分支消融不再接近零；西班牙语性能不恶化。</div></div>
+    <div class="priority"><b>P2</b><div><strong>修融合与 Agent 安全门</strong><br>分支只有在外层折 AUROC 稳定高于 0.5 且方向一致时才能进入；Agent 修正必须同时改善 AUROC、Macro F1，且多数外层折非负，否则 alpha=0。</div><div>验收：TAUKADIAL 改判 helped≥hurt；progression 在小样本下自动回退基础模型；报告仍与数值决策同轨。</div></div>
+    <div class="priority"><b>P3</b><div><strong>重新锁定评估</strong><br>内部开发只看训练/验证；官方测试不再反复用于选模；增加官方盲测或未参与开发的外部数据。</div><div>验收：同协议、同标签、同测试集对比；给出 bootstrap/10 seed CI、语言/任务/语料亚组和失败病例审计。</div></div>
+  </section>
+  <div class="footer">该报告解释当前冻结结果，不使用测试标签重新调权重。修改后的模型必须产生新的 run ID，并与本报告保留的旧结果并列审计。</div>
+</main></body></html>

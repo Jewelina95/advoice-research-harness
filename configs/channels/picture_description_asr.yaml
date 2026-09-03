@@ -1,0 +1,16 @@
+display_name: Picture-description audio with unreviewed ASR
+enabled_states: [S01, S02, S03, S05, S06, S07, S08]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Semantic coherence requires a validated picture-specific relevance model.
+  S10: Standard picture-content units have not yet been encoded.
+  S11: ASR punctuation and utterance segmentation are not reliable enough for syntax scoring.
+  S12: ASR can delete fillers and repairs, so disfluency is not interpreted from generated text.
+  S13: Interviewer roles are not available.
+  S14: A validated task scoring key is not available.
+metric_overrides:
+  speech_rate_wpm: {reliability_multiplier: 0.80, confounds_add: [ASR_error]}
+  pronoun_ratio: {reliability_multiplier: 0.65, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  content_word_ratio: {reliability_multiplier: 0.55, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  lexical_mattr50: {reliability_multiplier: 0.70, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  lexical_ttr: {reliability_multiplier: 0.55, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}

@@ -1,0 +1,16 @@
+dataset_id: TAUKADIAL
+display_name: TAUKADIAL multilingual cognitive screening
+raw_path: data/raw/DementiaBank_Challenges/TAUKADIAL
+source_globs: [TAUKADIAL-24-train.tgz, TAUKADIAL-24-test.tgz, testgroundtruth.csv, meta_test.csv]
+language: zh-en
+channel: spontaneous_multilingual_audio
+channel_profile: spontaneous_multilingual_asr
+task_type: spontaneous_speech
+unit_of_analysis: subject
+labels: [HC, MCI]
+positive_class: MCI
+split_policy: official_train_test_subject_disjoint
+speaker_roles: unavailable
+transcripts: generated_asr_only
+target_description: 二分类认知筛查（健康对照、轻度认知障碍）
+agent_evaluation_cap: 40

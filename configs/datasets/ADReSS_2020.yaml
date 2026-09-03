@@ -1,0 +1,19 @@
+dataset_id: ADReSS_2020
+display_name: ADReSS 2020 Cookie Theft picture description
+raw_path: data/raw/DementiaBank_Challenges
+source_globs: [_extracted_managed/ADReSS_2020_train/**/*.wav, _extracted_managed/ADReSS_2020_train/**/*.cha]
+managed_train_root: _extracted_managed/ADReSS_2020_train/ADReSS-IS2020-data/train
+language: en
+channel: picture_description
+channel_profile: picture_description
+task_type: cookie_theft_picture_description
+unit_of_analysis: subject
+labels: [HC, AD]
+positive_class: AD
+test_size: 0.25
+split_seed: 20260813
+split_policy: deterministic_holdout_from_official_training_set
+speaker_roles: CHAT_PAR_INV
+transcripts: distributed_CHAT
+target_description: 二分类认知筛查（健康对照、阿尔茨海默病）
+agent_evaluation_cap: 39

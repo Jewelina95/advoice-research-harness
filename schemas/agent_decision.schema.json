@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://advoice.local/schemas/agent_decision.schema.json",
+  "title": "AD Voice diagnostic Agent candidate decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "config_hash", "data_snapshot_hash", "skill_hash", "decision_id", "case_id", "endpoint_type", "action", "evidence_class", "evidence_scores", "used_evidence_ids", "counterevidence_ids", "quality_evidence_ids", "state_updates", "counterevidence_checked", "screening_rationale", "uncertainty_reason", "trace_id"],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "run_id": {"type": "string"}, "config_hash": {"type": "string"},
+    "data_snapshot_hash": {"type": "string"}, "skill_hash": {"type": "string"},
+    "decision_id": {"type": "string"},
+    "case_id": {"type": "string", "pattern": "^case_[0-9a-f]{12}$"},
+    "endpoint_type": {"type": "string"},
+    "action": {"enum": ["classify", "abstain", "retest"]},
+    "evidence_class": {"type": "string"},
+    "evidence_scores": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 4}},
+    "used_evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^(state|metric|segment):"}, "uniqueItems": true},
+    "counterevidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^(state|metric|segment):"}, "uniqueItems": true},
+    "quality_evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^qc:"}, "uniqueItems": true},
+    "state_updates": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state_id", "session_id", "task_id", "action", "reason", "evidence_ids"],
+        "properties": {
+          "state_id": {"type": "string", "pattern": "^S(0[1-9]|1[0-4])$"},
+          "session_id": {"type": "string"},
+          "task_id": {"type": "string"},
+          "action": {"enum": ["keep", "downweight", "invalidate", "mark_unavailable"]},
+          "reason": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^(state|metric|segment|qc):"}, "uniqueItems": true}
+        }
+      }
+    },
+    "counterevidence_checked": {"type": "boolean"},
+    "screening_rationale": {"type": "string"},
+    "uncertainty_reason": {"type": "string"},
+    "trace_id": {"type": "string"}
+  }
+}

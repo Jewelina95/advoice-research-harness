@@ -1,0 +1,17 @@
+display_name: Structured multi-task audio with unreviewed ASR
+enabled_states: [S01, S02, S03, S05, S06, S07, S08, S10, S12, S14]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S09: Semantic scoring requires a validated reference for each task and language.
+  S11: ASR punctuation and utterance segmentation are not reliable enough for syntax scoring.
+  S13: A common interviewer-role protocol is unavailable.
+metric_overrides:
+  speech_rate_wpm: {reliability_multiplier: 0.75, confounds_add: [ASR_error, task_type]}
+  pronoun_ratio: {reliability_multiplier: 0.60, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, task_type]}
+  content_word_ratio: {reliability_multiplier: 0.50, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, task_type]}
+  lexical_mattr50: {reliability_multiplier: 0.65, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, task_type]}
+  lexical_ttr: {reliability_multiplier: 0.50, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error, task_type]}
+  picture_uncertainty_rate_100w: {reliability_multiplier: 0.60, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  picture_information_density: {reliability_multiplier: 0.70, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  picture_content_redundancy: {reliability_multiplier: 0.60, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}
+  picture_content_unit_coverage: {reliability_multiplier: 0.75, role: model_auxiliary, report_permission: false, confounds_add: [ASR_error]}

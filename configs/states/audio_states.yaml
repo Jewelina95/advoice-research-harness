@@ -1,3 +1,4 @@
+metric_contribution_clip_z: 5.0
 states:
   - id: S01
     name_zh: 停顿与流畅性负担
@@ -9,8 +10,8 @@ states:
     name_zh: 输出效率
     branch: speech_behavior
     clinical_question: 单位任务时间内能否维持连续有效的语音输出
-    metrics: [voiced_fraction, speech_run_mean_sec, speech_run_rate_min]
-    weights: [0.45, 0.35, 0.20]
+    metrics: [voiced_fraction, speech_run_mean_sec, speech_run_rate_min, speech_rate_wpm]
+    weights: [0.32, 0.23, 0.15, 0.30]
   - id: S03
     name_zh: 发声连续性
     branch: speech_behavior
@@ -20,7 +21,7 @@ states:
   - id: S04
     name_zh: 声音强度稳定性
     branch: auxiliary_acoustic
-    clinical_question: 声音强度是否稳定；该状态受设备影响，只作模型辅助
+    clinical_question: 声音强度是否稳定；受设备影响，只作模型辅助
     metrics: [rms_db_mean, rms_db_std]
     weights: [0.35, 0.65]
   - id: S05
@@ -35,13 +36,52 @@ states:
     clinical_question: 只用于模型判别，不进入疾病机制解释
     metrics: [zcr_mean, spectral_centroid_mean, spectral_bandwidth_mean, spectral_rolloff_mean, spectral_flatness_mean]
     weights: [0.20, 0.20, 0.20, 0.20, 0.20]
-unavailable_states:
-  - {id: S07, name_zh: 词汇提取与具体性, reason: NCMMSC 本地无人工转录，ASR 仅供 B2，尚未完成中文临床语言校准}
-  - {id: S08, name_zh: 词汇多样性, reason: 缺少中文任务内参考与转录误差校准}
-  - {id: S09, name_zh: 语义连贯性, reason: 缺少逐文件任务目标和标准内容单元}
-  - {id: S10, name_zh: 信息密度, reason: 缺少逐文件任务答案表和人工校验}
-  - {id: S11, name_zh: 句法复杂度, reason: 中文 ASR 句法边界尚未校验}
-  - {id: S12, name_zh: 言语不流畅, reason: 中文修正和填充词检测尚未校验}
-  - {id: S13, name_zh: 互动负担, reason: 无说话人角色和轮次标注}
-  - {id: S14, name_zh: 任务表现, reason: 缺少逐文件任务类型映射与评分表}
-
+  - id: S07
+    name_zh: 词汇提取与具体性
+    branch: language
+    clinical_question: 是否更多依赖代词或低具体性表达
+    metrics: [pronoun_ratio, content_word_ratio, picture_uncertainty_rate_100w]
+    weights: [0.50, 0.25, 0.25]
+  - id: S08
+    name_zh: 词汇多样性
+    branch: language
+    clinical_question: 在控制样本长度后，词汇丰富度是否下降
+    metrics: [lexical_mattr50, lexical_ttr]
+    weights: [0.80, 0.20]
+  - id: S09
+    name_zh: 语义连贯性
+    branch: language
+    clinical_question: 表达是否偏离任务目标或发生明显话题漂移
+    metrics: []
+    weights: []
+    planned_reason: 缺少经人工核验的任务相关性、话题漂移和跨语言语义算法
+  - id: S10
+    name_zh: 信息密度与内容单元
+    branch: language
+    clinical_question: 有效内容单位和单位时间信息量是否下降
+    metrics: [picture_information_density]
+    weights: [1.0]
+  - id: S11
+    name_zh: 句法复杂度
+    branch: language
+    clinical_question: 话语长度和结构复杂度是否下降
+    metrics: [mean_utterance_words]
+    weights: [1.0]
+  - id: S12
+    name_zh: 不流利、重复与修正
+    branch: language
+    clinical_question: 填充、重复和自我修正负担是否升高
+    metrics: [filler_rate_100w, repair_rate_100w, picture_content_redundancy]
+    weights: [0.30, 0.45, 0.25]
+  - id: S13
+    name_zh: 互动与语用负担
+    branch: interaction
+    clinical_question: 患者是否需要更多访谈员支持或占用较少对话轮次
+    metrics: [patient_turn_share]
+    weights: [1.0]
+  - id: S14
+    name_zh: 任务表现
+    branch: task_performance
+    clinical_question: 标准任务的关键答案或内容单位完成度是否下降
+    metrics: [picture_content_unit_coverage]
+    weights: [1.0]

@@ -1,0 +1,12 @@
+display_name: Longitudinal progression audio
+enabled_states: [S01, S02, S03, S05, S06]
+unavailable_reasons:
+  S04: Device-sensitive loudness is retained as QC/model input, not a clinical state.
+  S07: Longitudinal language metrics require validated paired transcripts.
+  S08: Longitudinal language metrics require validated paired transcripts.
+  S09: Longitudinal semantic change requires paired task calibration.
+  S10: Longitudinal content-unit change requires a task scoring key.
+  S11: Longitudinal syntax requires validated paired transcripts.
+  S12: Longitudinal disfluency requires validated paired transcripts.
+  S13: Speaker-role interaction is unavailable.
+  S14: No paired task score is distributed.

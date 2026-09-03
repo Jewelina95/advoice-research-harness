@@ -1,8 +1,20 @@
-project_name: ADvoice evidence-governed screening
-schema_version: 1
-seed: 20260813
+project_name: ADvoice 9.2 blinded evidence-likelihood cognitive diagnostic agent
+schema_version: 4
+seed: 20260902
 default_dataset: NCMMSC2021_AD
+default_datasets:
+  - IAEAV
+  - ADReSS_2020
+  - ADReSSo_2021_diagnosis
+  - ADReSSo_2021_progression
+  - PROCESS_2
+  - PREPARE_DrivenData
+  - TAUKADIAL
+  - DementiaBank_Pitt
+  - DementiaNet_PublicFigures
+  - NCMMSC2021_AD
 report_language: zh
+figure_language: en
 run_retention: 10
 clinical_intended_use: research screening and referral support, not diagnosis
 conditions:
@@ -10,6 +22,11 @@ conditions:
     name: traditional_acoustic_ml
   - id: B2
     name: direct_transcript_agent
-  - id: Ours
-    name: evidence_governed_state_fusion
-
+  - id: B3
+    name: single_evidence_diagnostic_agent_with_two_supervised_modules
+supplementary_conditions:
+  - id: Legacy_C
+    name: 8_13_reliability_aware_fusion_with_report_only_agent
+prediction_engine: matched_encoder_supervised_prior_plus_blinded_evidence_agent_plus_validation_frozen_log_opinion_pool
+agent_role: evidence_audit_discrete_evidence_scoring_hypothesis_update_and_clinical_communication
+release_policy: publish_only_verified_same_run_artifacts

@@ -1,17 +1,70 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADvoice 系统报告</title>
-<style>
-:root{--ink:#172126;--muted:#5f6c73;--line:#d9dfdc;--teal:#278c82;--blue:#4d84c4;--amber:#d79b36;--red:#cf6d66;--paper:#fff;--wash:#f4f7f5}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--paper);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif;line-height:1.65}header{padding:54px max(28px,calc((100vw - 1180px)/2));border-bottom:1px solid var(--line);background:var(--wash)}header h1{font-size:38px;margin:0 0 8px;letter-spacing:0}header p{margin:0;color:var(--muted)}nav{position:sticky;top:0;z-index:4;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);padding:10px max(28px,calc((100vw - 1180px)/2));display:flex;gap:20px;overflow:auto}nav a{color:var(--ink);text-decoration:none;white-space:nowrap;font-size:14px}main{max-width:1180px;margin:auto}section{padding:46px 0;border-bottom:1px solid var(--line)}h2{font-size:27px;margin:0 0 18px}h3{font-size:18px;margin:24px 0 10px}.lead{font-size:18px;max-width:900px}.notice{border-left:4px solid var(--amber);padding:12px 18px;background:#fff8e9}.pipeline{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:stretch;margin:28px 0}.step{border:1px solid var(--line);padding:16px 13px;border-radius:7px;background:white;min-height:132px}.step b{display:block;color:var(--teal);font-size:13px;margin-bottom:7px}.arrow{display:none}.triple{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.condition{border-top:4px solid var(--blue);padding:18px 0}.condition:nth-child(2){border-color:var(--red)}.condition:nth-child(3){border-color:var(--teal)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;vertical-align:top}th{background:var(--wash);position:sticky;top:41px}.tag{display:inline-block;padding:2px 7px;border-radius:4px;background:#e8f2ef;color:#17675f;font-size:12px}.off{background:#f3e9e7;color:#8e4944}.figure{width:100%;display:block;margin:18px 0}.code-list{columns:2;column-gap:28px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.code-list div{break-inside:avoid;border-bottom:1px solid #edf0ee;padding:7px 0;word-break:break-all}.footer{padding:28px 0 60px;color:var(--muted);font-size:13px}@media(max-width:900px){main{padding:0 22px}.pipeline{grid-template-columns:1fr 1fr}.triple{grid-template-columns:1fr}.code-list{columns:1}}@media(min-width:901px){main{padding:0 20px}}
-</style></head>
-<body><header><h1>ADvoice 系统运行报告</h1><p>{{ dataset.display_name }}　·　运行 {{ run.run_id }}　·　用途：{{ project.clinical_intended_use }}</p></header>
-<nav><a href="#data">数据</a><a href="#pipeline">运行链路</a><a href="#evidence">指标证据</a><a href="#state">临床状态</a><a href="#fusion">融合</a><a href="#agent">Agent 边界</a><a href="#trace">代码溯源</a><a href="evaluation_report.html">评估报告</a></nav><main>
-<section id="data"><h2>1. 数据输入与切分</h2><p class="lead">本轮只纳入 30–60 秒长音频。六秒切片被发现但明确排除；同一受试者的多条录音先分别提取，再聚合为一个建模单位，官方训练集与测试集之间执行受试者泄漏审计。官方将长语音定义为 60 秒图片描述任务，来源见 <a href="{{ dataset.source_url }}">NCMMSC AD2021</a>。</p><img class="figure" src="{{ assets }}/dataset_inventory.png" alt="数据清单图"><div class="notice">系统不根据录音序号继续猜测更细任务。NCMMSC 本地没有人工转录、内容单元答案表或说话人角色，因此 Ours 的中文语言状态和互动状态在本轮禁用，而不是用未经校验的代理数值补齐。</div>
-<table><tr><th>审计项</th><th>结果</th></tr><tr><td>长音频记录 / 受试者</td><td>{{ dataset_audit.recordings }} / {{ dataset_audit.subjects }}</td></tr><tr><td>官方训练 / 测试受试者</td><td>{{ dataset_audit.train_subjects }} / {{ dataset_audit.test_subjects }}</td></tr><tr><td>受试者跨 split 重叠</td><td>{{ dataset_audit.subject_overlap_count }}</td></tr><tr><td>受试者键标签冲突</td><td>{{ dataset_audit.subject_label_conflict_count }}</td></tr><tr><td>六秒音频排除数</td><td>{{ dataset_audit.six_second_files_discovered_but_excluded }}</td></tr><tr><td>16 kHz 单声道一致性</td><td>{{ dataset_audit.all_audio_mono_16khz }}</td></tr></table></section>
-<section id="pipeline"><h2>2. 一次运行如何完成</h2><div class="pipeline"><div class="step"><b>01 数据注册</b>长音频清单、SHA-256、官方 split、受试者泄漏审计。</div><div class="step"><b>02 特征与片段</b>从 WAV 重算声学指标，并从长音频内部生成 10 秒证据窗口。</div><div class="step"><b>03 MetricEvidence</b>原值、HC 训练参考、方向、可靠度、缺失、混杂和报告权限。</div><div class="step"><b>04 StateCard</b>同一临床构念内按医学权重 × 病例可靠度融合，保留反证和片段。</div><div class="step"><b>05 分层融合</b>语音行为状态分支与低层声学辅助分支独立学习，再由可靠度门控。</div><div class="step"><b>06 评估与报告</b>固定 B1/B2/Ours；生成医学 A 层、框架 B 层和两份 HTML。</div></div>
-<p>缓存依据不是文件日期，而是输入文件、配置和代码的内容哈希。修改 metric 配置不会重跑音频解码；修改报告模板不会重训模型。每个 stage 的 executed/cached 状态写入 run manifest。</p></section>
-<section id="evidence"><h2>3. MetricEvidence：指标不是单个数</h2><p>每个指标必须同时携带医学方向、技术可靠度、任务与设备混杂、缺失状态和报告权限。方向为 1 表示高于 HC 参考更异常，-1 表示低于参考更异常，0 表示没有足够医学依据指定单调方向，只能作模型辅助。</p><table><thead><tr><th>指标</th><th>状态</th><th>分支</th><th>方向</th><th>基础可靠度</th><th>证据角色</th><th>报告</th><th>混杂</th></tr></thead><tbody>{% for m in metric_definitions %}<tr><td>{{ m.id }}</td><td>{{ m.state }}</td><td>{{ m.branch }}</td><td>{{ m.direction }}</td><td>{{ '%.2f'|format(m.reliability) }}</td><td>{{ m.role }}</td><td><span class="tag {{ '' if m.report_permission else 'off' }}">{{ '允许' if m.report_permission else '不允许' }}</span></td><td>{{ m.confounds|join('、') }}</td></tr>{% endfor %}</tbody></table></section>
-<section id="state"><h2>4. StateCard：状态内部融合</h2><p>一个状态的分数不是简单平均。每条指标权重先乘病例级可靠度，缺失指标权重归零，再除以本病例有效权重总和。状态的 0 表示接近训练集 HC 中位参考；1–2 为边界偏离，≥2 为明显偏离；可靠度不足时直接标为 unreliable。</p><table><thead><tr><th>状态</th><th>临床问题</th><th>输入指标</th><th>配置权重</th><th>分支</th></tr></thead><tbody>{% for s in state_definitions %}<tr><td>{{ s.id }} {{ s.name_zh }}</td><td>{{ s.clinical_question }}</td><td>{{ s.metrics|join('、') }}</td><td>{{ s.weights|join(' / ') }}</td><td>{{ s.branch }}</td></tr>{% endfor %}</tbody></table><h3>本通道未启用的状态</h3><table>{% for s in unavailable_states %}<tr><td>{{ s.id }} {{ s.name_zh }}</td><td>{{ s.reason }}</td></tr>{% endfor %}</table></section>
-<section id="fusion"><h2>5. 状态外融合与训练</h2><div class="triple"><div class="condition"><h3>语音行为状态分支</h3><p>S01–S03 进入标准化多项逻辑回归。它学习状态与 HC/MCI/AD 的关联，不重复学习未校准的一百多个低层特征。</p></div><div class="condition"><h3>低层声学辅助分支</h3><p>MFCC、谱学、强度和基频只作辅助判别；病例权重被封顶为 {{ ours_meta.auxiliary_weight_cap }}，不进入疾病机制解释。</p></div><div class="condition"><h3>可靠度条件门控</h3><p>架构允许分支可靠度影响 softmax 权重，再用训练集折外预测拟合多分类校准器。是否真的形成病例级动态权重，必须由训练结果审计，不能由架构名称直接推断。</p></div></div><img class="figure" src="{{ assets }}/branch_weights.png" alt="门控权重">{% if not gate_audit.case_dynamic %}<div class="notice"><strong>本轮没有学出病例级动态门控。</strong>可靠度系数为 {{ '%.3g'|format(gate_audit.reliability_beta) }}，测试集语音行为权重标准差为 {{ '%.3g'|format(gate_audit.behavior_weight_std) }}；两分支权重实际近似固定为 {{ '%.3f'|format(ours_meta.mean_test_branch_weights.speech_behavior) }} / {{ '%.3f'|format(ours_meta.mean_test_branch_weights.auxiliary_acoustic) }}。因此本轮只能称为“可靠度条件门控架构”，不能声称已经获得逐病例自适应融合。</div>{% endif %}<table><tr><th>训练实际学习的参数</th><th>本轮结果</th></tr><tr><td>B1 正则强度</td><td>C={{ b1_meta.selected_c }}；{{ b1_meta.feature_count }} 个手工声学特征</td></tr><tr><td>Ours 门控参数</td><td>{{ ours_meta.gate_parameters }}</td></tr><tr><td>训练集平均分支权重</td><td>{{ ours_meta.mean_train_branch_weights }}</td></tr><tr><td>测试集平均分支权重</td><td>{{ ours_meta.mean_test_branch_weights }}</td></tr><tr><td>病例级动态门控审计</td><td>{{ '通过' if gate_audit.case_dynamic else '未通过：权重未随病例变化' }}</td></tr><tr><td>校准</td><td>{{ ours_meta.calibration }}</td></tr></table></section>
-<section id="agent"><h2>6. Agent 在哪里，哪里不是 Agent</h2><div class="triple"><div class="condition"><h3>B1</h3><p>不是 agent。它是可复现的传统声学 ML，不生成医生报告。</p></div><div class="condition"><h3>B2 direct agent</h3><p>真实 {{ b2_status.model or 'agent' }} 只读取 Whisper ASR 转录，直接给分类和文字报告。状态：<strong>{{ b2_status.status }}</strong>。失败时不使用代理规则代替。</p></div><div class="condition"><h3>Ours</h3><p>数值概率由可校准融合模型冻结；report agent 只把 MetricEvidence、StateCard 和片段证据翻译给医生，不能改概率。本轮报告 agent：<strong>{{ ours_report_status.status }}</strong>。</p></div></div><div class="notice">因此当前系统是 agent-assisted clinical system，而不是让 LLM 随机决定数值融合。这个边界保证同一输入、同一模型版本可以重建相同概率，并允许单独审计报告生成。</div></section>
-<section id="trace"><h2>7. 代码、配置与运行溯源</h2><p>项目根目录：<a href="{{ root_uri }}">{{ root_uri }}</a>。以下清单记录本轮报告可见的源文件 SHA-256；完整 stage 指纹和输出路径见 run manifest。</p><table><tr><th>Stage</th><th>状态</th><th>指纹</th><th>输出</th></tr>{% for stage in run.stages %}<tr><td>{{ stage.name }}</td><td>{{ stage.status }}</td><td><code>{{ stage.fingerprint[:16] }}</code></td><td>{{ stage.outputs|length }} 个</td></tr>{% endfor %}</table><h3>源文件清单</h3><div class="code-list">{% for f in source_files %}<div>{{ f.path }}<br>{{ f.sha256[:20] }}</div>{% endfor %}</div></section>
-<div class="footer">该输出用于研究筛查和转诊支持，不构成 AD、MCI 或其他疾病的临床诊断。诊断仍需病史、神经心理量表、体格检查及必要的生物标志物检查。</div></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ dataset.display_name }} | ADvoice system</title>
+  <style>
+    :root{--ink:#172126;--muted:#647178;--line:#d9dfdc;--blue:#4d84c4;--purple:#7864c7;--teal:#278c82;--amber:#d89a32;--wash:#f5f7f6}
+    *{box-sizing:border-box} body{margin:0;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif;line-height:1.65}
+    header{padding:50px max(24px,calc((100vw - 1180px)/2));background:var(--wash);border-bottom:1px solid var(--line)} h1{font-size:36px;margin:0 0 8px} header p{margin:0;color:var(--muted)}
+    nav{position:sticky;top:0;z-index:5;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);padding:11px max(24px,calc((100vw - 1180px)/2))} nav a{margin-right:20px;color:var(--ink);text-decoration:none}
+    main{max-width:1180px;margin:auto;padding:0 22px} section{padding:42px 0;border-bottom:1px solid var(--line)} h2{font-size:27px;margin:0 0 12px} h3{font-size:18px;margin:24px 0 9px}.lead{max-width:960px;font-size:17px}
+    .pipeline{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0}.step{min-height:138px;border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:5px;padding:15px;background:#fff}.step:nth-child(2){border-top-color:var(--purple)}.step:nth-child(3){border-top-color:var(--teal)}.step:nth-child(4){border-top-color:var(--amber)}.step b{display:block;margin-bottom:7px}
+    .figure{width:100%;display:block;margin:18px 0}.notice{border-left:4px solid var(--amber);padding:12px 17px;background:#fff7e7}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid var(--line);padding:9px;text-align:left;vertical-align:top}th{background:var(--wash)}
+    .tag{display:inline-block;padding:2px 7px;border-radius:3px;background:#e9f4f1;color:#17675f}.off{background:#f3e9e7;color:#8e4944}.footer{padding:28px 0 60px;color:var(--muted);font-size:13px}@media(max-width:850px){.pipeline{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+<header><h1>ADvoice 系统设计报告</h1><p>{{ dataset.display_name }} · 通道配置 {{ channel_profile.id }} · {{ run.run_id }}</p></header>
+<nav><a href="#data">数据路由</a><a href="#evidence">指标证据</a><a href="#states">临床状态</a><a href="#fusion">融合</a><a href="#agent">诊断 Agent</a><a href="evaluation_report.html">评估结果</a><a href="run_report.html">运行审计</a></nav>
+<main>
+<section id="data">
+  <h2>1. 数据路由与病例切分</h2>
+  <p class="lead">输入先按任务、语言、模态和说话人角色路由。音频与转录只保留患者发言；同一受试者的多任务和多次访问保持在同一数据划分。分析单位为 {{ dataset.unit_of_analysis }}，标签为 {{ dataset.labels|join(' / ') }}。</p>
+  <img class="figure" src="{{ assets }}/dataset_inventory.png" alt="Dataset inventory">
+  <table><tr><th>Recordings</th><td>{{ dataset_audit.recordings }}</td><th>Subjects</th><td>{{ dataset_audit.subjects }}</td></tr><tr><th>Train subjects</th><td>{{ dataset_audit.train_subjects }}</td><th>Test subjects</th><td>{{ dataset_audit.test_subjects }}</td></tr><tr><th>Cross-split subject overlap</th><td>{{ dataset_audit.subject_overlap_count }}</td><th>Cross-split duplicate audio</th><td>{{ dataset_audit.cross_split_duplicate_audio_hash_count or 0 }}</td></tr></table>
+</section>
+<section id="evidence">
+  <h2>2. MetricEvidence：把指标变成可审查证据</h2>
+  <p>这里不新增重复指标，而是给已启用指标附加异常方向、病例级可靠度、缺失状态、混杂标签、证据角色和报告权限。低解释性的模型辅助特征可以参与预测，但不能被写成疾病机制；质量控制指标只能调节可信度，不能直接支持 AD 风险。</p>
+  <table><thead><tr><th>Metric</th><th>State</th><th>Branch</th><th>Direction</th><th>Base reliability</th><th>Evidence role</th><th>Report</th><th>Confound tags</th></tr></thead><tbody>{% for m in metric_definitions %}<tr><td>{{ m.id }}</td><td>{{ m.state }}</td><td>{{ m.branch }}</td><td>{{ m.direction }}</td><td>{{ '%.2f'|format(m.reliability) }}</td><td>{{ m.role }}</td><td><span class="tag {{ '' if m.report_permission else 'off' }}">{{ 'allowed' if m.report_permission else 'model only' }}</span></td><td>{{ m.confounds|join(', ') }}</td></tr>{% endfor %}</tbody></table>
+</section>
+<section id="states">
+  <h2>3. 状态内部融合与任务特异状态</h2>
+  <p>同一临床构念下的指标按“配置权重 × 病例级可靠度”融合，缺失证据不进入分母。多任务数据同时保留总体状态和任务特异状态；每个训练折只用该折训练参考组完成校准。状态卡输出偏离程度、可信度、支持与反证，以及可回到音频或转录的片段。</p>
+  <table><thead><tr><th>State</th><th>Clinical question</th><th>Active metrics</th><th>Configured weights</th><th>Branch</th></tr></thead><tbody>{% for s in state_definitions %}<tr><td>{{ s.id }} {{ s.name_zh }}</td><td>{{ s.clinical_question }}</td><td>{{ s.metrics|join(', ') }}</td><td>{{ s.weights|join(' / ') }}</td><td>{{ s.branch }}</td></tr>{% endfor %}</tbody></table>
+  <h3>任务特异状态执行摘要</h3>
+  <table><tr><th>Task scopes</th><td>{{ task_state_summary.scopes|join(' / ') if task_state_summary.scopes else 'single-task: not applicable' }}</td><th>Task-specific cards</th><td>{{ task_state_summary.card_count }}</td></tr><tr><th>Task × state combinations</th><td>{{ task_state_summary.state_count }}</td><th>Segment trace rate</th><td>{% if task_state_summary.segment_trace_rate is not none %}{{ '%.1f%%'|format(task_state_summary.segment_trace_rate * 100) }}{% else %}not applicable{% endif %}</td></tr></table>
+  {% if task_trace_examples %}<h3>Task → State → Evidence trace examples</h3><table><thead><tr><th>Case</th><th>Task</th><th>State</th><th>Fusion / raw / confidence</th><th>Supporting metrics</th><th>Source segments</th></tr></thead><tbody>{% for row in task_trace_examples %}<tr><td>{{ row.case_id }}</td><td>{{ row.task_scope }}</td><td>{{ row.state_id }} {{ row.state_name }}</td><td>{{ '%.2f'|format(row.state_z) }} / {{ '%.2f'|format(row.raw_state_z) }} / {{ '%.2f'|format(row.confidence) }}</td><td>{{ row.metrics or '—' }}</td><td>{{ row.segments or 'metric-level trace only' }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+  <h3>本通道未启用</h3><table>{% for s in unavailable_states %}<tr><td>{{ s.id }} {{ s.name_zh }}</td><td>{{ s.reason }}</td></tr>{% endfor %}</table>
+</section>
+<section id="fusion">
+  <h2>4. 一个诊断 Agent 与两个小型监督模块</h2>
+  <div class="pipeline">
+    <div class="step"><b>模块一：基础监督预测</b>语言、言语行为、辅助声学等专家分别产生折外概率；二层逻辑回归只用训练折学习专家组合，形成不依赖生成模型的基础风险。</div>
+    <div class="step"><b>Agent：证据审理</b>读取 MetricEvidence、StateCard、任务轨迹和基础风险，选择可用证据、检查反证与混杂，并形成训练集原型支持度。测试标签不进入工作区。</div>
+    <div class="step"><b>模块二：有界风险修正</b>用折外 Agent 变量训练小型修正模型。修正权限由证据覆盖率、可靠度和混杂负担共同控制；证据不足时严格退回基础概率。</div>
+    <div class="step"><b>校准与临床表达</b>只用训练折选择修正强度并做温度校准。最终 Agent 将冻结概率与允许报告的证据写成医生可审查报告，不得改写数值结论。</div>
+  </div>
+  <img class="figure" src="{{ assets }}/branch_weights.png" alt="Learned expert reliance and case gate">
+  <img class="figure" src="{{ assets }}/task_state_coefficients.png" alt="State discriminability">
+  <h3>训练摘要</h3>
+  <table><thead><tr><th>Expert</th><th>Selected C</th><th>Best fold-internal macro AUROC</th><th>Training role</th></tr></thead><tbody>{% for row in branch_training_summary %}<tr><td>{{ row.branch }}</td><td>{{ row.selected_c }}</td><td>{% if row.best_cv_macro_auroc is not none %}{{ '%.3f'|format(row.best_cv_macro_auroc) }}{% else %}—{% endif %}</td><td>{{ row.task_state_selection }}</td></tr>{% endfor %}</tbody></table>
+  <table>
+    <tr><th>Base module C</th><td>{{ ours_meta.base_selected_c|default('—') }}</td><th>Correction module C</th><td>{{ ours_meta.correction_selected_c|default('—') }}</td></tr>
+    <tr><th>Selected correction α</th><td>{{ ours_meta.selected_alpha|default('—') }}</td><th>Temperature</th><td>{{ ours_meta.temperature|default('—') }}</td></tr>
+    <tr><th>Base OOF macro F1</th><td>{{ ours_meta.base_oof_macro_f1|default('—') }}</td><th>Final OOF macro F1</th><td>{{ ours_meta.final_oof_macro_f1|default('—') }}</td></tr>
+    <tr><th>Agent used held-out labels</th><td>{{ ours_meta.test_labels_used_by_agent|default('unknown') }}</td><th>Case-specific gate</th><td>{{ gate_audit.case_dynamic }}</td></tr>
+  </table>
+</section>
+<section id="agent">
+  <h2>5. 条件定义与 Agent 边界</h2>
+  <p class="lead">B3 不是让大模型自由判断，也不是把监督概率换一种说法。Agent 参与证据选择、假设更新、反证检查和有界风险修正；两个小型监督模块负责从训练数据学习稳定组合与校准边界。最终文字报告是同一 Agent 的沟通阶段。</p>
+  <table><tr><th>B1</th><td>传统声学机器学习，不生成临床证据链。</td></tr><tr><th>B2</th><td>直接诊断 Agent，只读原始转录并自行给出分类和报告。状态：{{ b2_status.status }}。</td></tr><tr><th>B3</th><td>单一证据诊断 Agent + 基础监督模块 + 有界风险修正/校准模块。报告状态：{{ ours_report_status.status }}。</td></tr></table>
+  <div class="notice">用途边界：研究性认知筛查与转诊支持，不替代神经心理量表、生物标志物或临床诊断。</div>
+</section>
+<div class="footer">所有病例结论必须能追溯到允许报告的 MetricEvidence、StateCard 与来源片段。</div>
+</main>
+</body>
+</html>

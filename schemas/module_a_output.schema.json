@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Supervised module A output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "config_hash", "data_snapshot_hash", "skill_hash", "output_id", "case_id", "endpoint_type", "probabilities", "point_estimate", "interval", "uncertainty", "branch_contributions", "state_contributions", "fold_provenance", "model_version"],
+  "properties": {
+    "run_id": {"type": "string"}, "config_hash": {"type": "string"},
+    "data_snapshot_hash": {"type": "string"}, "skill_hash": {"type": "string"},
+    "output_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "endpoint_type": {"type": "string"},
+    "probabilities": {"type": ["object", "null"], "additionalProperties": {"type": "number"}},
+    "point_estimate": {"type": ["number", "null"]},
+    "interval": {"type": ["array", "null"], "items": {"type": "number"}},
+    "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+    "branch_contributions": {"type": "object", "additionalProperties": {"type": "number"}},
+    "state_contributions": {"type": "object", "additionalProperties": {"type": "number"}},
+    "fold_provenance": {"type": "string"},
+    "model_version": {"type": "string"}
+  }
+}

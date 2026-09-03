@@ -43,6 +43,20 @@ STATE_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
+def parse_byte_range(header: str | None, size: int) -> tuple[int, int] | None:
+    if not header or not header.startswith("bytes="):
+        return None
+    start_text, _, end_text = header.removeprefix("bytes=").partition("-")
+    if not start_text:
+        length = min(int(end_text), size)
+        return size - length, size - 1
+    start = int(start_text)
+    end = min(int(end_text), size - 1) if end_text else size - 1
+    if start < 0 or start >= size or end < start:
+        raise ValueError("invalid byte range")
+    return start, end
+
+
 def _finite(value: Any) -> float | None:
     try:
         number = float(value)

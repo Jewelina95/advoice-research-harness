@@ -8,7 +8,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from advoice.demo import analyze_base64_wav, analyze_local_manifest_case, write_demo_result
+from advoice.demo import (
+    analyze_base64_wav,
+    analyze_local_manifest_case,
+    parse_byte_range,
+    write_demo_result,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -70,20 +75,6 @@ def analyze_local(case_id: str) -> dict:
     return json.loads(output.read_text(encoding="utf-8"))
 
 
-def _byte_range(header: str | None, size: int) -> tuple[int, int] | None:
-    if not header or not header.startswith("bytes="):
-        return None
-    start_text, _, end_text = header.removeprefix("bytes=").partition("-")
-    if not start_text:
-        length = min(int(end_text), size)
-        return size - length, size - 1
-    start = int(start_text)
-    end = min(int(end_text), size - 1) if end_text else size - 1
-    if start < 0 or start >= size or end < start:
-        raise ValueError("invalid byte range")
-    return start, end
-
-
 class DemoHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, directory=str(WEB), **kwargs)
@@ -99,7 +90,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
     def _file(self, file_path: Path) -> None:
         size = file_path.stat().st_size
         try:
-            selected = _byte_range(self.headers.get("Range"), size)
+            selected = parse_byte_range(self.headers.get("Range"), size)
         except ValueError:
             self.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value)
             return

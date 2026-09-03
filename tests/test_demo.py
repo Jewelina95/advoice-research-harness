@@ -4,8 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from advoice.demo import analyze_demo_audio, analyze_local_manifest_case
-from demo.server import _byte_range
+from advoice.demo import analyze_demo_audio, analyze_local_manifest_case, parse_byte_range
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +57,7 @@ def test_local_manifest_case_uses_channel_metadata_without_diagnosis() -> None:
 
 
 def test_audio_byte_ranges_support_browser_seeking() -> None:
-    assert _byte_range(None, 100) is None
-    assert _byte_range("bytes=10-19", 100) == (10, 19)
-    assert _byte_range("bytes=90-", 100) == (90, 99)
-    assert _byte_range("bytes=-10", 100) == (90, 99)
+    assert parse_byte_range(None, 100) is None
+    assert parse_byte_range("bytes=10-19", 100) == (10, 19)
+    assert parse_byte_range("bytes=90-", 100) == (90, 99)
+    assert parse_byte_range("bytes=-10", 100) == (90, 99)

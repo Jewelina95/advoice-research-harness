@@ -8,7 +8,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from advoice.cognitive_extension import LABELS, benchmark_metrics, normalize_probability
+from advoice.cognitive_extension import LABELS, benchmark_metrics
+from advoice.config import paths
 
 
 PUBLISHED_SPEECHCARE = {
@@ -20,22 +21,31 @@ PUBLISHED_SPEECHCARE = {
 }
 
 
-def evaluate_prediction_file(path: Path) -> dict[str, float]:
+def evaluate_prediction_file(path: Path, expected_subject_ids: set[str]) -> dict[str, float]:
     frame = pd.read_csv(path, dtype={"subject_id": str})
+    if "subject_id" not in frame or frame["subject_id"].isna().any():
+        raise ValueError("PREPARE benchmark requires non-null subject IDs")
+    if frame["subject_id"].duplicated().any():
+        raise ValueError("PREPARE benchmark requires one prediction per subject")
+    if len(expected_subject_ids) != 412 or set(frame["subject_id"]) != expected_subject_ids:
+        raise ValueError("Predictions do not match the frozen 412-subject PREPARE test cohort")
     truth_column = "true_label" if "true_label" in frame else "label"
     label_index = {label: index for index, label in enumerate(LABELS)}
     truth = frame[truth_column].astype(str).map(label_index)
     if truth.isna().any():
         raise ValueError(f"Unexpected labels in {path}.")
-    probability = normalize_probability(
-        frame[[f"prob_{label}" for label in LABELS]].to_numpy(dtype=float)
-    )
+    probability = frame[[f"prob_{label}" for label in LABELS]].to_numpy(dtype=float)
+    if (not np.isfinite(probability).all() or (probability < 0).any()
+            or (probability > 1).any() or not np.allclose(probability.sum(axis=1), 1.0, atol=1e-6)):
+        raise ValueError("Invalid class probabilities; benchmark must not silently repair predictions")
     return benchmark_metrics(truth.to_numpy(dtype=int), probability)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--root", type=Path, default=paths().workspace)
+    parser.add_argument("--protocol-inputs", type=Path,
+                        default=paths().root / "references/speechcare/prepare_protocol_inputs.csv")
     parser.add_argument(
         "--prediction",
         type=Path,
@@ -52,7 +62,9 @@ def main() -> None:
     prediction = arguments.prediction or (
         root / "artifacts" / "PREPARE_DrivenData" / "ours_predictions.csv"
     )
-    metrics = evaluate_prediction_file(prediction)
+    protocol = pd.read_csv(arguments.protocol_inputs, dtype={"uid": str})
+    expected_ids = set(protocol.loc[protocol["reference_partition"].eq("test"), "uid"])
+    metrics = evaluate_prediction_file(prediction, expected_ids)
     comparisons = {
         metric: {
             "advoice": float(metrics[metric]),
@@ -91,7 +103,7 @@ def main() -> None:
         "prediction_path": str(prediction),
         "development_superiority_gate_passed": gate_passed,
         "confirmatory_superiority_claim_allowed": False,
-        "other_dataset_expansion_allowed_by_user_gate": gate_passed,
+        "other_dataset_execution_independent_of_benchmark": True,
         "comparison": comparisons,
         "retrospective_same_backbone_extension": {
             "available": bool(extension_comparisons),

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from numbers import Real
+from typing import Any, Literal, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -148,6 +149,57 @@ def evidence_gate(
         1.0 - confound_array
     )
     return float(result) if result.ndim == 0 else result
+
+
+class CaseConfoundAssessment(TypedDict):
+    """Explicit external case assessment; provenance identifies its source record/version."""
+
+    status: Literal["assessed"]
+    burden: float
+    provenance: str
+
+
+def confound_gate_fields(
+    coverage: float,
+    reliability: float,
+    assessment: CaseConfoundAssessment | None,
+) -> dict[str, Any]:
+    """Validate explicit assessment input without inferring findings from potential tags."""
+
+    normalized = None
+    if assessment is not None:
+        if not isinstance(assessment, Mapping) or set(assessment) != {"status", "burden", "provenance"}:
+            raise ValueError("Invalid confound assessment fields.")
+        burden = assessment["burden"]
+        provenance = assessment["provenance"]
+        if (
+            assessment["status"] != "assessed"
+            or isinstance(burden, bool)
+            or not isinstance(burden, Real)
+            or not np.isfinite(burden)
+            or not 0.0 <= burden <= 1.0
+            or not isinstance(provenance, str)
+            or not provenance.strip()
+        ):
+            raise ValueError("Invalid confound assessment status, burden, or provenance.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, Real)
+            or not np.isfinite(value) or not 0.0 <= value <= 1.0
+            for value in (coverage, reliability)
+        ):
+            raise ValueError("Invalid evidence coverage or reliability for confound assessment.")
+        normalized = CaseConfoundAssessment(
+            status="assessed", burden=float(burden), provenance=provenance.strip(),
+        )
+    return {
+        "confound_tag_semantics": "potential_only",
+        "confound_assessment": normalized,
+        "confound_assessment_status": "assessed" if normalized else "unknown",
+        "observed_confound_findings": None,
+        "confound_burden": normalized["burden"] if normalized else None,
+        "correction_gate": evidence_gate(coverage, reliability, normalized["burden"]) if normalized else 0.0,
+        "correction_gate_reason": "assessed_case_level_confounds" if normalized else "unknown_case_level_confounds",
+    }
 
 
 def structured_evidence_coverage(
@@ -472,6 +524,8 @@ def _metric_payload(row: Mapping[str, Any]) -> dict[str, Any]:
             np.nan_to_num(pd.to_numeric(row.get("reliability"), errors="coerce"))
         ),
         "confound_tags": confounds,
+        "potential_confound_tags": confounds,
+        "confound_tag_semantics": "potential_only",
         "inference_permission": bool(
             report_permission
             or (role == "model_auxiliary" and branch in INFERENCE_AUXILIARY_BRANCHES)
@@ -565,6 +619,7 @@ def build_case_workspace(
     metric_evidence: pd.DataFrame,
     class_support: Mapping[str, float],
     max_supporting_evidence: int = 8,
+    confound_assessment: CaseConfoundAssessment | None = None,
 ) -> dict[str, Any]:
     """Build the label-free, auditable working memory used by the diagnostic Agent."""
 
@@ -615,8 +670,10 @@ def build_case_workspace(
 
     clinical: list[dict[str, Any]] = []
     quality: list[dict[str, Any]] = []
+    potential_confound_tags: set[str] = set()
     for row in evidence.to_dict("records"):
         item = _metric_payload(row)
+        potential_confound_tags.update(item["potential_confound_tags"])
         role = item["evidence_role"]
         is_missing = _truthy(row.get("missing", False))
         if role in QUALITY_ROLES or item["branch"] == "qc" or item["state_id"] == "QC":
@@ -696,16 +753,7 @@ def build_case_workspace(
         if selected
         else 0.0
     )
-    confound_burden = (
-        float(
-            np.mean(
-                [min(len(item["confound_tags"]) / 3.0, 1.0) for item in selected]
-            )
-        )
-        if selected
-        else 1.0
-    )
-    gate = evidence_gate(coverage, reliability, confound_burden)
+    assessment_fields = confound_gate_fields(coverage, reliability, confound_assessment)
 
     review_plan: list[dict[str, Any]] = [{"action": "inspect_quality"}]
     review_plan.extend(
@@ -824,6 +872,11 @@ def build_case_workspace(
             for item in selected
         ]
         + [
+            {"evidence_id": evidence_id, "evidence_type": "metric"}
+            for state in state_items
+            for evidence_id in state.get("metric_evidence_ids", [])
+        ]
+        + [
             {
                 "evidence_id": item["evidence_id"],
                 "evidence_type": "quality",
@@ -842,7 +895,7 @@ def build_case_workspace(
         "evidence_coverage": float(coverage),
         "evidence_coverage_components": coverage_components,
         "evidence_reliability": reliability,
-        "confound_burden": confound_burden,
-        "correction_gate": float(gate),
+        "potential_confound_tags": sorted(potential_confound_tags),
+        **assessment_fields,
         "precomputed_review_plan": review_plan,
     }

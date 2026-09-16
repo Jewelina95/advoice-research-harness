@@ -375,6 +375,24 @@ def _predict_ordered(model: Pipeline, x: pd.DataFrame, labels: list[str]) -> np.
     return _ordered_probability(model.predict_proba(x), model.classes_, labels)
 
 
+def _oof_reliability(
+    frame: pd.DataFrame,
+    columns: list[str],
+    split_indices: list[tuple[np.ndarray, np.ndarray]],
+    fold_frames: list[pd.DataFrame] | None,
+) -> np.ndarray:
+    if not columns:
+        return np.ones(len(frame), dtype=float)
+    if fold_frames is None:
+        return frame[columns].mean(axis=1).fillna(0.0).to_numpy()
+    reliability = np.zeros(len(frame), dtype=float)
+    for (_, validation_index), fold_frame in zip(split_indices, fold_frames, strict=True):
+        reliability[validation_index] = (
+            fold_frame.iloc[validation_index][columns].mean(axis=1).fillna(0.0).to_numpy()
+        )
+    return reliability
+
+
 def _branch_specifications(
     frame: pd.DataFrame,
     feature_frame: pd.DataFrame,
@@ -688,7 +706,10 @@ def train_ours(
         oof_probabilities.append(oof)
         test_probabilities.append(_predict_ordered(model, test[specification["features"]], labels))
         train_reliability.append(
-            train[specification["reliability"]].mean(axis=1).fillna(0.0).to_numpy()
+            _oof_reliability(
+                train, specification["reliability"], split_indices,
+                fold_frames if specification["kind"] == "clinical_state" else None,
+            )
         )
         test_reliability.append(
             test[specification["reliability"]].mean(axis=1).fillna(0.0).to_numpy()

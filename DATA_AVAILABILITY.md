@@ -1,6 +1,10 @@
 # Data availability
 
-The repository intentionally contains no participant recording, protected transcript, clinical label, or identifiable metadata.
+The repository contains no locally licensed participant audio recordings.
+It does contain upstream-released SpeechCARE reference tables with participant
+transcripts, demographic fields, labels and predictions. Those tables are not
+synthetic. Their redistribution terms still require a separate publication-release
+review; upstream public availability alone is not sufficient authorization.
 
 ## Public demonstration
 
@@ -14,4 +18,9 @@ PREPARE and TalkBank-derived recordings must not be redistributed through this r
 
 ## Derived benchmark references
 
-Files under `references/speechcare/` retain source URLs, pinned commits and intended use. Released predictions are used only for explicitly labelled retrospective comparisons; they are never treated as training labels for ADvoice.
+Files under `references/speechcare/` retain source URLs, pinned commits and intended
+use. Released predictions are used for explicitly labelled retrospective
+comparisons and historical output-level extensions; those extensions must not be
+described as independently trained ADvoice models. They are not ground-truth
+training labels. Do not add private source data or new subject-level outputs to
+Git; use ignored private workspaces described in `docs/RESEARCH_WORKSPACE.md`.

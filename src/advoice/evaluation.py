@@ -24,7 +24,7 @@ from .utils import json_dump
 from .agent_runtime import case_pseudonym
 
 
-EVALUATION_SCHEMA_VERSION = "2026-08-21.4"
+EVALUATION_SCHEMA_VERSION = "2026-09-17.3"
 
 REPORTABLE_EVIDENCE_ROLES = {
     "clinical",
@@ -382,15 +382,60 @@ def _multiclass_referral_metrics(
     return renamed
 
 
+def _validate_subject_cohort(frame: pd.DataFrame, name: str) -> None:
+    """Validate artifact rows, not bootstrap draws sampled with replacement."""
+    if frame.empty:
+        return
+    if "subject_id" not in frame or frame["subject_id"].isna().any():
+        raise ValueError(f"{name}: subject_id must be present and non-null")
+    subjects = frame["subject_id"].astype(str)
+    if subjects.str.strip().eq("").any():
+        raise ValueError(f"{name}: subject_id must not be blank")
+    if subjects.duplicated().any():
+        duplicates = subjects[subjects.duplicated(keep=False)].unique().tolist()
+        raise ValueError(f"{name}: subject_id must be unique; duplicates={duplicates[:10]}")
+
+
+def _validated_probabilities(frame: pd.DataFrame, labels: list[str]) -> np.ndarray:
+    columns = [f"prob_{label}" for label in labels]
+    if len(labels) < 2 or len(set(labels)) != len(labels):
+        raise ValueError("Probability labels must contain at least two distinct classes")
+    if frame.empty or not set(columns).issubset(frame.columns):
+        raise ValueError("Probability table must be non-empty and contain every configured class")
+    try:
+        probability = frame[columns].to_numpy(dtype=float)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Probabilities must be numeric") from error
+    if probability.shape != (len(frame), len(labels)):
+        raise ValueError("Probability columns must be unique")
+    if not np.isfinite(probability).all():
+        raise ValueError("Probabilities must be finite")
+    if (probability < 0.0).any() or (probability > 1.0).any():
+        raise ValueError("Probabilities must be in [0, 1]")
+    # Permit CSV rounding only; do not repair or normalize invalid predictions.
+    if not np.isclose(probability.sum(axis=1), 1.0, rtol=0.0, atol=1e-6).all():
+        raise ValueError("Probability rows must sum to one (absolute tolerance 1e-6)")
+    return probability
+
+
 def evaluate_predictions(
     frame: pd.DataFrame,
     bins: int,
     labels: list[str],
     positive_class: str,
 ) -> dict[str, Any]:
+    for column in ("label", "predicted_label"):
+        values = frame[column]
+        invalid = values.isna() | ~values.astype(str).isin(labels)
+        if invalid.any():
+            unexpected = values[invalid].astype(str).unique().tolist()
+            raise ValueError(
+                f"{column} must contain only configured labels {labels}; "
+                f"unexpected={unexpected[:10]}"
+            )
     y = frame["label"].astype(str).to_numpy()
     predicted = frame["predicted_label"].astype(str).to_numpy()
-    probability = frame[[f"prob_{label}" for label in labels]].to_numpy(dtype=float)
+    probability = _validated_probabilities(frame, labels)
     binary = _one_hot(y, labels)
     matrix = confusion_matrix(y, predicted, labels=labels)
     confidence = probability.max(axis=1)
@@ -488,6 +533,7 @@ def bootstrap_intervals(
     positive_class: str,
     seed: int = 20260813,
 ) -> dict[str, list[float]]:
+    _validated_probabilities(frame, labels)
     rng = np.random.default_rng(seed)
     metrics = [
         "accuracy",
@@ -603,6 +649,10 @@ def paired_prediction_comparison(
     right = baseline[list(required)].copy()
     if left["subject_id"].duplicated().any() or right["subject_id"].duplicated().any():
         return {"status": "not_available", "reason": "subject_id is not unique"}
+    if not left.empty:
+        _validated_probabilities(left, labels)
+    if not right.empty:
+        _validated_probabilities(right, labels)
     ours_subjects = set(left["subject_id"].astype(str))
     baseline_subjects = set(right["subject_id"].astype(str))
     if ours_subjects != baseline_subjects:
@@ -763,6 +813,10 @@ def build_layer_b(
         if agent_off_path.exists()
         else pd.DataFrame()
     )
+    _validate_subject_cohort(ours, "Ours")
+    _validate_subject_cohort(agent_off, "Agent off")
+    for condition, frame in ablations.groupby("condition"):
+        _validate_subject_cohort(frame, str(condition))
     b2_reports = pd.read_csv(b2_reports_path, dtype={"case_id": str})
     ours_reports = pd.read_csv(ours_reports_path, dtype={"case_id": str})
     report_scores = pd.read_csv(report_scores_path, dtype={"case_id": str})
@@ -1175,6 +1229,8 @@ def run_evaluation(
     bins = int(config["ece_bins"])
     iterations = int(config["bootstrap_iterations"])
     frames = {condition: pd.read_csv(path, dtype={"subject_id": str}) for condition, path in predictions.items()}
+    for condition, frame in frames.items():
+        _validate_subject_cohort(frame, condition)
     layer_a_rows: list[list[Any]] = []
     summary: dict[str, Any] = {"labels": labels, "positive_class": positive_class, "layer_a": {}, "layer_b": {}}
     for condition, frame in frames.items():
@@ -1276,6 +1332,7 @@ def run_evaluation(
 
     controls = pd.read_csv(controls_path, dtype={"subject_id": str})
     for condition, frame in controls.groupby("condition"):
+        _validate_subject_cohort(frame, str(condition))
         result = evaluate_predictions(frame, bins, labels, positive_class)
         intervals = bootstrap_intervals(
             frame, bins, iterations, labels, positive_class, seed=20260831

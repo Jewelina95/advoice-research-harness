@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,24 +13,34 @@ class ProjectPaths:
     root: Path
 
     @property
+    def workspace(self) -> Path:
+        value = os.environ.get("ADVOICE_WORKSPACE_DIR")
+        return Path(value).expanduser().resolve() if value else self.root
+
+    @property
+    def model_config(self) -> Path:
+        value = os.environ.get("ADVOICE_MODEL_CONFIG")
+        return Path(value).expanduser().resolve() if value else self.configs / "models" / "default.yaml"
+
+    @property
     def configs(self) -> Path:
         return self.root / "configs"
 
     @property
     def data(self) -> Path:
-        return self.root / "data"
+        return self.workspace / "data"
 
     @property
     def artifacts(self) -> Path:
-        return self.root / "artifacts"
+        return self.workspace / "artifacts"
 
     @property
     def runs(self) -> Path:
-        return self.root / "runs"
+        return self.workspace / "runs"
 
     @property
     def reports(self) -> Path:
-        return self.root / "reports"
+        return self.workspace / "reports"
 
 
 def project_root() -> Path:
@@ -49,6 +60,12 @@ def load_yaml(path: Path) -> dict[str, Any]:
 def load_all(dataset_id: str) -> dict[str, Any]:
     p = paths()
     dataset = load_yaml(p.configs / "datasets" / f"{dataset_id}.yaml")
+    raw_root = os.environ.get("ADVOICE_RAW_DATA_DIR")
+    configured_raw = Path(dataset["raw_path"])
+    if raw_root and not configured_raw.is_absolute():
+        # Only remap the documented data/raw prefix; never guess other paths.
+        relative_raw = configured_raw.relative_to("data/raw")
+        dataset["raw_path"] = str((Path(raw_root).expanduser() / relative_raw).resolve())
     metrics = load_yaml(p.configs / "metrics" / "audio_metrics.yaml")
     states = load_yaml(p.configs / "states" / "audio_states.yaml")
     profile_name = dataset.get("channel_profile", "audio_only")
@@ -87,7 +104,7 @@ def load_all(dataset_id: str) -> dict[str, Any]:
         "channel_profile": {"id": profile_name, **profile},
         "metrics": {"metrics": selected_metrics},
         "states": {"states": selected_states, "unavailable_states": unavailable_states},
-        "models": load_yaml(p.configs / "models" / "default.yaml"),
+        "models": load_yaml(p.model_config),
         "agents": load_yaml(p.configs / "agents" / "default.yaml"),
         "evaluation": load_yaml(p.configs / "evaluation" / "default.yaml"),
     }

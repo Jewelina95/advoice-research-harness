@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from .aggregate_reporting import build_aggregate_report
 from .config import load_all, paths
@@ -37,10 +38,12 @@ def parser() -> argparse.ArgumentParser:
     processed.add_argument("--dataset", default="NCMMSC2021_AD")
     processed.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
     processed.add_argument("--force", action="store_true")
+    processed.add_argument("--source-root", type=Path, help="Directory containing frozen per-dataset artifacts")
     processed_all = commands.add_parser("run-all-processed")
     processed_all.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
     processed_all.add_argument("--force", action="store_true")
     processed_all.add_argument("--datasets", nargs="*")
+    processed_all.add_argument("--source-root", type=Path)
     commands.add_parser("aggregate-report")
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--dataset", default="NCMMSC2021_AD")
@@ -67,10 +70,10 @@ def main() -> None:
         print(run_all_pipelines(args.mode, args.agent_provider, args.force, args.datasets))
         return
     if args.command == "run-processed":
-        print(run_processed_pipeline(args.dataset, args.agent_provider, args.force))
+        print(run_processed_pipeline(args.dataset, args.agent_provider, args.force, args.source_root))
         return
     if args.command == "run-all-processed":
-        print(run_all_processed_pipelines(args.agent_provider, args.force, args.datasets))
+        print(run_all_processed_pipelines(args.agent_provider, args.force, args.datasets, args.source_root))
         return
     if args.command == "aggregate-report":
         dataset_ids = [str(value) for value in load_all("NCMMSC2021_AD")["project"]["default_datasets"]]

@@ -34,6 +34,7 @@ from .models import (
     _fit_branch,
     _labels,
     _macro_auc,
+    _oof_reliability,
     _ordered_probability,
     _predict_ordered,
     _prediction_frame,
@@ -875,6 +876,8 @@ def _nested_fusion_selection(
     dynamic_gate_config: dict[str, Any],
     alpha_grid: list[float],
     offset_grid: list[float],
+    train_evidence: pd.DataFrame,
+    states_config: dict[str, Any],
 ) -> dict[str, Any]:
     """Select both supervised modules using outer-fold-isolated predictions."""
 
@@ -889,6 +892,8 @@ def _nested_fusion_selection(
             "base_oof": np.zeros((len(train), len(labels)), dtype=float),
             "corrected_oof": np.zeros((len(train), len(labels)), dtype=float),
             "final_oof": np.zeros((len(train), len(labels)), dtype=float),
+            "calibration_oof": np.zeros((len(train), len(labels)), dtype=float),
+            "base_calibration_oof": np.zeros((len(train), len(labels)), dtype=float),
             "gate_oof": np.zeros(len(train), dtype=float),
             "base_c_by_fold": [],
             "correction_c_by_fold": [],
@@ -917,6 +922,18 @@ def _nested_fusion_selection(
             random_state=20260821 + outer_fold + 1,
         )
         inner_splits = list(inner_splitter.split(inner_train, inner_y))
+        inner_fold_frames = []
+        state_features = [column for column in inner_train if column.startswith(("state_", "rel_"))]
+        for inner_fit, _ in inner_splits:
+            inner_states = build_fold_calibrated_state_frame(
+                train_evidence, states_config,
+                set(inner_train.iloc[inner_fit]["subject_id"].astype(str)), labels[0],
+            )
+            inner_fold_frames.append(
+                inner_train.drop(columns=state_features).merge(
+                    inner_states, on=IDENTITY, how="left", sort=False, validate="one_to_one"
+                )
+            )
         inner_probability: list[np.ndarray] = []
         holdout_probability: list[np.ndarray] = []
         inner_reliability: list[np.ndarray] = []
@@ -935,7 +952,7 @@ def _nested_fusion_selection(
                     labels,
                     specification,
                     qc_alpha,
-                    None,
+                    inner_fold_frames if specification["kind"] == "clinical_state" else None,
                 )
                 expert_holdout = _predict_ordered(
                     expert_model,
@@ -980,9 +997,18 @@ def _nested_fusion_selection(
                 raise ValueError(f"Unsupported nested expert source: {source_kind}")
             inner_probability.append(expert_inner)
             holdout_probability.append(expert_holdout)
-            reliability = np.asarray(source["train_reliability"], dtype=float)
-            inner_reliability.append(reliability[outer_fit])
-            holdout_reliability.append(reliability[outer_validation])
+            if source_kind == "branch" and specification["kind"] == "clinical_state":
+                reliability_columns = specification["reliability"]
+                inner_reliability.append(_oof_reliability(
+                    inner_train, reliability_columns, inner_splits, inner_fold_frames,
+                ))
+                holdout_reliability.append(
+                    outer_holdout[reliability_columns].mean(axis=1).fillna(0.0).to_numpy()
+                )
+            else:
+                reliability = np.asarray(source["train_reliability"], dtype=float)
+                inner_reliability.append(reliability[outer_fit])
+                holdout_reliability.append(reliability[outer_validation])
 
         inner_stack = np.stack(inner_probability, axis=1)
         holdout_stack = np.stack(holdout_probability, axis=1)
@@ -1054,12 +1080,13 @@ def _nested_fusion_selection(
             base_c,
         ) in base_candidates.items():
             agent_inner = pd.DataFrame(index=np.arange(len(inner_train)))
-            for inner_fit, inner_validation in inner_splits:
+            for inner_fold, (inner_fit, inner_validation) in enumerate(inner_splits):
+                inner_frame = inner_fold_frames[inner_fold]
                 inner_prototypes = _fit_prototypes(
-                    inner_train.iloc[inner_fit], state_columns, labels
+                    inner_frame.iloc[inner_fit], state_columns, labels
                 )
                 fold_agent, _ = _agent_feature_frame(
-                    inner_train.iloc[inner_validation],
+                    inner_frame.iloc[inner_validation],
                     inner_prototypes,
                     labels,
                     base_inner[inner_validation],
@@ -1142,10 +1169,23 @@ def _nested_fusion_selection(
                 holdout_gate,
                 alpha,
             )
+            # Calibrate a held-out prior only with predictions and labels from
+            # this outer training partition, never with its own target labels.
+            final_inner = fuse_corrected_probability(
+                base_inner, _temperature_scale(adjusted_inner, temperature), inner_gate, alpha
+            )
+            final_temperature = _fit_temperature(final_inner, inner_y, labels)
+            base_temperature = _fit_temperature(base_inner, inner_y, labels)
             output = outputs[candidate_name]
             output["base_oof"][outer_validation] = base_holdout
             output["corrected_oof"][outer_validation] = calibrated_holdout
             output["final_oof"][outer_validation] = final_holdout
+            output["calibration_oof"][outer_validation] = _temperature_scale(
+                final_holdout, final_temperature
+            )
+            output["base_calibration_oof"][outer_validation] = _temperature_scale(
+                base_holdout, base_temperature
+            )
             output["gate_oof"][outer_validation] = holdout_gate
             output["base_c_by_fold"].append(base_c)
             output["correction_c_by_fold"].append(correction_c)
@@ -1381,7 +1421,10 @@ def train_condition_c(
         train_rel = [column for column in specification["reliability"] if column in train.columns]
         test_rel = [column for column in specification["reliability"] if column in test.columns]
         train_reliability_values = (
-            train[train_rel].mean(axis=1).fillna(0.0).to_numpy()
+            _oof_reliability(
+                train, train_rel, split_indices,
+                fold_frames if specification["kind"] == "clinical_state" else None,
+            )
             if train_rel
             else np.ones(len(train))
         )
@@ -1722,6 +1765,8 @@ def train_condition_c(
         dynamic_gate_config=dynamic_gate_config,
         alpha_grid=alpha_grid,
         offset_grid=offset_grid,
+        train_evidence=train_evidence,
+        states_config=states_config,
     )
     logistic_nested = nested_selection["outputs"]["logistic"]
     logistic_c = float(logistic_nested["selected_base_c"])
@@ -1909,8 +1954,30 @@ def train_condition_c(
         base_test, calibrated_corrected_test, test_gate, selected_alpha
     )
     final_temperature = _fit_temperature(blended_oof, y, labels)
-    blended_oof = _temperature_scale(blended_oof, final_temperature)
+    blended_oof = (
+        selected_nested["base_calibration_oof"]
+        if correction_guard["triggered"]
+        else selected_nested["calibration_oof"]
+    )
     final_probability = _temperature_scale(final_probability, final_temperature)
+    oof_provenance = {
+        "status": "selection_dependent_development_predictions",
+        "selection_independent": False,
+        "dedicated_calibration_holdout": False,
+        "unbiased_generalization_estimate": False,
+        "probability_calibration_scope": "outer_fit_partition_only",
+        "selection_dependencies": [
+            "expert_eligibility",
+            "qc_shortcut_guard",
+            "base_architecture",
+            "correction_stability_guard",
+        ],
+        "limitation": (
+            "Outer-fold parameter fitting and temperature calibration exclude the target fold, "
+            "but upstream eligibility and pooled OOF selection use its labels. "
+            "These are development predictions, not a fully independent calibration cohort."
+        ),
+    }
 
     # Keep the historical internal key so the stable report/evaluation templates remain compatible.
     # User-facing reports name this condition B3.
@@ -1924,9 +1991,9 @@ def train_condition_c(
         base_predictions_path, index=False
     )
 
-    # Reserve one deterministic outer-fold validation partition for calibrating
-    # the downstream Agent correction. Its prior is strictly out-of-fold; labels
-    # are retained in a separate table and are never serialized into workspaces.
+    # Export one outer-fold partition for development calibration. Parameter
+    # fits exclude it, but global selection does not; this is not a dedicated
+    # independent holdout. Labels remain outside the Agent workspaces.
     if (
         agent_calibration_predictions_path is not None
         and agent_calibration_workspaces_path is not None
@@ -1934,12 +2001,22 @@ def train_condition_c(
         calibration_index = np.asarray(split_indices[0][1], dtype=int)
         calibration_frame = train.iloc[calibration_index].copy().reset_index(drop=True)
         calibration_probability = blended_oof[calibration_index]
-        _prediction_frame(
+        calibration_predictions = _prediction_frame(
             calibration_frame,
             calibration_probability,
             "B3_agent_calibration_prior",
             labels,
-        ).to_csv(agent_calibration_predictions_path, index=False)
+        )
+        calibration_predictions["oof_status"] = oof_provenance["status"]
+        calibration_predictions["selection_independent"] = False
+        calibration_predictions["dedicated_calibration_holdout"] = False
+        calibration_predictions["probability_calibration_scope"] = oof_provenance[
+            "probability_calibration_scope"
+        ]
+        calibration_predictions["selection_dependencies"] = json.dumps(
+            oof_provenance["selection_dependencies"]
+        )
+        calibration_predictions.to_csv(agent_calibration_predictions_path, index=False)
 
         fold_frame = fold_frames[0].iloc[calibration_index].copy().reset_index(drop=True)
         calibration_ids = set(calibration_frame["subject_id"].astype(str))
@@ -1948,14 +2025,14 @@ def train_condition_c(
         ].copy()
         outer_fit_index = np.asarray(split_indices[0][0], dtype=int)
         outer_fit = train.iloc[outer_fit_index]
-        outer_fit_hc_ids = set(
+        outer_fit_reference_ids = set(
             outer_fit.loc[
-                outer_fit["label"].astype(str).eq("HC"), "subject_id"
+                outer_fit["label"].astype(str).eq(labels[0]), "subject_id"
             ].astype(str)
         )
         calibration_evidence = recalibrate_metric_evidence_frame(
             evidence,
-            reference_subject_ids=outer_fit_hc_ids,
+            reference_subject_ids=outer_fit_reference_ids,
             target_subject_ids=calibration_ids,
         )
         state_lookup = fold_frame.set_index("subject_id")
@@ -2011,6 +2088,7 @@ def train_condition_c(
                 max_supporting_evidence=int(config.get("max_agent_evidence", 8)),
             )
             workspace["workspace_role"] = "agent_correction_calibration"
+            workspace["oof_provenance"] = oof_provenance
             workspace["state_calibration"] = "outer_fold_training_reference"
             if prototype_reference_oof[original_index] is not None:
                 workspace["cognitive_state_reference"] = prototype_reference_oof[
@@ -2231,6 +2309,7 @@ def train_condition_c(
         "temperature": temperature,
         "final_probability_temperature": final_temperature,
         "agent_feature_columns": list(agent_test.columns),
+        "oof_provenance": oof_provenance,
     }
     joblib.dump(model_bundle, model_path)
     base_oof_score = _selection_score(y, base_oof, labels)
@@ -2265,6 +2344,8 @@ def train_condition_c(
             "dynamic_gate": dynamic_gate_metadata,
             "qc_shortcut_guard": qc_guard_metadata,
             "selection_protocol": nested_selection["protocol"],
+            "selection_protocol_scope": "conditional_refits_not_fully_nested_selection",
+            "oof_provenance": oof_provenance,
             "outer_fold_selection": {
                 "base_c": selected_nested["base_c_by_fold"],
                 "correction_c": selected_nested["correction_c_by_fold"],

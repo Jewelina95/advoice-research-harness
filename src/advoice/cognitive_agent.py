@@ -15,6 +15,7 @@ from .agent_runtime import (
     select_agent_cohort,
 )
 from .diagnostic_agent import (
+    confound_gate_fields,
     fuse_evidence_likelihood,
     fuse_two_stage_evidence,
     route_case,
@@ -184,7 +185,7 @@ def _batch_schema(path: Path, labels: list[str]) -> None:
 
 
 def _read_workspaces(path: Path) -> dict[str, dict[str, Any]]:
-    return {
+    workspaces = {
         str(item["case_id"]): item
         for item in (
             json.loads(line)
@@ -192,6 +193,15 @@ def _read_workspaces(path: Path) -> dict[str, dict[str, Any]]:
             if line.strip()
         )
     }
+    # Recompute from the explicit assessment; legacy numeric gates prove nothing
+    # about observed confounds and cannot substitute for assessment provenance.
+    for workspace in workspaces.values():
+        workspace.update(confound_gate_fields(
+            workspace.get("evidence_coverage", 0.0),
+            workspace.get("evidence_reliability", 0.0),
+            workspace.get("confound_assessment"),
+        ))
+    return workspaces
 
 
 def _skill_text(root: Path) -> str:
@@ -226,11 +236,14 @@ def _index_expected_candidates(
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     indexed: dict[str, dict[str, Any]] = {}
     unexpected: list[str] = []
+    seen: set[str] = set()
     for candidate in candidates:
         case_id = str(candidate.get("case_id", ""))
-        if case_id not in expected_case_ids:
+        if case_id not in expected_case_ids or case_id in seen:
             unexpected.append(case_id)
+            indexed.pop(case_id, None)
             continue
+        seen.add(case_id)
         indexed[case_id] = candidate
     return indexed, unexpected
 
@@ -386,14 +399,46 @@ def fit_agent_two_stage_strengths(
     strength_grid: list[float],
     minimum_macro_f1_gain: float = 0.0,
     auroc_noninferiority_margin: float = 0.001,
+    *,
+    log_loss_noninferiority_margin: float = 0.0,
+    brier_noninferiority_margin: float = 0.0,
 ) -> dict[str, Any]:
-    """Select independent screening/staging strengths on development labels only."""
+    """Select strengths with prespecified discrimination and probability-score gates."""
 
     from sklearn.metrics import f1_score, roc_auc_score
 
     labels = np.asarray(["HC", "MCI", "AD"])
     truth = np.asarray(labels_true, dtype=str)
     one_hot = np.column_stack([(truth == label).astype(int) for label in labels])
+    for margin in (log_loss_noninferiority_margin, brier_noninferiority_margin):
+        if not np.isfinite(margin) or margin < 0.0:
+            raise ValueError("Probability-score noninferiority margins must be finite and nonnegative.")
+    if 0.0 not in strength_grid:
+        raise ValueError("The correction-strength grid must include zero.")
+    policy = {
+        "minimum_macro_f1_gain": float(minimum_macro_f1_gain),
+        "auroc_noninferiority_margin": float(auroc_noninferiority_margin),
+        "log_loss_noninferiority_margin": float(log_loss_noninferiority_margin),
+        "brier_noninferiority_margin": float(brier_noninferiority_margin),
+        "brier_definition": "mean_sum_squared_class_probability_error",
+        "log_loss_definition": "mean_negative_log_true_class_probability_natural_log",
+        "selection_policy": "two_stage_joint_gain_v2_probability_noninferiority",
+        "class_counts": {str(label): int(np.sum(truth == label)) for label in labels},
+    }
+    missing_classes = sorted(set(labels) - set(truth))
+    if missing_classes:
+        return {
+            **policy,
+            "selected_screening_strength": 0.0,
+            "selected_staging_strength": 0.0,
+            "selection_status": "failed_closed_missing_classes",
+            "missing_classes": missing_classes,
+            "baseline_macro_f1": None,
+            "baseline_macro_auroc": None,
+            "baseline_log_loss": None,
+            "baseline_brier": None,
+            "candidates": [],
+        }
     rows: list[dict[str, float]] = []
     for screening_strength in strength_grid:
         for staging_strength in strength_grid:
@@ -419,6 +464,11 @@ def fit_agent_two_stage_strengths(
                     "macro_auroc": float(
                         roc_auc_score(one_hot, probability, average="macro")
                     ),
+                    "log_loss": float(-np.mean(np.sum(
+                        one_hot * np.log(np.clip(probability, np.finfo(float).eps, 1.0)),
+                        axis=1,
+                    ))),
+                    "brier": float(np.mean(np.sum((probability - one_hot) ** 2, axis=1))),
                 }
             )
     baseline = next(
@@ -430,9 +480,12 @@ def fit_agent_two_stage_strengths(
         row
         for row in rows
         if row is not baseline
+        and all(np.isfinite(row[key]) for key in ("macro_f1", "macro_auroc", "log_loss", "brier"))
         and row["macro_f1"] >= baseline["macro_f1"] + minimum_macro_f1_gain
         and row["macro_auroc"]
         >= baseline["macro_auroc"] - auroc_noninferiority_margin
+        and row["log_loss"] <= baseline["log_loss"] + log_loss_noninferiority_margin
+        and row["brier"] <= baseline["brier"] + brier_noninferiority_margin
     ]
     if eligible:
         selected = max(
@@ -448,13 +501,14 @@ def fit_agent_two_stage_strengths(
         selected = baseline
         status = "failed_closed_no_joint_gain"
     return {
+        **policy,
         "selected_screening_strength": selected["screening_strength"],
         "selected_staging_strength": selected["staging_strength"],
         "selection_status": status,
         "baseline_macro_f1": baseline["macro_f1"],
         "baseline_macro_auroc": baseline["macro_auroc"],
-        "minimum_macro_f1_gain": float(minimum_macro_f1_gain),
-        "auroc_noninferiority_margin": float(auroc_noninferiority_margin),
+        "baseline_log_loss": baseline["log_loss"],
+        "baseline_brier": baseline["brier"],
         "candidates": rows,
     }
 
@@ -661,8 +715,6 @@ def validate_candidate(
         violations.append("V02_QC_AS_DISEASE")
     if not bool(candidate.get("counterevidence_checked")):
         violations.append("V06_COUNTEREVIDENCE_OMITTED")
-    if available_counter and not (cited_counter & available_counter):
-        violations.append("V06_MATERIAL_COUNTEREVIDENCE_NOT_CITED")
     observable_state_lookup = {
         (str(item["state_id"]), str(item.get("task_scope", "overall"))): item
         for item in workspace.get("state_observations", [])
@@ -684,12 +736,15 @@ def validate_candidate(
                 return task_view
         return None
 
+    invalidated_evidence: set[str] = set()
     for update in candidate.get("state_updates", []):
         requested_state_id = str(update.get("state_id", ""))
         requested_task_scope = str(update.get("task_scope", "overall"))
         key = resolve_state_key(requested_state_id, requested_task_scope)
         action = str(update.get("action", ""))
         references = set(map(str, update.get("evidence_ids", [])))
+        if action in {"invalidate", "mark_unavailable"} and not references:
+            violations.append("V04_UNSUPPORTED_STATE_UPDATE")
         is_observable = key is not None and key in observable_state_lookup
         is_unavailable_mark = (
             key is not None
@@ -713,6 +768,33 @@ def validate_candidate(
             violations.append("V04_INVALID_STATE_REFERENCE")
         if action == "keep" and references & quality:
             violations.append("V02_QC_AS_DISEASE")
+        if is_observable and action in {"invalidate", "mark_unavailable"}:
+            state_item = observable_state_lookup[key]
+            invalidated_evidence.add(str(state_item["evidence_id"]))
+            invalidated_evidence.update(map(str, state_item.get("metric_evidence_ids", [])))
+            invalidated_evidence.update(
+                str(segment["segment_id"])
+                for segment in state_item.get("evidence_segments", [])
+                if segment.get("segment_id")
+            )
+            # Top-level selected metrics need not occur in the StateCard's summary.
+            state_ids = {key[0], str(state_item.get("state_base_id", key[0]))}
+            for evidence_key in (
+                "selected_supporting_evidence",
+                "selected_counterevidence",
+                "inference_only_metric_observations",
+            ):
+                invalidated_evidence.update(
+                    str(item["evidence_id"])
+                    for item in workspace.get(evidence_key, [])
+                    if str(item.get("state_id", "")) in state_ids
+                    and str(item.get("task_scope", "overall")) == key[1]
+                )
+    if (used | cited_counter) & invalidated_evidence:
+        violations.append("V04_INVALIDATED_EVIDENCE_CITED")
+    remaining_counter = available_counter - invalidated_evidence
+    if remaining_counter and not (cited_counter & remaining_counter):
+        violations.append("V06_MATERIAL_COUNTEREVIDENCE_NOT_CITED")
     # Historical cache fields remain readable, but 9.2 prompts only emit the
     # evidence_* contract. This avoids invalidating prior audit fixtures while
     # removing supervised probability anchoring from every new Agent call.
@@ -1124,11 +1206,10 @@ def run_cognitive_diagnostic_agent(
                             "error": f"{type(error).__name__}: {error}",
                         }
                     )
-        expected_case_ids = {str(case["case_id"]) for case in cases_to_run}
         requested: dict[str, dict[str, Any]] = {}
         for number in sorted(responses):
             indexed, unexpected = _index_expected_candidates(
-                responses[number].get("cases", []), expected_case_ids
+                responses[number].get("cases", []), set(jobs[number - 1]["case_ids"])
             )
             requested.update(indexed)
             if unexpected:
@@ -1137,7 +1218,7 @@ def run_cognitive_diagnostic_agent(
                         "artifact_prefix": artifact_prefix,
                         "batch": int(number),
                         "case_ids": unexpected,
-                        "error": "Unexpected case_id returned by Agent",
+                        "error": "Unexpected or duplicate case_id returned by Agent",
                     }
                 )
         missing_cases = [
@@ -1182,7 +1263,8 @@ def run_cognitive_diagnostic_agent(
                         )
             for number in sorted(retry_responses):
                 indexed, unexpected = _index_expected_candidates(
-                    retry_responses[number].get("cases", []), expected_case_ids
+                    retry_responses[number].get("cases", []),
+                    {str(missing_cases[number - 1]["case_id"])},
                 )
                 requested.update(indexed)
                 if unexpected:
@@ -1191,7 +1273,7 @@ def run_cognitive_diagnostic_agent(
                             "artifact_prefix": f"{artifact_prefix}_retry",
                             "batch": int(number),
                             "case_ids": unexpected,
-                            "error": "Unexpected case_id returned by Agent",
+                            "error": "Unexpected or duplicate case_id returned by Agent",
                         }
                     )
         return requested
@@ -1388,6 +1470,25 @@ def run_cognitive_diagnostic_agent(
                     (np.asarray(staging_gate_rows, dtype=float) > 0)
                     & np.isin(calibration_truth, ["MCI", "AD"]),
                 )
+                # Routing is score-dependent; freeze strengths for the calibrated
+                # OOF routes, matching the order used by _prediction_rows.
+                calibrated_routes = [
+                    two_stage_route_parameters(
+                        base,
+                        screening,
+                        staging,
+                        gate,
+                        staging_gate > 0.0,
+                    )
+                    for base, screening, staging, gate, staging_gate in zip(
+                        calibration_prior[[f"prob_{label}" for label in labels]].to_numpy(dtype=float),
+                        screening_calibrator["oof_likelihood"],
+                        staging_calibrator["oof_likelihood"],
+                        gate_rows,
+                        staging_gate_rows,
+                        strict=True,
+                    )
+                ]
                 calibration_fit = fit_agent_two_stage_strengths(
                     calibration_truth,
                     calibration_prior[[f"prob_{label}" for label in labels]].to_numpy(dtype=float),
@@ -1395,11 +1496,17 @@ def run_cognitive_diagnostic_agent(
                     staging_calibrator["oof_likelihood"],
                     np.asarray(gate_rows, dtype=float),
                     np.asarray(staging_gate_rows, dtype=float),
-                    np.asarray(multiplier_rows, dtype=float),
-                    np.asarray(staging_multiplier_rows, dtype=float),
+                    np.asarray([route["screening_multiplier"] for route in calibrated_routes]),
+                    np.asarray([route["staging_multiplier"] for route in calibrated_routes]),
                     strength_grid,
                     minimum_macro_f1_gain=minimum_gain,
                     auroc_noninferiority_margin=noninferiority_margin,
+                    log_loss_noninferiority_margin=float(agents_config.get(
+                        "diagnostic_agent_log_loss_noninferiority_margin", 0.0,
+                    )),
+                    brier_noninferiority_margin=float(agents_config.get(
+                        "diagnostic_agent_brier_noninferiority_margin", 0.0,
+                    )),
                 )
                 correction_strength = float(calibration_fit["selected_screening_strength"])
                 staging_correction_strength = float(calibration_fit["selected_staging_strength"])

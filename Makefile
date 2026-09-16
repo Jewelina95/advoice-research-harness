@@ -15,7 +15,7 @@ full:
 all:
 	PYTHONPATH=src $(PYTHON) -m advoice run-all --mode quick --agent-provider disabled
 
-all-full: prepare-release-gate
+all-full:
 	PYTHONPATH=src $(PYTHON) -m advoice run-all --mode full --agent-provider openai_api
 
 prepare-release-gate:

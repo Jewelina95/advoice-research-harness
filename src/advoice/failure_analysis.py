@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 from pathlib import Path
 from typing import Any
 
@@ -372,6 +373,24 @@ def build_failure_analysis(paths: ProjectPaths) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     assets.mkdir(parents=True, exist_ok=True)
 
+    required_names = [*CONDITION_FILES.values(), "manifest.csv", "analysis_manifest.csv", "recording_features.csv"]
+    required = [paths.artifacts / dataset / name for dataset in FOCUS_DATASETS for name in required_names]
+    required.append(paths.artifacts / "ADReSSo_2021_progression/state_wide.csv")
+    missing = [str(path.relative_to(paths.artifacts)) for path in required if not path.is_file()]
+    if missing:
+        # A partial batch must not fabricate or reuse the historical focus-task audit.
+        status = {"status": "unavailable", "reason": "Focus-task inputs are incomplete", "missing": missing}
+        (output_dir / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+        output = output_dir / "failure_mode_root_cause_report.html"
+        output.write_text(
+            '<!doctype html><html lang="en"><meta charset="utf-8"><title>Focus-task analysis unavailable</title>'
+            '<h1>Focus-task analysis unavailable</h1><p>The selected batch does not include every input '
+            'needed for the historical three-task analysis. Other evaluation reports remain valid.</p><ul>'
+            + ''.join(f'<li>{html.escape(name)}</li>' for name in missing) + '</ul></html>',
+            encoding="utf-8",
+        )
+        return output
+
     focus = _focus_metrics(paths)
     agent = _agent_audit(paths)
     stability = _state_stability(paths)
@@ -412,4 +431,5 @@ def build_failure_analysis(paths: ProjectPaths) -> Path:
         ),
         encoding="utf-8",
     )
+    (output_dir / "status.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
     return output

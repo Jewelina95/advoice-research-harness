@@ -42,7 +42,7 @@ def _config_files(p: ProjectPaths, dataset_id: str) -> dict[str, Path]:
         "channel": p.configs / "channels" / f"{load_all(dataset_id)['dataset'].get('channel_profile', 'audio_only')}.yaml",
         "metrics": p.configs / "metrics" / "audio_metrics.yaml",
         "states": p.configs / "states" / "audio_states.yaml",
-        "models": p.configs / "models" / "default.yaml",
+        "models": p.model_config,
         "agents": p.configs / "agents" / "default.yaml",
         "evaluation": p.configs / "evaluation" / "default.yaml",
     }
@@ -243,6 +243,16 @@ def _bootstrap_processed_artifacts(
     artifact_dir: Path,
 ) -> dict[str, Any]:
     """Reuse only frozen preprocessing/baselines and archive the former condition C."""
+    if source_dir.resolve() == artifact_dir.resolve():
+        raise ValueError("Frozen inputs and experiment outputs must be different directories")
+    required = {
+        "subject_features.csv", "subject_transcripts.csv", "metric_evidence.csv",
+        "b1_predictions.csv", "b2_predictions.csv",
+        "recording_features.csv", "segments.csv", "manifest.csv",
+    }
+    absent_required = sorted(name for name in required if not (source_dir / name).is_file())
+    if absent_required:
+        raise FileNotFoundError(f"Required frozen inputs are missing: {absent_required}")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     copied: list[dict[str, str]] = []
     missing: list[str] = []
@@ -273,25 +283,13 @@ def _bootstrap_processed_artifacts(
                 "source": str(source),
                 "destination": str(destination),
                 "sha256": sha256_file(destination),
-                "role": "archived_8_13_condition_c",
+                "role": "archived_source_condition_c",
             }
-        )
-    required = {
-        "subject_features.csv",
-        "subject_transcripts.csv",
-        "metric_evidence.csv",
-        "b1_predictions.csv",
-        "b2_predictions.csv",
-    }
-    absent_required = sorted(required.intersection(missing))
-    if absent_required:
-        raise FileNotFoundError(
-            f"Processed rerun cannot start; required frozen inputs are missing: {absent_required}"
         )
     provenance = {
         "source_directory": str(source_dir),
         "created_at_utc": now_utc(),
-        "input_mode": "processed_8_13_reuse",
+        "input_mode": "frozen_processed_reuse",
         "copied_files": copied,
         "optional_missing_files": sorted(set(missing) - required),
         "new_condition_c_predictions_reused": False,
@@ -925,7 +923,7 @@ def run_pipeline(
                 agent_config,
                 (
                     str(agent_config.get("report_scoring_provider", "disabled"))
-                    if mode == "full"
+                    if mode == "full" and agent_provider != "disabled"
                     else "disabled"
                 ),
                 output["report_scores"],
@@ -1037,6 +1035,9 @@ def run_processed_pipeline(
     configs = _resolved_configs(dataset_id)
     model_config = configs["models"]
     agent_config = configs["agents"]
+    if agent_provider == "disabled":
+        agent_config = {**agent_config, "report_scoring_provider": "disabled"}
+        configs = {**configs, "agents": agent_config}
     evaluation_config = configs["evaluation"]
     config_paths = _config_files(p, dataset_id)
     artifact_dir = p.artifacts / dataset_id
@@ -1342,7 +1343,7 @@ def run_processed_pipeline(
             "processed_input_provenance": provenance,
             "raw_audio_recomputed": False,
             "condition_c_retrained": True,
-            "b1_b2_frozen_from_8_13": True,
+            "b1_b2_frozen_from_source": True,
         },
     )
 
@@ -1351,6 +1352,7 @@ def run_all_processed_pipelines(
     agent_provider: str = "disabled",
     force: bool = False,
     dataset_ids: list[str] | None = None,
+    source_root: Path | None = None,
 ) -> Path:
     p = paths()
     project = load_all("NCMMSC2021_AD")["project"]
@@ -1360,7 +1362,7 @@ def run_all_processed_pipelines(
     for dataset_id in selected:
         started_at = now_utc()
         try:
-            report = run_processed_pipeline(dataset_id, agent_provider, force)
+            report = run_processed_pipeline(dataset_id, agent_provider, force, source_root)
             status.append(
                 {
                     "dataset_id": dataset_id,

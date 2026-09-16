@@ -16,6 +16,7 @@ reports/latest_run.json
 *.egg-info/
 .env
 .env.*
+.local/
 demo/output/*
 !demo/output/public_cases.json
 !demo/output/adress_2020_cohort_summary.json

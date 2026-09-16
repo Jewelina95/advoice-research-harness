@@ -138,6 +138,20 @@ ADReSSo progression, NCMMSC long recordings and PublicFigures. Their reports
 retain Layer A and Layer B. They do not validate live Agent correction, and weak
 progression/public-speech discrimination prevents a general efficacy claim.
 
+| Pilot | Test subjects | Historical accuracy | Current accuracy | Current macro AUROC |
+| --- | ---: | ---: | ---: | ---: |
+| ADReSS2020 internal holdout | 27 | 0.851852 | 0.925926 | 0.978022 |
+| ADReSSo progression | 12 | 0.750000 | 0.750000 | 0.555556 |
+| NCMMSC long recordings | 53 | 0.811321 | 0.773585 | 0.921855 |
+| PublicFigures | 6 | 0.666667 | 0.666667 | 0.500000 |
+
+Historical and current rows use the same subjects, but the current pilot disables
+live Agent calls. These differences are not isolated effects of an individual
+repair or proof of a complete Agent upgrade. In particular, NCMMSC loses two
+correct classifications; retain this regression rather than selecting only the
+positive ADReSS result. ADReSS here is an 81/27 internal partition, not the
+official 108/48 training/test challenge protocol.
+
 ## Next controlled upgrade
 
 1. Hold the public test fixed as retrospective reporting only. Use a development

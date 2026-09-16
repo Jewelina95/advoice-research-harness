@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .aggregate_reporting import build_aggregate_report
 from .config import load_all, paths
+from .workspace import LOCK_TOKEN_ENV, workspace_lock
 from .pipeline import (
     clean_cache,
     rebuild_latest_report,
@@ -44,7 +46,11 @@ def parser() -> argparse.ArgumentParser:
     processed_all.add_argument("--force", action="store_true")
     processed_all.add_argument("--datasets", nargs="*")
     processed_all.add_argument("--source-root", type=Path)
-    commands.add_parser("aggregate-report")
+    aggregate = commands.add_parser("aggregate-report")
+    aggregate.add_argument("--datasets", nargs="+")
+    experiment = commands.add_parser("experiment", help="Run a versioned recipe with mandatory Layer A/B reports")
+    experiment.add_argument("--config", type=Path, required=True)
+    experiment.add_argument("--check", action="store_true", help="Validate input presence without running models")
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--dataset", default="NCMMSC2021_AD")
     evaluate_all = commands.add_parser("evaluate-all")
@@ -58,6 +64,29 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    if args.command == "experiment":
+        _dispatch(args)
+        return
+    with workspace_lock(paths().workspace) as token:
+        previous = os.environ.get(LOCK_TOKEN_ENV)
+        os.environ[LOCK_TOKEN_ENV] = token
+        try:
+            _dispatch(args)
+        finally:
+            if previous is None:
+                os.environ.pop(LOCK_TOKEN_ENV, None)
+            else:
+                os.environ[LOCK_TOKEN_ENV] = previous
+
+
+def _dispatch(args: argparse.Namespace) -> None:
+    if args.command == "experiment":
+        from .experiments import run_experiment
+        result = run_experiment(args.config, args.check)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result["status"] == "failed":
+            raise SystemExit(1)
+        return
     if args.command == "validate":
         result = validate_dataset(args.dataset)
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -76,7 +105,7 @@ def main() -> None:
         print(run_all_processed_pipelines(args.agent_provider, args.force, args.datasets, args.source_root))
         return
     if args.command == "aggregate-report":
-        dataset_ids = [str(value) for value in load_all("NCMMSC2021_AD")["project"]["default_datasets"]]
+        dataset_ids = args.datasets or [str(value) for value in load_all("NCMMSC2021_AD")["project"]["default_datasets"]]
         print(build_aggregate_report(paths(), dataset_ids))
         return
     if args.command == "evaluate":

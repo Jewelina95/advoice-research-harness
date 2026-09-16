@@ -1,0 +1,12 @@
+# Copy to a private location. Relative paths resolve against the recipe file.
+schema_version: 1
+workspace: /path/to/private/advoice-workspace
+raw_data_root: /path/to/licensed/raw-data
+input_mode: raw
+mode: full
+agent_provider: disabled
+force: false
+datasets:
+  - NCMMSC2021_AD
+# Set agent_provider: openai_api explicitly for API-backed experiments.
+# Credentials belong in the environment, never in this recipe.

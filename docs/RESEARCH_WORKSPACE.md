@@ -4,6 +4,71 @@ The Git repository is the source of truth for code, configurations, contracts,
 tests, and experiment protocols. Do not copy the system into a new date folder.
 Keep historical artifacts read-only and create isolated run workspaces instead.
 
+## Recommended single entry point
+
+Use `main` from the GitHub repository as the maintained framework. The code is a
+continuation of the 9.2 system with reviewed engineering fixes, not a new clinical
+model or a claim that benchmark superiority has been achieved. Pull updates before
+starting an experiment, never while it is running. Do not edit historical source
+copies in the surrounding dated directories.
+
+Create a private recipe using `configs/experiments/raw.example.yaml` or
+`configs/experiments/processed.example.yaml` as its schema. The recipe lists the
+registered datasets, local input directories, output workspace, run mode, optional
+complete model configuration, and explicit Agent provider. Relative paths resolve
+against the recipe file, not the current shell directory. Never put API keys there.
+
+```bash
+make experiment-check CONFIG=/absolute/path/to/private/experiment.yaml
+make experiment CONFIG=/absolute/path/to/private/experiment.yaml
+```
+
+Equivalent installed CLI: `advoice experiment --config /path/to/experiment.yaml`.
+The check command verifies configuration and input presence only. It does not
+validate clinical quality, train models, or invoke an API. `agent_provider` defaults
+to `disabled`; API-backed experiments require an explicit `openai_api` selection
+and credentials in the environment. Choosing the provider does not bypass the
+clinical correction gates described in `AGENT_CALIBRATION_SAFETY.md`.
+
+Each execution records Git commit/branch/dirty status, source/config fingerprints,
+the resolved recipe, Python runtime, per-dataset logs and new immutable run IDs.
+A shared workspace lock covers both managed execution and the older CLI commands.
+Only a child with the current invocation's lock token can use its parent's lock.
+A crash may leave a lock;
+inspect its PID and verify the process has stopped before removing it. Do not run
+uncoordinated direct Python API calls against that workspace. Output paths and
+existing descendants are checked for symlinks before writes.
+
+A dataset is successful only if the pipeline publishes a new run and its system
+report, evaluation report, Layer A PNG and Layer B PNG all exist. Aggregate figures
+are generated only for datasets that succeeded in this invocation, not arbitrary
+older artifacts. Any failed dataset returns a nonzero overall exit code. A partial
+aggregate is not a passed experiment. Source/config changes during execution also
+fail the frozen-version check. Failures remain in `experiment_latest.json` and the
+execution's own `status.json`; an old HTML on disk is not evidence of a new success.
+
+| Output | Location under the private workspace |
+| --- | --- |
+| Latest execution status | `experiment_latest.json` |
+| Execution history and logs | `executions/<id>/` |
+| Immutable aggregate inputs, reports and A/B figures | `executions/<id>/aggregate/` |
+| Per-dataset immutable reports and artifacts | `runs/<run_id>/` |
+| Current per-dataset system/evaluation reports and A/B figures | `reports/datasets/<dataset>/latest/` |
+| Current selected-cohort system/evaluation reports and A/B figures | `reports/latest/` |
+
+The aggregate reads copies of the captured immutable dataset runs, not mutable
+current artifacts. Its archived reports and hashes remain attached to the
+execution. The current aggregate is a convenience copy replaced on the next
+successful aggregation. Per-dataset run reports remain versioned. Keep separate workspaces
+for experiments with different scientific protocols. The runner reuses existing
+pipeline stage caches; it does not redefine metrics, silently change splits, or
+substitute a synthetic demo for a trained cohort experiment.
+
+To add recordings to an existing dataset, update its local data and rerun the same
+recipe. To add a genuinely new dataset, first add/review its versioned adapter,
+task/label/speaker/split configuration and leakage tests, then list its ID in the
+recipe. A new folder alone cannot safely determine those semantics automatically.
+
 ## Layout
 
 | Location | Contents | Versioned |

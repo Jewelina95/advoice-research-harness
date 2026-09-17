@@ -296,9 +296,10 @@ class ConditionalArbitrator:
         return bool(
             item.eligible
             and item.agent_scores_validated
+            and item.route_supported
             and item.incremental_evidence_declared
             and bool(item.incremental_evidence_ids)
-            and not item.evidence_consumed_by_module_a
+            and not (set(item.incremental_evidence_ids) & set(item.consumed_evidence_ids))
         )
 
     @staticmethod

@@ -86,3 +86,49 @@ def test_module_a_excludes_qc_from_disease_contributions_and_marks_missing_calib
     assert "qc_signal" not in {feature for values in packet.feature_contributions.values() for feature in values}
     assert "qc_signal" not in {feature for values in packet.branch_contributions.values() for feature in values}
 
+
+def test_module_a_default_discovery_never_absorbs_numeric_identity_or_label_columns(training_frame) -> None:
+    frame, y = training_frame
+    frame = frame.assign(
+        label=[0, 0, 1, 1, 2, 2],
+        target=[0, 0, 1, 1, 2, 2],
+        outcome=[0, 0, 1, 1, 2, 2],
+        split=[0, 0, 0, 1, 1, 1],
+        subject_id=[101, 102, 103, 104, 105, 106],
+        recording_id=[201, 202, 203, 204, 205, 206],
+        prediction=[0, 0, 1, 1, 2, 2],
+    )
+    expert = TaskConditionedStatisticalExpert(["MCI", "HC", "AD"], c=0.5, task_column="task").fit(frame, y)
+
+    forbidden = {"label", "target", "outcome", "split", "subject_id", "recording_id", "prediction"}
+    assert not forbidden & set(expert.numeric_features_)
+    assert expert.feature_selection_mode_ == "legacy_inferred_non_identity_numeric"
+    assert expert.requested_feature_whitelist_ == ("state_S01", "state_S04", "qc_signal")
+    assert forbidden.isdisjoint(expert._artifact_payload()["requested_feature_whitelist"])
+
+
+def test_module_a_formal_mode_requires_and_records_explicit_state_whitelist(training_frame) -> None:
+    frame, y = training_frame
+    expert = TaskConditionedStatisticalExpert(
+        ["MCI", "HC", "AD"],
+        c=0.5,
+        task_column="task",
+        require_explicit_feature_whitelist=True,
+    )
+    with pytest.raises(ValueError, match="explicit state feature whitelist"):
+        expert.fit(frame, y)
+
+    fitted = expert.fit(frame, y, feature_columns=["state_S01", "state_S04"])
+    assert fitted.feature_selection_mode_ == "explicit_state_feature_whitelist"
+    assert fitted.requested_feature_whitelist_ == ("state_S01", "state_S04")
+
+
+def test_module_a_rejects_explicit_numeric_label_leakage(training_frame) -> None:
+    frame, y = training_frame
+    frame["label"] = [0, 0, 1, 1, 2, 2]
+    with pytest.raises(ValueError, match="cannot be used"):
+        TaskConditionedStatisticalExpert(["MCI", "HC", "AD"], c=0.5).fit(
+            frame,
+            y,
+            feature_columns=["state_S01", "label"],
+        )

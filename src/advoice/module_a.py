@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -21,6 +22,35 @@ from .utils import hash_values
 
 EXPLANATION_PACKET_VERSION = "advoice.module_a.explanation_packet.v1"
 MODULE_A_VERSION = "advoice.module_a.linear.v1"
+
+
+# These fields identify rows, partitions, or observed outcomes.  They are not
+# clinical state features and must never enter a disease logit, including when
+# a caller relies on legacy automatic numeric-column discovery.
+_FORBIDDEN_FEATURE_PATTERN = re.compile(
+    r"(?:^|_)(?:"
+    r"label|labels|target|targets|outcome|outcomes|diagnosis|diagnoses|"
+    r"class|classes|ground_truth|true_label|true_class|"
+    r"prediction|predicted|probability|probabilities|score|risk|"
+    r"split|fold|partition|set|"
+    r"id|ids|subject_id|participant_id|patient_id|recording_id|"
+    r"case_id|sample_id|file_id|filename|file_name"
+    r")(?:$|_)",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_forbidden_feature(name: str) -> bool:
+    """Return whether a column is an identity, split, or outcome field.
+
+    The normalisation keeps this guard effective for common spelling variants
+    such as ``subjectId`` and ``recording-id`` while leaving clinical state
+    fields (for example ``state_S01``) untouched.
+    """
+
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name)).lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return bool(_FORBIDDEN_FEATURE_PATTERN.search(normalized))
 
 
 def _canonical(value: Any) -> str:
@@ -141,6 +171,7 @@ class TaskConditionedStatisticalExpert:
         max_iter: int = 2000,
         task_column: str | None = None,
         language_column: str | None = None,
+        require_explicit_feature_whitelist: bool = False,
         random_state: int = 20260813,
         module_version: str = MODULE_A_VERSION,
     ) -> None:
@@ -154,6 +185,7 @@ class TaskConditionedStatisticalExpert:
         self.max_iter = int(max_iter)
         self.task_column = task_column
         self.language_column = language_column
+        self.require_explicit_feature_whitelist = bool(require_explicit_feature_whitelist)
         self.random_state = int(random_state)
         self.module_version = str(module_version)
 
@@ -187,16 +219,39 @@ class TaskConditionedStatisticalExpert:
         branches = {str(key): str(value) for key, value in (feature_branches or {}).items()}
         declared_qc = {str(value) for value in qc_features}
         if feature_columns is None:
+            if self.require_explicit_feature_whitelist:
+                raise ValueError(
+                    "Formal Module A fitting requires an explicit state feature whitelist; "
+                    "pass feature_columns."
+                )
             candidates = [
                 str(column)
                 for column in frame.select_dtypes(include=[np.number]).columns
                 if str(column) not in {self.task_column, self.language_column}
+                and not _is_forbidden_feature(str(column))
             ]
+            self.feature_selection_mode_ = "legacy_inferred_non_identity_numeric"
         else:
             candidates = [str(column) for column in feature_columns]
+            self.feature_selection_mode_ = "explicit_state_feature_whitelist"
+        if len(set(candidates)) != len(candidates):
+            raise ValueError("feature_columns must not contain duplicate entries.")
         absent = [column for column in candidates if column not in frame]
         if absent:
             raise ValueError(f"Unknown feature columns: {absent}")
+        forbidden = [column for column in candidates if _is_forbidden_feature(column)]
+        if forbidden:
+            raise ValueError(
+                "Identity, split, or outcome columns cannot be used as Module A features: "
+                f"{forbidden}"
+            )
+        adapter_columns = {column for column in (self.task_column, self.language_column) if column is not None}
+        duplicated_adapters = [column for column in candidates if column in adapter_columns]
+        if duplicated_adapters:
+            raise ValueError(
+                "Task and language adapter columns must not also be supplied as disease features: "
+                f"{duplicated_adapters}"
+            )
         self.excluded_qc_features_ = tuple(
             sorted(
                 column
@@ -207,6 +262,9 @@ class TaskConditionedStatisticalExpert:
         self.numeric_features_ = tuple(
             column for column in candidates if column not in self.excluded_qc_features_
         )
+        # Persist the exact pre-QC state whitelist.  The formal orchestrator
+        # can reject non-explicit mode, while legacy callers stay compatible.
+        self.requested_feature_whitelist_ = tuple(candidates)
         if not self.numeric_features_ and not (self.task_column or self.language_column):
             raise ValueError("At least one disease-permitted feature or adapter is required.")
         for column in (self.task_column, self.language_column):
@@ -309,6 +367,9 @@ class TaskConditionedStatisticalExpert:
             "max_iter": self.max_iter,
             "task_column": self.task_column,
             "language_column": self.language_column,
+            "require_explicit_feature_whitelist": self.require_explicit_feature_whitelist,
+            "feature_selection_mode": self.feature_selection_mode_,
+            "requested_feature_whitelist": self.requested_feature_whitelist_,
             "numeric_features": self.numeric_features_,
             "excluded_qc_features": self.excluded_qc_features_,
             "design_feature_names": self.design_feature_names_,

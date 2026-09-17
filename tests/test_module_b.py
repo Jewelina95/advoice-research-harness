@@ -101,6 +101,22 @@ def test_consumed_evidence_changes_only_through_supplied_replay(fitted) -> None:
     assert prediction.reason == "no_validated_incremental_evidence"
 
 
+def test_disjoint_incremental_evidence_remains_eligible_when_other_evidence_was_consumed(fitted) -> None:
+    row = _row(
+        2,
+        evidence_consumed_by_module_a=True,
+        consumed_evidence_ids=["metric:already-replayed"],
+        incremental_evidence_declared=True,
+        incremental_evidence_ids=["metric:new-agent-evidence"],
+    )
+    prediction = fitted.predict_one(row)
+
+    assert prediction.additive_correction_applied
+    assert prediction.reason == "validated_incremental_evidence"
+    assert prediction.consumed_evidence_ids == ("metric:already-replayed",)
+    assert prediction.incremental_evidence_ids == ("metric:new-agent-evidence",)
+
+
 def test_unsupported_route_has_declared_post_replay_fallback(fitted) -> None:
     row = _row(0, route="spontaneous", language="zh", route_supported=False)
     prediction = fitted.predict_one(row)

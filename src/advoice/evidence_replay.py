@@ -22,6 +22,7 @@ REVISION_SCHEMA_VERSION = "advoice.evidence_revision.v1"
 REPLAY_SCHEMA_VERSION = "advoice.evidence_replay.v1"
 ALLOWED_DOWNWEIGHT_MULTIPLIERS = frozenset({0.25, 0.5, 0.75})
 RevisionAction = Literal["downweight", "invalidate", "mark_unavailable", "request_remeasurement"]
+GRAPH_FEATURE_PREFIXES = ("state_", "rel_", "available_")
 
 
 class EvidenceRevisionError(ValueError):
@@ -160,6 +161,18 @@ def _scalar_reliability(evidence: MetricEvidenceV2) -> float:
     ]))
 
 
+def _available_to_module_a(evidence: MetricEvidenceV2) -> bool:
+    """Return whether this exact revision can affect the replayed scorer."""
+
+    return bool(
+        evidence.inference_permission
+        and evidence.observable
+        and evidence.unavailable_reason is None
+        and np.isfinite(_numeric(evidence.value))
+        and _scalar_reliability(evidence) > 0.0
+    )
+
+
 def metric_evidence_frame(
     snapshot: Sequence[MetricEvidenceV2],
     *, dataset_id: str = "replay", label: str = "unknown", split: str = "replay",
@@ -255,9 +268,14 @@ def _case_from_graph(
     row = graph.wide.iloc[0].to_dict()
     context = dict(case_context or {})
     # Graph-derived model inputs always win; callers cannot smuggle a different
-    # numeric state into a packet that is labelled as replayed.
+    # numeric state into a packet that is labelled as replayed.  Absence is a
+    # replay failure, not permission to reuse a stale context value.
     for feature in getattr(model, "numeric_features_", ()):
-        if feature in row:
+        if feature.startswith(GRAPH_FEATURE_PREFIXES):
+            if feature not in row:
+                raise EvidenceRevisionError(
+                    f"Rebuilt StateGraphV2 is missing trained feature {feature!r}."
+                )
             context[feature] = row[feature]
     for column in (getattr(model, "task_column", None), getattr(model, "language_column", None)):
         if column and column in row and column not in context:
@@ -290,7 +308,7 @@ def replay_evidence(
     case = _case_from_graph(graph, module_a, case_context)
     packet = module_a.explain_case(
         case,
-        consumed_evidence_ids=[item.evidence_id for item in revised if item.inference_permission],
+        consumed_evidence_ids=[item.evidence_id for item in revised if _available_to_module_a(item)],
         evidence_snapshot={"evidence_hash": revised_hash, "revision_hash": revision.revision_hash if revision else "none"},
         state_snapshot={"state_hash": graph.state_hash, "state_wide": graph.wide.to_dict("records")},
     )

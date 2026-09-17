@@ -111,3 +111,43 @@ def test_unavailability_never_rewrites_observability() -> None:
     )
     assert revised[0].observable is snapshot[0].observable
     assert revised[0].unavailable_reason == "remeasurement_requested_by_evidence_revision"
+
+
+@pytest.mark.parametrize("action", ["invalidate", "request_remeasurement"])
+def test_withdrawn_evidence_is_absent_from_module_a_consumed_ids(action: str) -> None:
+    snapshot = _snapshot()
+    result = replay_evidence(
+        snapshot,
+        EvidenceRevision(
+            evidence_id="metric:a", action=action, expected_evidence_hash=evidence_snapshot_hash(snapshot),
+        ),
+        states_config=_states(), module_a=_expert(),
+    )
+
+    assert "metric:a" not in result.packet.consumed_evidence_ids
+    assert result.packet.consumed_evidence_ids == ("metric:b",)
+
+
+def test_replay_overwrites_stale_graph_context_feature() -> None:
+    snapshot = _snapshot()
+    baseline = replay_evidence(snapshot, None, states_config=_states(), module_a=_expert())
+    replayed = replay_evidence(
+        snapshot, None, states_config=_states(), module_a=_expert(),
+        case_context={"state_S01": -999.0},
+    )
+
+    assert replayed.packet.to_json() == baseline.packet.to_json()
+
+
+@pytest.mark.parametrize("feature", ["state_S02", "rel_S02", "available_S02"])
+def test_replay_rejects_stale_context_when_trained_graph_feature_is_missing(feature: str) -> None:
+    training = pd.DataFrame({feature: [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]})
+    expert = TaskConditionedStatisticalExpert(["HC", "AD"], c=1.0).fit(
+        training, ["HC", "HC", "HC", "AD", "AD", "AD"], feature_columns=[feature],
+    )
+
+    with pytest.raises(EvidenceRevisionError, match="missing trained feature"):
+        replay_evidence(
+            _snapshot(), None, states_config=_states(), module_a=expert,
+            case_context={feature: 999.0},
+        )

@@ -12,6 +12,10 @@ artifacts/
 runs/
 reports/latest/
 reports/latest_run.json
+reports/evidence_governance_domain_audit_*/
+reports/evidence_governance_feature_audit_*/
+reports/evidence_governance_meeting_response_*/
+reports/evidence_governance_theory_*/
 *.log
 *.egg-info/
 .env

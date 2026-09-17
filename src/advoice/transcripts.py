@@ -181,6 +181,45 @@ def _mattr(tokens: list[str], window: int = 50) -> float:
     return float(np.mean([len(set(tokens[index : index + window])) / window for index in range(len(tokens) - window + 1)]))
 
 
+def _mtld_direction(tokens: list[str], threshold: float = 0.72) -> float:
+    factors = 0.0
+    types: set[str] = set()
+    token_count = 0
+    for token in tokens:
+        token_count += 1
+        types.add(token)
+        ttr = len(types) / token_count
+        if ttr <= threshold:
+            factors += 1.0
+            types.clear()
+            token_count = 0
+    if token_count:
+        ttr = len(types) / token_count
+        factors += (1.0 - ttr) / max(1.0 - threshold, 1e-9)
+    return len(tokens) / factors if factors > 0 else float(len(tokens))
+
+
+def _mtld(tokens: list[str], minimum_tokens: int = 10) -> float:
+    """Bidirectional MTLD candidate; short samples remain explicitly unavailable."""
+    if len(tokens) < minimum_tokens:
+        return float("nan")
+    return float(np.mean([_mtld_direction(tokens), _mtld_direction(list(reversed(tokens)))]))
+
+
+def _immediate_repetition_rates(tokens: list[str]) -> tuple[float, float]:
+    if not tokens:
+        return float("nan"), float("nan")
+    repeated_tokens = sum(tokens[index] == tokens[index - 1] for index in range(1, len(tokens)))
+    repeated_bigrams = sum(
+        tokens[index : index + 2] == tokens[index - 2 : index]
+        for index in range(2, len(tokens) - 1)
+    )
+    return (
+        float(100.0 * repeated_tokens / len(tokens)),
+        float(100.0 * repeated_bigrams / max(len(tokens) - 1, 1)),
+    )
+
+
 def _picture_description_metrics(
     text: str,
     tokens: list[str],
@@ -241,13 +280,17 @@ def transcript_metrics(
     raw = Path(path_value).read_text(encoding="utf-8", errors="replace") if path_value and Path(path_value).exists() else ""
     repairs = raw.count("[/]") + raw.count("[//]")
     total_turns = counts["PAR"] + counts["INV"]
+    repeat_token_rate, repeat_bigram_rate = _immediate_repetition_rates(tokens)
     metrics = {
         "word_count": float(len(tokens)),
         "speech_rate_wpm": float(len(tokens) / max(duration_sec / 60.0, 1e-6)) if tokens else float("nan"),
         "lexical_ttr": float(len(set(tokens)) / denominator) if tokens else float("nan"),
         "lexical_mattr50": _mattr(tokens),
+        "lexical_mtld": _mtld(tokens),
         "filler_rate_100w": float(100.0 * filler_count / denominator) if tokens else float("nan"),
         "repair_rate_100w": float(100.0 * repairs / denominator) if tokens else float("nan"),
+        "repeat_token_rate_100w": repeat_token_rate,
+        "repeat_bigram_rate_100w": repeat_bigram_rate,
         "pronoun_ratio": float(pronoun_count / denominator) if tokens else float("nan"),
         "content_word_ratio": float(content_count / denominator) if tokens else float("nan"),
         "mean_utterance_words": float(np.mean(utterance_lengths)) if utterance_lengths else float("nan"),

@@ -1,0 +1,14 @@
+output_dir: ../../reports/evidence_governance_feature_audit_2026-09-17
+metrics_config: ../metrics/audio_metrics.yaml
+historical_dictionary: ../../references/metric_revision_7_16/clinical_metric_dictionary_clean_2026-06-18.csv
+random_seed: 20260917
+bootstrap_repeats: 200
+datasets:
+  - id: ADReSS_2020
+    features_path: ../../.local/pilot/artifacts/ADReSS_2020/subject_features.csv
+  - id: ADReSSo_2021_progression
+    features_path: ../../.local/pilot/artifacts/ADReSSo_2021_progression/subject_features.csv
+  - id: NCMMSC2021_AD
+    features_path: ../../.local/pilot/artifacts/NCMMSC2021_AD/subject_features.csv
+  - id: DementiaNet_PublicFigures
+    features_path: ../../.local/pilot/artifacts/DementiaNet_PublicFigures/subject_features.csv

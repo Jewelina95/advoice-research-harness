@@ -1,0 +1,11 @@
+output_dir: reports/evidence_governance_domain_audit_2026-09-17
+metrics_config: configs/metrics/audio_metrics.yaml
+states_config: configs/states/audio_states.yaml
+historical_dictionary: references/metric_revision_7_16/clinical_metric_dictionary_clean_2026-06-18.csv
+mapping_table: reports/evidence_governance_feature_audit_2026-09-17/historical_to_runtime_mapping.csv
+feature_structure_output: .local/evidence_governance/feature_structure_pilot_v2_2026-09-17
+datasets:
+  - PREPARE
+  - NCMMSC_long
+  - IAEAV
+  - ADReSS

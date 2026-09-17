@@ -1,0 +1,28 @@
+# Research candidates only. These are not active disease evidence and are not
+# available to the diagnostic report until the declared validation gates pass.
+candidates:
+  - id: pause_sd_sec
+    target_state: S01
+    source: audio_vad_runs
+    role: planned_clinical_support
+    validation_gates: [vad_sensitivity, cross_dataset_stability, redundancy_with_pause_p90]
+  - id: pause_iqr_sec
+    target_state: S01
+    source: audio_vad_runs
+    role: planned_clinical_support
+    validation_gates: [vad_sensitivity, cross_dataset_stability, redundancy_with_pause_sd]
+  - id: lexical_mtld
+    target_state: S08
+    source: language_conditioned_tokens
+    role: planned_clinical_support
+    validation_gates: [minimum_token_rule, cross_language_calibration, redundancy_with_mattr]
+  - id: repeat_token_rate_100w
+    target_state: S12
+    source: language_conditioned_tokens
+    role: planned_clinical_support
+    validation_gates: [task_required_repetition_audit, asr_perturbation, cross_language_calibration]
+  - id: repeat_bigram_rate_100w
+    target_state: S12
+    source: language_conditioned_tokens
+    role: planned_model_auxiliary
+    validation_gates: [task_required_repetition_audit, sample_length_stability]

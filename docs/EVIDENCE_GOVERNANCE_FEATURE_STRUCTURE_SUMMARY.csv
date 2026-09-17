@@ -1,0 +1,7 @@
+dataset,language,n_train_stratum,n_variable_metrics,n_complete_rows,matrix_rank,effective_rank,dimensions_90pct,dimensions_95pct,report_permitted_metrics,report_effective_rank,report_dimensions_95pct
+PREPARE,english,1308,33,1164,30,12.683,13,16,14,6.394,8
+PREPARE,mandarin,33,28,33,24,7.840,8,10,14,4.758,7
+PREPARE,spanish,281,29,277,26,10.500,11,14,14,5.787,8
+NCMMSC_long,zh,120,29,120,26,9.758,10,12,14,5.246,7
+IAEAV,es,209,29,209,27,10.733,11,13,14,5.899,8
+ADReSS,en,81,36,81,35,12.378,13,17,16,7.659,10

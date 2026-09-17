@@ -1,0 +1,16 @@
+# Copy to .local, supply verified subject-level CSV paths, and set a new output.
+# Relative paths resolve from the recipe file, not the working directory.
+# The example relative paths assume this file's current directory; adjust them
+# (or use absolute paths) if you move the recipe into .local.
+output_dir: ../../.local/evidence_governance/example_run
+metrics_config: ../metrics/audio_metrics.yaml
+states_config: ../states/audio_states.yaml
+historical_dictionary: /path/to/clinical_metric_dictionary.csv
+min_pairs: 20
+review_threshold: 0.90
+dimension_min_rows: 20
+datasets:
+  - id: verified_dataset
+    features_path: /path/to/subject_features.csv
+    metadata_path: /path/to/subject_manifest.csv
+    scope_note: Historical extraction; train-only descriptive study, not model validation.

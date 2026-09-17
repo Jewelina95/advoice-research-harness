@@ -234,6 +234,18 @@ def test_blind_review_rejects_retain_unknown_state_and_cross_state_citations() -
         _parse_blind(unsupported_strength, prepared)
 
 
+@pytest.mark.parametrize("action", ["invalidate", "mark_unavailable"])
+def test_provider_removal_action_canonicalizes_stale_multiplier(action: str) -> None:
+    prepared = _prepared()
+    response = _blind(prepared)
+    response["state_actions"][0]["action"] = action
+    response["state_actions"][0]["reliability_multiplier"] = 0.25
+
+    assessment = _parse_blind(response, prepared)
+
+    assert assessment.state_actions["S01"].reliability_multiplier == 0.0
+
+
 def test_review_rejects_citations_without_inference_permission() -> None:
     prepared = _prepared()
     blocked = replace(
@@ -284,14 +296,20 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
 
     assert result.status == REVIEW_AVAILABLE
     variants = schemas[0]["properties"]["state_actions"]["items"]["anyOf"]
-    assert len(variants) == 1
-    properties = variants[0]["properties"]
-    assert properties["state_id"]["enum"] == ["S01"]
-    assert properties["action"]["enum"] == [
-        "downweight", "invalidate", "mark_unavailable",
-    ]
-    assert properties["reliability_multiplier"]["enum"] == [0.0, 0.25, 0.5, 0.75]
-    assert properties["cited_metric_evidence_ids"]["items"]["enum"] == ["E001"]
+    assert len(variants) == 3
+    by_action = {
+        item["properties"]["action"]["enum"][0]: item["properties"]
+        for item in variants
+    }
+    assert set(by_action) == {"downweight", "invalidate", "mark_unavailable"}
+    assert all(item["state_id"]["enum"] == ["S01"] for item in by_action.values())
+    assert by_action["downweight"]["reliability_multiplier"]["enum"] == [0.25, 0.5, 0.75]
+    assert by_action["invalidate"]["reliability_multiplier"]["enum"] == [0.0]
+    assert by_action["mark_unavailable"]["reliability_multiplier"]["enum"] == [0.0]
+    assert all(
+        item["cited_metric_evidence_ids"]["items"]["enum"] == ["E001"]
+        for item in by_action.values()
+    )
 
 
 def test_runtime_schema_binds_each_action_to_same_state_evidence(

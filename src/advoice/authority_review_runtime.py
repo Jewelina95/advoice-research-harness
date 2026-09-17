@@ -113,11 +113,20 @@ class StateReviewAction:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "StateReviewAction":
+        action = str(value.get("action", ""))
+        multiplier = value.get("reliability_multiplier")
+        # These actions have protocol-defined coefficients. Canonicalizing
+        # stale provider numbers is fail-safe because it cannot increase the
+        # reviewer's authority; downweight values remain strictly validated.
+        if action == "retain":
+            multiplier = 1.0
+        elif action in {"invalidate", "mark_unavailable"}:
+            multiplier = 0.0
         return cls(
             state_id=str(value.get("state_id", "")),
-            action=str(value.get("action", "")),  # type: ignore[arg-type]
+            action=action,  # type: ignore[arg-type]
             cited_metric_evidence_ids=tuple(value.get("cited_metric_evidence_ids", ())),
-            reliability_multiplier=value.get("reliability_multiplier"),
+            reliability_multiplier=multiplier,
             rationale=str(value.get("rationale", "")),
         )
 
@@ -604,23 +613,22 @@ def _action_schema(
     evidence_ids_by_state: Mapping[str, Sequence[str]], *, allow_retain: bool = True,
 ) -> dict[str, Any]:
     actions = sorted(STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"})
-    multiplier_values = sorted({
-        1.0 if action == "retain" else value
-        for action in actions
-        for value in (
-            DOWNWEIGHT_MULTIPLIERS if action == "downweight" else (0.0,)
-        )
-    })
     variants = []
     for state_id in sorted(evidence_ids_by_state):
         evidence_ids = sorted(set(str(value) for value in evidence_ids_by_state[state_id]))
         if not evidence_ids:
             continue
-        variants.append({
+        for action in actions:
+            multiplier_values = (
+                [1.0] if action == "retain"
+                else list(DOWNWEIGHT_MULTIPLIERS) if action == "downweight"
+                else [0.0]
+            )
+            variants.append({
                 "type": "object", "additionalProperties": False,
                 "properties": {
                     "state_id": {"type": "string", "enum": [state_id]},
-                    "action": {"type": "string", "enum": actions},
+                    "action": {"type": "string", "enum": [action]},
                     "cited_metric_evidence_ids": {
                         "type": "array",
                         "items": {"type": "string", "enum": evidence_ids},

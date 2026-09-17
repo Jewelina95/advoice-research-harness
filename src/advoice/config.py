@@ -57,6 +57,21 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return value or {}
 
 
+def load_routing_config(path: Path | None = None) -> dict[str, Any]:
+    """Load additive Stage 1 route contracts without changing legacy configs."""
+    p = paths()
+    return load_yaml(path or p.configs / "routes" / "default.yaml")
+
+
+load_route_config = load_routing_config
+
+
+def load_observability_config(path: Path | None = None) -> dict[str, Any]:
+    """Load the task-by-state observability registry."""
+    p = paths()
+    return load_yaml(path or p.configs / "observability" / "default.yaml")
+
+
 def load_all(dataset_id: str) -> dict[str, Any]:
     p = paths()
     dataset = load_yaml(p.configs / "datasets" / f"{dataset_id}.yaml")
@@ -98,6 +113,8 @@ def load_all(dataset_id: str) -> dict[str, Any]:
         if definition["id"] not in enabled_states
     ]
 
+    routing = load_routing_config()
+    observability = load_observability_config()
     return {
         "project": load_yaml(p.configs / "project.yaml"),
         "dataset": dataset,
@@ -107,4 +124,8 @@ def load_all(dataset_id: str) -> dict[str, Any]:
         "models": load_yaml(p.model_config),
         "agents": load_yaml(p.configs / "agents" / "default.yaml"),
         "evaluation": load_yaml(p.configs / "evaluation" / "default.yaml"),
+        "routing": routing,
+        "routes": routing,
+        "observability": observability,
+        "observability_config": observability,
     }

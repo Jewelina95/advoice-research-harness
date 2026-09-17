@@ -1,0 +1,42 @@
+version: "1"
+observation_routes:
+  clinical_interview:
+    family: structured_clinical_interview
+    required_roles: [patient, interviewer]
+  picture_description:
+    family: picture_description
+  picture_description_audio_only:
+    family: picture_description
+  structured_multitask:
+    family: structured_cognitive_multitask
+  spontaneous_multilingual:
+    family: spontaneous_speech
+  public_speech:
+    family: public_speech
+  longitudinal_progression_audio:
+    family: picture_description
+  audio_only:
+    family: audio_only
+target_routes:
+  diagnosis:
+    endpoint: cross_sectional_diagnosis
+    labels: [HC, MCI, AD]
+    requires_paired_visits: false
+    minimum_visits: 1
+  cross_sectional_diagnosis:
+    endpoint: cross_sectional_diagnosis
+    labels: [HC, MCI, AD]
+    requires_paired_visits: false
+    minimum_visits: 1
+  progression:
+    endpoint: longitudinal_progression
+    labels: [no_decline, decline]
+    requires_paired_visits: true
+    minimum_visits: 2
+    interval_field: visit_interval_days
+  longitudinal_progression:
+    endpoint: longitudinal_progression
+    labels: [no_decline, decline]
+    requires_paired_visits: true
+    minimum_visits: 2
+    interval_field: visit_interval_days

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice reliability components",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "role", "alignment", "asr", "reference_support", "measurement_stability"],
+  "properties": {
+    "source": {"type": "number", "minimum": 0, "maximum": 1},
+    "role": {"type": "number", "minimum": 0, "maximum": 1},
+    "alignment": {"type": "number", "minimum": 0, "maximum": 1},
+    "asr": {"type": "number", "minimum": 0, "maximum": 1},
+    "reference_support": {"type": "number", "minimum": 0, "maximum": 1},
+    "measurement_stability": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice fold-bound reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["median", "scale", "sample_size", "artifact_id", "artifact_hash", "scope", "reference_label"],
+  "properties": {
+    "median": {"type": "number"},
+    "scale": {"type": "number", "exclusiveMinimum": 0},
+    "sample_size": {"type": "integer", "minimum": 0},
+    "artifact_id": {"type": "string"},
+    "artifact_hash": {"type": "string"},
+    "scope": {"type": "string"},
+    "reference_label": {"type": "string"}
+  }
+}

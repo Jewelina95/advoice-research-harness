@@ -11,6 +11,7 @@ import advoice.authority_state_delta_study as study_module
 from advoice.authority_state_delta_study import (
     AuthorityStateDeltaStudyConfig,
     AuthorityStateDeltaStudyError,
+    _packet_bound_hash,
     run_authority_state_delta_cohort,
 )
 from advoice.authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
@@ -104,7 +105,7 @@ class _Dataset(AuthorityStudyDataset):
     def evaluation_truth(self, subject_ids=None):
         self.truth_calls += 1
         # The runner may only read truth after every requested review has run.
-        assert self.review_calls == len(self._cases)
+        assert self.review_calls == len(subject_ids)
         return {subject_id: self._truth[subject_id] for subject_id in subject_ids}
 
 
@@ -282,3 +283,33 @@ def test_rejects_mismatched_runtime_cache(tmp_path: Path, monkeypatch: pytest.Mo
             output_dir=tmp_path,
             cache_dir=tmp_path / "other-cache",
         )
+
+
+def test_packet_hash_aliases_accept_equal_values_and_reject_conflicts() -> None:
+    packet = _packet((0.5, 0.5), evidence_hash="a" * 64, state_hash="b" * 64)
+    packet.hashes["evidence_snapshot_hash"] = "a" * 64
+    assert _packet_bound_hash(packet, ("evidence_hash", "evidence_snapshot_hash")) == "a" * 64
+
+    packet.hashes["evidence_snapshot_hash"] = "c" * 64
+    with pytest.raises(AuthorityStateDeltaStudyError, match="one consistent value"):
+        _packet_bound_hash(packet, ("evidence_hash", "evidence_snapshot_hash"))
+
+
+def test_single_case_smoke_reports_descriptive_metrics_without_calibration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset, _, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(None))
+
+    result = run_authority_state_delta_cohort(
+        dataset,
+        runtime,
+        output_dir=tmp_path,
+        config=AuthorityStateDeltaStudyConfig(max_cases=1),
+    )
+
+    assert result.frozen_metrics["n"] == 1
+    assert result.fused_metrics["n"] == 1
+    assert result.frozen_metrics["evaluation_status"] == "insufficient_class_coverage"
+    assert result.fused_metrics["macro_auroc_ovr"] is None

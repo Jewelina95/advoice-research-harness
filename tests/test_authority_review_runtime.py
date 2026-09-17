@@ -251,6 +251,49 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
     ]
     assert by_action["invalidate"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
     assert by_action["mark_unavailable"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
+    assert all(
+        variant["properties"]["cited_metric_evidence_ids"]["items"]["enum"]
+        == ["metric:pause"]
+        for variant in variants
+    )
+
+
+def test_runtime_schema_binds_each_action_to_same_state_evidence(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    second_evidence = replace(
+        prepared.evidence[0], evidence_id="metric:other", state_id="S02"
+    )
+    prepared = replace(
+        prepared,
+        evidence=prepared.evidence + (second_evidence,),
+        pre_state_cards=prepared.pre_state_cards + ({
+            **prepared.pre_state_cards[0],
+            "state_card_id": "S02:cookie:0",
+            "state_id": "S02",
+            "supporting_evidence_ids": ["metric:other"],
+        },),
+    )
+    schemas: list[dict[str, object]] = []
+
+    def provider(root, prompt, schema_path, output_path, model, provider):
+        schemas.append(json.loads(Path(schema_path).read_text(encoding="utf-8")))
+        return _blind(prepared) if len(schemas) == 1 else _advisor(prepared)
+
+    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    result = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path)
+    ).review(prepared)
+
+    assert result.status == REVIEW_AVAILABLE
+    for schema in schemas:
+        key = "state_actions" if "state_actions" in schema["properties"] else "amendments"
+        variants = schema["properties"][key]["items"]["anyOf"]
+        for variant in variants:
+            state_id = variant["properties"]["state_id"]["enum"][0]
+            allowed = variant["properties"]["cited_metric_evidence_ids"]["items"]["enum"]
+            assert allowed == (["metric:pause"] if state_id == "S01" else ["metric:other"])
 
 
 def test_payload_strips_leakage_and_chat_residue_without_mutating_input(tmp_path: Path) -> None:

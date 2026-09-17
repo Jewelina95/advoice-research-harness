@@ -327,12 +327,13 @@ def _packet_hash(packet: ExplanationPacket) -> str:
 
 
 def _packet_bound_hash(packet: ExplanationPacket, aliases: Sequence[str]) -> str:
-    values = [str(packet.hashes[name]) for name in aliases if name in packet.hashes]
+    values = {str(packet.hashes[name]) for name in aliases if name in packet.hashes}
     if len(values) != 1:
         raise AuthorityStateDeltaStudyError(
-            f"Packet does not expose exactly one required hash among {list(aliases)}."
+            "Packet hash aliases must expose one consistent value among "
+            f"{list(aliases)}."
         )
-    return values[0]
+    return next(iter(values))
 
 
 def _packet_probabilities(packet: ExplanationPacket) -> Mapping[str, float]:
@@ -414,8 +415,12 @@ def _aggregate(
         frozen_frame = _prediction_frame(audits, truth, completed, "frozen", labels)
         fused_frame = _prediction_frame(audits, truth, completed, "fusion", labels)
         positive = labels[-1]
-        frozen_metrics = evaluate_predictions(frozen_frame, config.evaluation_bins, labels, positive)
-        fused_metrics = evaluate_predictions(fused_frame, config.evaluation_bins, labels, positive)
+        frozen_metrics = _cohort_metrics(
+            frozen_frame, bins=config.evaluation_bins, labels=labels, positive=positive,
+        )
+        fused_metrics = _cohort_metrics(
+            fused_frame, bins=config.evaluation_bins, labels=labels, positive=positive,
+        )
         for case_id in completed:
             actual = str(truth[case_id])
             frozen_label = str(audits[case_id]["frozen"]["predicted_label"])
@@ -442,6 +447,36 @@ def _aggregate(
         "fused_metrics": fused_metrics,
         "paired_counts": paired,
     }
+
+
+def _cohort_metrics(
+    frame: pd.DataFrame, *, bins: int, labels: list[str], positive: str,
+) -> Mapping[str, Any]:
+    observed = sorted(set(frame["label"].astype(str)))
+    if len(frame) < 2 or len(observed) < 2:
+        predicted = frame["predicted_label"].astype(str)
+        actual = frame["label"].astype(str)
+        matrix = [
+            [int(((actual == truth) & (predicted == guess)).sum()) for guess in labels]
+            for truth in labels
+        ]
+        return {
+            "n": int(len(frame)),
+            "accuracy": float((actual == predicted).mean()),
+            "evaluation_status": "insufficient_class_coverage",
+            "observed_classes": observed,
+            "macro_f1": None,
+            "micro_f1": None,
+            "weighted_f1": None,
+            "macro_auroc_ovr": None,
+            "micro_auroc_ovr": None,
+            "weighted_auroc_ovr": None,
+            "confusion_matrix": matrix,
+        }
+    result = dict(evaluate_predictions(frame, bins, labels, positive))
+    result["evaluation_status"] = "complete"
+    result["observed_classes"] = observed
+    return result
 
 
 def _prediction_frame(

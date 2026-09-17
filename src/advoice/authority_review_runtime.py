@@ -502,7 +502,7 @@ def build_advisor_payload(
 
 
 def _action_schema(
-    state_ids: Sequence[str], *, allow_retain: bool = True,
+    evidence_ids_by_state: Mapping[str, Sequence[str]], *, allow_retain: bool = True,
 ) -> dict[str, Any]:
     actions = sorted(STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"})
     multiplier_values = {
@@ -512,29 +512,41 @@ def _action_schema(
         "mark_unavailable": [0.0],
     }
     variants = []
-    for action in actions:
-        variants.append({
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "state_id": {"type": "string", "enum": list(state_ids)},
-                "action": {"type": "string", "enum": [action]},
-                "cited_metric_evidence_ids": {
-                    "type": "array", "items": {"type": "string"}, "minItems": 1,
+    for state_id in sorted(evidence_ids_by_state):
+        evidence_ids = sorted(set(str(value) for value in evidence_ids_by_state[state_id]))
+        if not evidence_ids:
+            continue
+        for action in actions:
+            variants.append({
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "state_id": {"type": "string", "enum": [state_id]},
+                    "action": {"type": "string", "enum": [action]},
+                    "cited_metric_evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": evidence_ids},
+                        "minItems": 1,
+                    },
+                    "reliability_multiplier": {
+                        "type": "number", "enum": multiplier_values[action],
+                    },
+                    "rationale": {"type": "string"},
                 },
-                "reliability_multiplier": {
-                    "type": "number", "enum": multiplier_values[action],
-                },
-                "rationale": {"type": "string"},
-            },
-            "required": [
-                "state_id", "action", "cited_metric_evidence_ids",
-                "reliability_multiplier", "rationale",
-            ],
-        })
+                "required": [
+                    "state_id", "action", "cited_metric_evidence_ids",
+                    "reliability_multiplier", "rationale",
+                ],
+            })
+    if not variants:
+        raise AuthorityReviewValidationError(
+            "Structured review schema has no state-bound MetricEvidence IDs."
+        )
     return {"anyOf": variants}
 
 
-def _blind_schema(class_order: Sequence[str], state_ids: Sequence[str]) -> dict[str, Any]:
+def _blind_schema(
+    class_order: Sequence[str], evidence_ids_by_state: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
     score_properties = {label: {"type": "integer", "minimum": 0, "maximum": 4} for label in class_order}
     return {
         "type": "object", "additionalProperties": False,
@@ -544,8 +556,8 @@ def _blind_schema(class_order: Sequence[str], state_ids: Sequence[str]) -> dict[
             "reviewed_evidence_hash": {"type": "string"},
             "reviewed_state_graph_hash": {"type": "string"},
             "state_actions": {
-                "type": "array", "items": _action_schema(state_ids, allow_retain=False),
-                "minItems": 0, "maxItems": len(tuple(state_ids)),
+                "type": "array", "items": _action_schema(evidence_ids_by_state, allow_retain=False),
+                "minItems": 0, "maxItems": len(evidence_ids_by_state),
             },
             "ordinal_scores": {"type": "object", "properties": score_properties, "required": list(class_order), "additionalProperties": False},
             "report_trace": {"type": "array", "items": {"type": "string"}},
@@ -554,7 +566,9 @@ def _blind_schema(class_order: Sequence[str], state_ids: Sequence[str]) -> dict[
     }
 
 
-def _reconciliation_schema(state_ids: Sequence[str]) -> dict[str, Any]:
+def _reconciliation_schema(
+    evidence_ids_by_state: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
     return {
         "type": "object", "additionalProperties": False,
         "properties": {
@@ -564,7 +578,11 @@ def _reconciliation_schema(state_ids: Sequence[str]) -> dict[str, Any]:
             "reviewed_state_graph_hash": {"type": "string"},
             "advisor_packet_hash": {"type": "string"},
             "disposition": {"type": "string", "enum": ["retain", "amend"]},
-            "amendments": {"type": "array", "items": _action_schema(state_ids)},
+            "amendments": {
+                "type": "array",
+                "items": _action_schema(evidence_ids_by_state),
+                "maxItems": len(evidence_ids_by_state),
+            },
             "cited_metric_evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "rationale": {"type": "string"},
         },
@@ -702,7 +720,13 @@ class AuthorityReviewRuntime:
         policy = _policy_documents(self.root, self.skill_path)
         blind_payload = build_blind_payload(prepared, policy_documents=policy, transcript=transcript)
         _, state_ids, _ = _verify_prepared(prepared)
-        blind_schema = _blind_schema(prepared.route.target_route.labels, state_ids)
+        evidence_ids_by_state = {
+            state_id: tuple(sorted(
+                item.evidence_id for item in prepared.evidence if item.state_id == state_id
+            ))
+            for state_id in state_ids
+        }
+        blind_schema = _blind_schema(prepared.route.target_route.labels, evidence_ids_by_state)
         blind_hash = hash_artifact({"pass": 1, "payload": blind_payload, "schema": blind_schema})
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -716,7 +740,7 @@ class AuthorityReviewRuntime:
             )
             blind = _parse_blind(blind_response, prepared)
             advisor_payload = build_advisor_payload(prepared, blind, policy_documents=policy)
-            reconciliation_schema = _reconciliation_schema(state_ids)
+            reconciliation_schema = _reconciliation_schema(evidence_ids_by_state)
             advisor_hash = hash_artifact({"pass": 2, "payload": advisor_payload, "schema": reconciliation_schema})
             advisor_response = run_structured_batch(
                 self.root,

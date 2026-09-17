@@ -23,6 +23,7 @@ from .authority_review_runtime import (
 )
 from .conditional_authority import AgentAuthorityDecision, PreparedAuthorityCase
 from .decision_lock import canonical_json
+from .evidence_revision_batch import inferable_supervised_state_evidence
 from .evidence_revision_transaction import EvidenceRevisionTransaction
 
 
@@ -151,6 +152,13 @@ def _compile_states(
 ) -> tuple[CompiledAgentStateReview, ...]:
     compiled: list[CompiledAgentStateReview] = []
     for action in actions:
+        if not inferable_supervised_state_evidence(
+            prepared.module_a_evidence, state_id=action.state_id,
+        ):
+            # The action is already satisfied by the frozen snapshot.  Keep it
+            # in the merged report trace, but do not fabricate a revision for
+            # evidence that cannot contribute to replay.
+            continue
         review = _as_state_review(prepared, action, ordinal_scores)
         try:
             compiled.append(compile_agent_state_review(prepared, review))
@@ -158,10 +166,6 @@ def _compile_states(
             raise AuthorityReviewTransactionBridgeError(
                 f"Failed to compile effective action for state {action.state_id!r}: {exc}"
             ) from exc
-    if len(compiled) != len(actions):
-        raise AuthorityReviewTransactionBridgeError(
-            "The bridge did not compile every effective non-retain state action."
-        )
     return tuple(sorted(compiled, key=lambda item: item.review.state_id))
 
 

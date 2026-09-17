@@ -135,6 +135,18 @@ def test_non_supervised_state_evidence_is_not_promoted_into_the_batch() -> None:
     assert batch.evidence_ids == ("m1",)
 
 
+def test_already_unavailable_supervised_evidence_does_not_block_inferable_state_evidence() -> None:
+    evidence = [
+        _evidence(evidence_id="m1"),
+        _evidence(
+            evidence_id="already-unavailable",
+            permissions=EvidencePermissions(inference=False, report=False),
+        ),
+    ]
+    batch = _compile(evidence, "downweight")
+    assert batch.evidence_ids == ("m1",)
+
+
 def test_unknown_state_and_empty_snapshot_fail_closed() -> None:
     evidence = [_evidence(evidence_id="m1")]
     with pytest.raises(EvidenceRevisionBatchError, match="Unknown state"):

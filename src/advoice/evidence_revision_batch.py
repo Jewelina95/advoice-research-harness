@@ -74,6 +74,27 @@ def _inferable(evidence: MetricEvidenceV2) -> bool:
     )
 
 
+def inferable_supervised_state_evidence(
+    evidence: Sequence[MetricEvidenceV2], *, state_id: str,
+) -> tuple[MetricEvidenceV2, ...]:
+    """Return state evidence that can currently contribute to supervised replay.
+
+    The complete snapshot remains hash-bound by the caller.  Evidence already
+    unavailable to replay is intentionally excluded from a revision because it
+    has no state contribution left to change.
+    """
+
+    return tuple(sorted(
+        (
+            item for item in evidence
+            if _text(item.state_id) == state_id
+            and item.consumed_by_supervised
+            and _inferable(item)
+        ),
+        key=lambda item: item.evidence_id,
+    ))
+
+
 def _records_from_state_graph(state_graph: Any) -> tuple[dict[str, Any], ...]:
     """Extract state-card records from supported graph representations.
 
@@ -191,18 +212,12 @@ def _target_evidence(
         raise EvidenceRevisionBatchError(
             f"The evidence snapshot contains no evidence for state_id {state_id!r}."
         )
-    consumed = tuple(item for item in state_items if item.consumed_by_supervised)
-    unusable = [item.evidence_id for item in consumed if not _inferable(item)]
-    if unusable:
+    candidates = inferable_supervised_state_evidence(evidence, state_id=state_id)
+    if not candidates:
         raise EvidenceRevisionBatchError(
-            "State revision requires every supervised state evidence item to be inferable; "
-            f"unusable evidence: {sorted(unusable)}."
+            "State revision has no inferable evidence currently contributing to supervised inference."
         )
-    if not consumed:
-        raise EvidenceRevisionBatchError(
-            "State revision has no evidence actually consumed by supervised inference."
-        )
-    return tuple(sorted(consumed, key=lambda item: item.evidence_id))
+    return candidates
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,4 +372,5 @@ __all__ = [
     "compile_evidence_revision_batch",
     "compile_revision_batch",
     "compile_state_revision_batch",
+    "inferable_supervised_state_evidence",
 ]

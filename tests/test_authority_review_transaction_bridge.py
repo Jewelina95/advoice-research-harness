@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pandas as pd
@@ -212,6 +213,32 @@ def test_empty_or_retain_only_actions_return_no_transaction_and_merge_metadata()
     assert [item["source"] for item in compiled.decision.report_trace] == [
         "advisor_reconciliation", "blind_assessment",
     ]
+
+
+def test_action_on_already_unavailable_state_is_audited_noop() -> None:
+    prepared = _prepared()
+    unavailable = replace(
+        prepared.evidence[0],
+        permissions=EvidencePermissions(inference=False, report=False),
+        observable=False,
+        unavailable_reason="already_unavailable",
+    )
+    prepared = replace(
+        prepared,
+        evidence=(unavailable,) + prepared.evidence[1:],
+        module_a_evidence=(unavailable,) + prepared.module_a_evidence[1:],
+    )
+    result = _result(prepared, {"S01": _action(prepared, "S01", "mark_unavailable")})
+
+    compiled = compile_authority_review_decision(prepared, result)
+
+    assert compiled.transaction is None
+    assert compiled.compiled_reviews == ()
+    assert compiled.decision.action_type == "evidence_review_noop"
+    assert any(
+        item.get("state_id") == "S01" and item.get("action") == "mark_unavailable"
+        for item in compiled.decision.report_trace
+    )
 
 
 @pytest.mark.parametrize("status", [REVIEW_UNAVAILABLE, REVIEW_PROVIDER_ERROR])

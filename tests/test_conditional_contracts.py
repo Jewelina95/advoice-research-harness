@@ -123,3 +123,55 @@ def test_contract_serialization_is_deterministic() -> None:
     first = evidence.to_json()
     second = MetricEvidenceV2.from_mapping(json.loads(first)).to_json()
     assert first == second
+
+
+def test_mapping_parses_string_booleans_without_truthiness() -> None:
+    evidence = MetricEvidenceV2.from_mapping({
+        "evidence_id": "metric:x",
+        "metric_id": "x",
+        "subject_id": "s1",
+        "observable": "False",
+        "inference_permission": "False",
+        "report_permission": "False",
+        "consumed_by_supervised": "0",
+        "incremental_for_agent": "true",
+        "reliability": "0.5",
+    })
+    assert evidence.observable is False
+    assert evidence.inference_permission is False
+    assert evidence.report_permission is False
+    assert evidence.consumed_by_supervised is False
+    assert evidence.incremental_for_agent is True
+    assert evidence.reliability_migration == "legacy_scalar_total"
+    assert evidence.reliability_components.source == 0.5
+    assert evidence.reliability_components.role == 1.0
+
+    with pytest.raises(ValueError, match="report_permission"):
+        MetricEvidenceV2.from_mapping({
+            "evidence_id": "metric:x", "metric_id": "x", "report_permission": "no",
+            "reliability": 1.0,
+        })
+
+
+def test_missing_or_empty_reliability_fails_closed() -> None:
+    missing = MetricEvidenceV2.from_mapping({
+        "evidence_id": "metric:x", "metric_id": "x",
+    })
+    assert missing.reliability_components.source == 0.0
+    assert missing.reliability_migration == "missing_fail_closed"
+    assert sum(missing.reliability_components.to_dict().values()) == 5.0
+    with pytest.raises(ValueError, match="cannot be empty"):
+        MetricEvidenceV2.from_mapping({
+            "evidence_id": "metric:x", "metric_id": "x",
+            "reliability_components": {},
+        })
+
+
+def test_downweight_applies_target_multiplier_once() -> None:
+    from advoice.evidence_replay import _downweighted_reliability, _scalar_reliability
+
+    updated = _downweighted_reliability(ReliabilityComponents(), 0.5)
+    evidence = MetricEvidenceV2(
+        evidence_id="metric:x", metric_id="x", reliability_components=updated,
+    )
+    assert _scalar_reliability(evidence) == pytest.approx(0.5)

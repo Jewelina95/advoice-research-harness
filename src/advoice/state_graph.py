@@ -235,18 +235,28 @@ def _family_definitions(
     return sorted(families, key=lambda item: item["id"])
 
 
-def _metric_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+def _metric_records(frame: pd.DataFrame, *, state_id: str = "") -> list[dict[str, Any]]:
     columns = [
-        "metric_id", "metric_instance_id", "task_scope", "value", "reference_label",
+        "evidence_id", "metric_id", "metric_instance_id", "state_id", "dataset_id",
+        "subject_id", "case_id", "task_id", "task_scope", "value", "reference_label",
         "reference_median", "reference_scale", "cn_train_median", "robust_z",
         "directional_z", "reliability", "missing", "evidence_status",
         "report_permission", "confound_tags", "source_segment_ids", "segment_ids",
-        "evidence_segments", "unavailable_reason",
+        "evidence_segments", "source_asset_id", "transcript_id", "method_version",
+        "measurement_version", "generated_by", "provenance", "unavailable_reason",
     ]
     present = [column for column in columns if column in frame.columns]
     records = frame[present].copy().to_dict("records")
+    for record in records:
+        if not record.get("state_id") and state_id:
+            record["state_id"] = state_id
+        if not record.get("evidence_id"):
+            record["evidence_id"] = str(
+                record.get("metric_instance_id") or record.get("metric_id") or ""
+            )
     records.sort(
         key=lambda item: (
+            str(item.get("evidence_id", "")),
             str(item.get("metric_id", "")),
             str(item.get("metric_instance_id", "")),
             float(pd.to_numeric(pd.Series([item.get("directional_z")]), errors="coerce").fillna(0.0).iloc[0]),
@@ -371,7 +381,9 @@ def _aggregate_scope(
     }
 
 
-def _evidence_lists(frame: pd.DataFrame) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _evidence_lists(
+    frame: pd.DataFrame, *, state_id: str = ""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     status_ok = ~frame["evidence_status"].astype(str).isin(
         {"missing", "unavailable", "unobservable"}
     )
@@ -393,7 +405,10 @@ def _evidence_lists(frame: pd.DataFrame) -> tuple[list[dict[str, Any]], list[dic
     )
     support = reportable[pd.to_numeric(reportable["directional_z"], errors="coerce").ge(0.0)]
     counter = reportable[pd.to_numeric(reportable["directional_z"], errors="coerce").lt(0.0)]
-    return _metric_records(support.head(3)), _metric_records(counter.head(2))
+    return (
+        _metric_records(support.head(3), state_id=state_id),
+        _metric_records(counter.head(2), state_id=state_id),
+    )
 
 
 def _scope_payload(
@@ -407,7 +422,7 @@ def _scope_payload(
     segments: pd.DataFrame,
     segment_lookup: dict[tuple[str, str], pd.DataFrame],
 ) -> dict[str, Any]:
-    support, counter = _evidence_lists(state)
+    support, counter = _evidence_lists(state, state_id=state_id)
     segment_trace = _direct_segment_trace(state)
     if not segment_trace:
         segment_trace = _segment_evidence(
@@ -418,19 +433,70 @@ def _scope_payload(
             task_scope=task_scope,
             segment_lookup=segment_lookup,
         )
+    metric_trace = _metric_records(state, state_id=state_id)
+    supporting_ids = sorted({
+        str(item["evidence_id"])
+        for item in support
+        if item.get("evidence_id")
+    })
+    counter_ids = sorted({
+        str(item["evidence_id"])
+        for item in counter
+        if item.get("evidence_id")
+    })
+    provenance_trace = [
+        {
+            "evidence_id": item.get("evidence_id", ""),
+            "state_id": item.get("state_id", state_id),
+            "dataset_id": item.get("dataset_id", ""),
+            "subject_id": item.get("subject_id", subject_id),
+            "case_id": item.get("case_id", ""),
+            "task_id": item.get("task_id"),
+            "task_scope": item.get("task_scope", task_scope),
+            "segment_ids": _json_value(
+                item.get("source_segment_ids", item.get("segment_ids", []))
+            ),
+            "source_asset_id": item.get("source_asset_id", ""),
+            "transcript_id": item.get("transcript_id"),
+            "method_version": item.get("method_version", ""),
+            "measurement_version": item.get("measurement_version", ""),
+            "generated_by": item.get("generated_by", ""),
+        }
+        for item in metric_trace
+    ]
+    case_ids = sorted({
+        str(item.get("case_id"))
+        for item in metric_trace
+        if item.get("case_id") not in (None, "", "nan")
+    })
+    task_ids = sorted({
+        str(item.get("task_id") or item.get("task_scope") or "overall")
+        for item in metric_trace
+    })
     return {
         **aggregate,
         "supporting_metrics": support,
         "counter_evidence": counter,
         "confounds": _confound_trace(state),
         "evidence_segments": segment_trace,
-        "metric_trace": _metric_records(state),
+        "metric_trace": metric_trace,
+        "supporting_evidence_ids": supporting_ids,
+        "counter_evidence_ids": counter_ids,
+        "case_ids": case_ids,
+        "task_ids": task_ids,
+        "provenance_trace": provenance_trace,
+        "provenance": provenance_trace,
     }
 
 
 def _combined_payload(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     combined: dict[str, Any] = {}
-    for key in ("supporting_metrics", "counter_evidence", "confounds", "evidence_segments", "metric_trace"):
+    for key in (
+        "supporting_metrics", "counter_evidence", "confounds", "evidence_segments",
+        "metric_trace", "supporting_evidence_ids", "counter_evidence_ids", "case_ids",
+        "task_ids", "provenance_trace",
+        "provenance",
+    ):
         values = [item for payload in payloads for item in payload[key]]
         unique = {_json_dump(item): item for item in values}
         combined[key] = [unique[token] for token in sorted(unique)]
@@ -442,6 +508,17 @@ def _combined_payload(payloads: list[dict[str, Any]]) -> dict[str, Any]:
         combined["counter_evidence"],
         key=lambda item: (-abs(float(item.get("directional_z", 0.0))), str(item.get("metric_id", ""))),
     )[:2]
+    combined["supporting_evidence_ids"] = sorted({
+        str(item.get("evidence_id"))
+        for item in combined["supporting_metrics"]
+        if item.get("evidence_id")
+    })
+    combined["counter_evidence_ids"] = sorted({
+        str(item.get("evidence_id"))
+        for item in combined["counter_evidence"]
+        if item.get("evidence_id")
+    })
+    combined["provenance"] = combined["provenance_trace"]
     return combined
 
 
@@ -500,6 +577,23 @@ def _card(
         "confounds": _json_dump(payload["confounds"]),
         "evidence_segments": _json_dump(payload["evidence_segments"]),
         "metric_trace": _json_dump(payload["metric_trace"]),
+        "evidence_id": state_id,
+        "supporting_evidence_ids": _json_dump(payload.get("supporting_evidence_ids", [])),
+        "counter_evidence_ids": _json_dump(payload.get("counter_evidence_ids", [])),
+        "metric_evidence_ids": _json_dump(sorted({
+            *payload.get("supporting_evidence_ids", []),
+            *payload.get("counter_evidence_ids", []),
+        })),
+        "case_ids": _json_dump(payload.get("case_ids", [])),
+        "case_id": payload.get("case_ids", [""])[0] if len(payload.get("case_ids", [])) == 1 else "",
+        "task_ids": _json_dump(payload.get("task_ids", [])),
+        "provenance_trace": _json_dump(payload.get("provenance_trace", [])),
+        "provenance": _json_dump(payload.get("provenance", payload.get("provenance_trace", []))),
+        "segment_ids": _json_dump(sorted({
+            str(segment_id)
+            for item in payload.get("provenance_trace", [])
+            for segment_id in item.get("segment_ids", [])
+        })),
         "family_scores": _json_dump(family_scores or []),
         "trace_resolution": "task_and_segment" if task_scope != "shared" and payload["evidence_segments"] else "segment" if payload["evidence_segments"] else "task_and_metric" if task_scope != "shared" else "metric",
         "evidence_budget_id": f"{identity['dataset_id']}:{identity['subject_id']}:{definition['id']}",

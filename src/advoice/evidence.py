@@ -32,6 +32,46 @@ LANGUAGE_DEPENDENT_METRICS = {
 MIN_LANGUAGE_REFERENCE_SUBJECTS = 8
 
 
+_MISSING = object()
+
+
+def _strict_bool(value: Any, *, field: str, default: bool | object = _MISSING) -> bool:
+    """Parse contract booleans without Python's truthiness traps."""
+
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        if default is not _MISSING:
+            return bool(default)
+        raise ValueError(f"{field} cannot be null.")
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+        raise ValueError(f"{field} must be a boolean, not {value!r}.")
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and value in (0.0, 1.0):
+        return bool(value)
+    raise ValueError(f"{field} must be a boolean, not {value!r}.")
+
+
+def _legacy_total_reliability(value: Any) -> tuple["ReliabilityComponents", str]:
+    """Migrate one legacy scalar into one explicit reliability component."""
+
+    try:
+        total = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Legacy scalar reliability must be numeric.") from exc
+    if not np.isfinite(total) or not 0.0 <= total <= 1.0:
+        raise ValueError("Legacy scalar reliability must be in [0, 1].")
+    # ``source`` carries the historical total while the remaining dimensions
+    # stay neutral, so the product remains exactly the legacy scalar.
+    return ReliabilityComponents(source=total), "legacy_scalar_total"
+
+
 def _canonical_json(value: Any) -> str:
     """Serialize contract values without platform- or insertion-order drift."""
 
@@ -309,6 +349,7 @@ class MetricEvidenceV2:
     metric_id: str = ""
     subject_id: str = ""
     session_id: str = ""
+    case_id: str = ""
     metric_instance_id: str = ""
     state_id: str = ""
     task_id: str | None = None
@@ -326,6 +367,7 @@ class MetricEvidenceV2:
     permissions: EvidencePermissions = field(default_factory=EvidencePermissions)
     consumed_by_supervised: bool = False
     incremental_for_agent: bool = False
+    reliability_migration: str = ""
 
     def __post_init__(self) -> None:
         if isinstance(self.direction, bool) or self.direction not in (-1, 0, 1):
@@ -390,6 +432,7 @@ class MetricEvidenceV2:
             "metric_id": self.metric_id,
             "subject_id": self.subject_id,
             "session_id": self.session_id,
+            "case_id": self.case_id,
             "metric_instance_id": self.metric_instance_id or self.metric_id,
             "state_id": self.state_id,
             "task_id": self.task_id,
@@ -409,6 +452,7 @@ class MetricEvidenceV2:
             "report_permission": self.report_permission,
             "consumed_by_supervised": self.consumed_by_supervised,
             "incremental_for_agent": self.incremental_for_agent,
+            "reliability_migration": self.reliability_migration,
         }
 
     def to_json(self) -> str:
@@ -431,9 +475,25 @@ class MetricEvidenceV2:
                 if key in row
             },
         }
-        reliability = row.get("reliability_components", row.get("reliability", {}))
-        if not isinstance(reliability, Mapping):
-            reliability = {}
+        raw_components = row.get("reliability_components", _MISSING)
+        raw_legacy_reliability = row.get("reliability", _MISSING)
+        reliability_migration = str(row.get("reliability_migration", ""))
+        if raw_components is _MISSING:
+            if raw_legacy_reliability is _MISSING:
+                # Missing quality metadata must not become six perfect
+                # dimensions through ReliabilityComponents' constructor.
+                reliability = {"source": 0.0}
+                reliability_migration = reliability_migration or "missing_fail_closed"
+            elif isinstance(raw_legacy_reliability, Mapping):
+                reliability = raw_legacy_reliability
+            else:
+                migrated, migration = _legacy_total_reliability(raw_legacy_reliability)
+                reliability = migrated.to_dict()
+                reliability_migration = reliability_migration or migration
+        elif not isinstance(raw_components, Mapping):
+            raise ValueError("reliability_components must be a mapping.")
+        else:
+            reliability = raw_components
         reliability_aliases = {
             "source_reliability": "source",
             "role_reliability": "role",
@@ -450,6 +510,8 @@ class MetricEvidenceV2:
                 "measurement_stability",
             }
         }
+        if not reliability:
+            raise ValueError("Reliability metadata cannot be empty.")
         provenance = row.get("provenance", {})
         if not isinstance(provenance, Mapping):
             provenance = {}
@@ -479,6 +541,7 @@ class MetricEvidenceV2:
             metric_id=str(row.get("metric_id", "")),
             subject_id=str(row.get("subject_id", "")),
             session_id=str(row.get("session_id", row.get("recording_id", ""))),
+            case_id=str(row.get("case_id", row.get("case", ""))),
             metric_instance_id=str(row.get("metric_instance_id", row.get("metric_id", ""))),
             state_id=str(row.get("state_id", "")),
             task_id=str(row["task_id"]) if row.get("task_id") is not None else None,
@@ -487,18 +550,39 @@ class MetricEvidenceV2:
             source_modality=str(row.get("source_modality", "")),
             direction=int(row.get("direction", 0)),
             direction_provenance=str(row.get("direction_provenance", "")),
-            observable=bool(row.get("observable", row.get("observability", True))),
+            observable=_strict_bool(
+                row.get("observable", row.get("observability", True)),
+                field="observable",
+                default=True,
+            ),
             unavailable_reason=row.get("unavailable_reason"),
             reference=ReferenceMetadata.from_mapping(reference),
-            reliability_components=ReliabilityComponents(**reliability) if isinstance(reliability, Mapping) else ReliabilityComponents(),
+            reliability_components=ReliabilityComponents(**reliability),
             provenance=EvidenceProvenance(**provenance) if isinstance(provenance, Mapping) else EvidenceProvenance(),
             confounds=ConfoundSets(**confounds) if isinstance(confounds, Mapping) else ConfoundSets(),
             permissions=EvidencePermissions(
-                inference=bool(permissions.get("inference", row.get("inference_permission", True))),
-                report=bool(permissions.get("report", row.get("report_permission", False))),
+                inference=_strict_bool(
+                    permissions.get("inference", row.get("inference_permission", True)),
+                    field="inference_permission",
+                    default=True,
+                ),
+                report=_strict_bool(
+                    permissions.get("report", row.get("report_permission", False)),
+                    field="report_permission",
+                    default=False,
+                ),
             ),
-            consumed_by_supervised=bool(row.get("consumed_by_supervised", False)),
-            incremental_for_agent=bool(row.get("incremental_for_agent", False)),
+            consumed_by_supervised=_strict_bool(
+                row.get("consumed_by_supervised", False),
+                field="consumed_by_supervised",
+                default=False,
+            ),
+            incremental_for_agent=_strict_bool(
+                row.get("incremental_for_agent", False),
+                field="incremental_for_agent",
+                default=False,
+            ),
+            reliability_migration=reliability_migration,
         )
 
 

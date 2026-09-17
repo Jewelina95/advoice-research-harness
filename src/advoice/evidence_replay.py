@@ -102,10 +102,14 @@ def _unavailable(evidence: MetricEvidenceV2, reason: str) -> MetricEvidenceV2:
 
 
 def _downweighted_reliability(reliability: ReliabilityComponents, multiplier: float) -> ReliabilityComponents:
-    return ReliabilityComponents(**{
-        field: float(getattr(reliability, field)) * multiplier
-        for field in ("source", "role", "alignment", "asr", "reference_support", "measurement_stability")
-    })
+    # The scalar reliability used by StateGraphV2 is the product of the six
+    # components.  Scaling every component would therefore apply multiplier^6.
+    # Scale one explicit measurement dimension so the target multiplier is
+    # applied exactly once while preserving the other diagnostic dimensions.
+    return replace(
+        reliability,
+        measurement_stability=float(reliability.measurement_stability) * multiplier,
+    )
 
 
 def apply_evidence_revision(
@@ -189,10 +193,14 @@ def metric_evidence_frame(
         rows.append({
             "dataset_id": dataset_id,
             "subject_id": item.subject_id,
+            "case_id": item.case_id,
             "label": label,
             "split": split,
+            "evidence_id": item.evidence_id,
             "metric_id": item.metric_id,
             "metric_instance_id": item.metric_instance_id or item.metric_id,
+            "state_id": item.state_id,
+            "task_id": item.task_id,
             "task_scope": item.task_id or "overall",
             "value": item.value,
             "directional_z": directional_z,
@@ -205,7 +213,19 @@ def metric_evidence_frame(
             "reference_median": item.reference.median,
             "reference_scale": item.reference.scale,
             "source_segment_ids": list(item.source_segment_ids),
+            "segment_ids": list(item.source_segment_ids),
+            "source_asset_id": item.provenance.source_asset_id,
+            "transcript_id": item.provenance.transcript_id,
+            "method_version": item.provenance.method_version,
+            "measurement_version": item.provenance.measurement_version,
+            "generated_by": item.provenance.generated_by,
+            "provenance": item.provenance.to_dict(),
             "confound_tags": list(item.observed_confound_ids),
+            "potential_confounds": list(item.potential_confound_ids),
+            "observed_confounds": list(item.observed_confound_ids),
+            "ruled_out_confounds": list(item.ruled_out_confound_ids),
+            "consumed_by_supervised": item.consumed_by_supervised,
+            "incremental_for_agent": item.incremental_for_agent,
         })
     return pd.DataFrame(rows)
 
@@ -283,6 +303,43 @@ def _case_from_graph(
     return context
 
 
+def _module_a_consumed_evidence_ids(
+    revised: Sequence[MetricEvidenceV2],
+    graph: StateGraphV2,
+    model: TaskConditionedStatisticalExpert,
+) -> list[str]:
+    """Return only supervised-consumed evidence that reaches a trained graph feature."""
+
+    trained = {str(feature) for feature in getattr(model, "numeric_features_", ())}
+    if not trained or graph.wide.empty:
+        return []
+    row = graph.wide.iloc[0]
+    consumed: list[str] = []
+    for item in revised:
+        if not item.consumed_by_supervised or not item.state_id or not _available_to_module_a(item):
+            continue
+        state_id = str(item.state_id)
+        candidates = {f"state_{state_id}", f"rel_{state_id}", f"available_{state_id}"}
+        if item.task_id:
+            task = str(item.task_id)
+            candidates.update({
+                f"state_{state_id}__task_{task}_residual",
+                f"rel_{state_id}__task_{task}_residual",
+                f"available_{state_id}__task_{task}_residual",
+            })
+        reached = [name for name in trained.intersection(candidates) if name in row.index]
+        if not reached:
+            continue
+        if not any(
+            isinstance(row[name], (bool, np.bool_))
+            or (np.isfinite(_numeric(row[name])) and not pd.isna(row[name]))
+            for name in reached
+        ):
+            continue
+        consumed.append(item.evidence_id)
+    return sorted(set(consumed))
+
+
 def replay_evidence(
     snapshot: Sequence[MetricEvidenceV2],
     revision: EvidenceRevision | None,
@@ -306,9 +363,10 @@ def replay_evidence(
     )
     model_hash = str(module_a.artifact_hash_)
     case = _case_from_graph(graph, module_a, case_context)
+    consumed_ids = _module_a_consumed_evidence_ids(revised, graph, module_a)
     packet = module_a.explain_case(
         case,
-        consumed_evidence_ids=[item.evidence_id for item in revised if _available_to_module_a(item)],
+        consumed_evidence_ids=consumed_ids,
         evidence_snapshot={"evidence_hash": revised_hash, "revision_hash": revision.revision_hash if revision else "none"},
         state_snapshot={"state_hash": graph.state_hash, "state_wide": graph.wide.to_dict("records")},
     )

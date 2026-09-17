@@ -20,10 +20,12 @@ def _snapshot() -> tuple[MetricEvidenceV2, ...]:
         MetricEvidenceV2(
             evidence_id="metric:a", metric_id="a", metric_instance_id="a", subject_id="case-1",
             state_id="S01", value=1.0, direction=1, reference=reference,
+            consumed_by_supervised=True,
         ),
         MetricEvidenceV2(
             evidence_id="metric:b", metric_id="b", metric_instance_id="b", subject_id="case-1",
             state_id="S01", value=5.0, direction=1, reference=reference,
+            consumed_by_supervised=True,
         ),
     )
 
@@ -126,6 +128,33 @@ def test_withdrawn_evidence_is_absent_from_module_a_consumed_ids(action: str) ->
 
     assert "metric:a" not in result.packet.consumed_evidence_ids
     assert result.packet.consumed_evidence_ids == ("metric:b",)
+
+
+def test_replay_consumed_ids_require_supervised_flag_and_reached_state_feature() -> None:
+    reference = ReferenceMetadata(median=0.0, scale=1.0, sample_size=12)
+    snapshot = (
+        MetricEvidenceV2(
+            evidence_id="metric:used", metric_id="used", metric_instance_id="used",
+            subject_id="case-1", state_id="S01", value=1.0, direction=1,
+            reference=reference, consumed_by_supervised=True,
+        ),
+        MetricEvidenceV2(
+            evidence_id="metric:unflagged", metric_id="unflagged", metric_instance_id="unflagged",
+            subject_id="case-1", state_id="S01", value=2.0, direction=1,
+            reference=reference,
+        ),
+        MetricEvidenceV2(
+            evidence_id="metric:not-in-graph", metric_id="not-in-graph", metric_instance_id="not-in-graph",
+            subject_id="case-1", state_id="S99", value=3.0, direction=1,
+            reference=reference, consumed_by_supervised=True,
+        ),
+    )
+    result = replay_evidence(
+        snapshot, None,
+        states_config={"states": [{"id": "S01", "metrics": ["used", "unflagged"], "weights": [1.0, 1.0]}]},
+        module_a=_expert(),
+    )
+    assert result.packet.consumed_evidence_ids == ("metric:used",)
 
 
 def test_replay_overwrites_stale_graph_context_feature() -> None:

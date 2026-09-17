@@ -222,3 +222,50 @@ def test_legacy_state_config_uses_singleton_families() -> None:
     shared = cards.query("graph_level == 'shared'").iloc[0]
     assert shared["independent_family_count"] == 2
     assert shared["state_z"] == 2.0
+
+
+def test_state_cards_preserve_typed_evidence_and_provenance_contract() -> None:
+    rows = [
+        {
+            **_row("pause_a", 2.0, "cookie", segments='["seg-1"]'),
+            "evidence_id": "metric:pause_a",
+            "state_id": "S01",
+            "case_id": "case-7",
+            "task_id": "cookie",
+            "source_asset_id": "audio-7",
+            "transcript_id": "tx-7",
+            "method_version": "m-v1",
+            "measurement_version": "x-v1",
+            "generated_by": "extractor",
+        },
+        {
+            **_row("pause_b", -1.0, "cookie", segments='["seg-2"]'),
+            "evidence_id": "metric:pause_b",
+            "state_id": "S01",
+            "case_id": "case-7",
+            "task_id": "cookie",
+            "source_asset_id": "audio-7",
+            "transcript_id": "tx-7",
+        },
+    ]
+    cards, _ = build_state_graph_frame(
+        pd.DataFrame(rows),
+        _states(["pause_a", "pause_b"]),
+        {
+            "states": {"S01": {"families": [
+                {"id": "support", "metrics": ["pause_a"], "budget": 0.5},
+                {"id": "counter", "metrics": ["pause_b"], "budget": 0.5},
+            ]}},
+        },
+    )
+    shared = cards.query("graph_level == 'shared'").iloc[0]
+    assert shared["state_id"] == "S01"
+    assert json.loads(shared["supporting_evidence_ids"]) == ["metric:pause_a"]
+    assert json.loads(shared["counter_evidence_ids"]) == ["metric:pause_b"]
+    assert json.loads(shared["case_ids"]) == ["case-7"]
+    provenance = json.loads(shared["provenance_trace"])
+    assert {item["evidence_id"] for item in provenance} == {"metric:pause_a", "metric:pause_b"}
+    assert {item["state_id"] for item in provenance} == {"S01"}
+    assert {item["task_id"] for item in provenance} == {"cookie"}
+    assert {item["case_id"] for item in provenance} == {"case-7"}
+    assert {item["source_asset_id"] for item in provenance} == {"audio-7"}

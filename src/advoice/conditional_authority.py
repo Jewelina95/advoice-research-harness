@@ -268,6 +268,8 @@ class ConditionalAuthorityExecutor:
         module_b: ConditionalArbitrator,
         module_a_state_feature_whitelist: Sequence[str],
         correlation_config: Mapping[str, Any] | None = None,
+        observation_route_config: Mapping[str, Mapping[str, Any]] | None = None,
+        target_route_config: Mapping[str, Mapping[str, Any]] | None = None,
         model_versions: Mapping[str, str] | None = None,
         skill_versions: Mapping[str, str] | None = None,
         tool_versions: Mapping[str, str] | None = None,
@@ -297,6 +299,12 @@ class ConditionalAuthorityExecutor:
                 f"{invalid_features}"
             )
         self.correlation_config = None if correlation_config is None else dict(correlation_config)
+        self.observation_route_config = (
+            None if observation_route_config is None else dict(observation_route_config)
+        )
+        self.target_route_config = (
+            None if target_route_config is None else dict(target_route_config)
+        )
         self.model_versions = dict(model_versions or {
             "module_a": str(getattr(module_a, "module_version", "unknown")),
             "module_b": str(getattr(module_b, "module_version", "unknown")),
@@ -498,7 +506,11 @@ class ConditionalAuthorityExecutor:
         """Execute one strictly bound case without touching legacy Condition C."""
 
         case_id = self._case_id(case_metadata)
-        route = route_case(case_metadata)
+        route = route_case(
+            case_metadata,
+            observation_config=self.observation_route_config,
+            target_config=self.target_route_config,
+        )
         if tuple(route.target_route.labels) != tuple(self.module_a.labels) or tuple(self.module_a.labels) != tuple(self.module_b.labels):
             raise ConditionalAuthorityError("Route, Module A, and Module B must use the same ordered labels.")
         decision = (

@@ -206,6 +206,54 @@ def test_explicit_module_a_state_feature_whitelist_is_required() -> None:
         ConditionalAuthorityExecutor(states_config=STATES, module_a=_expert(), module_b=_module_b(), module_a_state_feature_whitelist=())
 
 
+def test_dataset_specific_binary_target_route_is_supported() -> None:
+    labels = ("HC", "AD")
+    frame = pd.DataFrame({"state_S01": [-2.0, -1.0, 1.0, 2.0]})
+    module_a = TaskConditionedStatisticalExpert(labels, require_explicit_feature_whitelist=True).fit(
+        frame,
+        ["HC", "HC", "AD", "AD"],
+        feature_columns=["state_S01"],
+    )
+    rows = []
+    for index in range(8):
+        probability = {"HC": .8, "AD": .2} if index % 2 == 0 else {"HC": .2, "AD": .8}
+        rows.append({
+            "module_a_pre_replay": probability,
+            "module_a_post_replay": probability,
+            "agent_ordinal_scores": {"HC": 4 - (index % 2) * 4, "AD": (index % 2) * 4},
+            "agent_scores_validated": True,
+            "eligible": True,
+            "revision_type": "none",
+            "action_type": "review",
+            "agreement": True,
+            "evidence_coverage": .9,
+            "evidence_reliability": .9,
+            "confound_burden": .0,
+            "route": "picture_description",
+            "language": "en",
+            "ood": .0,
+            "incremental_evidence_declared": True,
+            "evidence_consumed_by_module_a": False,
+            "incremental_evidence_ids": [f"metric:incremental-{index}"],
+            "consumed_evidence_ids": [],
+            "route_supported": True,
+            "replay_performed": False,
+            "cross_fit_fold": index % 2,
+            "true_label": labels[index % 2],
+        })
+    module_b = ConditionalArbitrator(labels).fit(rows)
+    executor = ConditionalAuthorityExecutor(
+        states_config=STATES,
+        module_a=module_a,
+        module_b=module_b,
+        module_a_state_feature_whitelist=("state_S01",),
+        target_route_config={
+            "diagnosis": {"endpoint": "cross_sectional_diagnosis", "labels": labels},
+        },
+    )
+    assert executor.target_route_config["diagnosis"]["labels"] == labels
+
+
 def test_no_agent_revision_keeps_module_a_and_reports_only_after_lock() -> None:
     executor = _executor()
     evidence = _evidence()

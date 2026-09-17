@@ -142,7 +142,8 @@ def test_uncertain_prior_does_not_amplify_weak_agent_counterevidence() -> None:
         config=_config(state_strength=0.0, agent_strength=1.0),
     )
 
-    assert 0.0 < result.agent_authority_gate < 0.3
+    # Stage ambiguity must not masquerade as HC-versus-impairment uncertainty.
+    assert result.agent_authority_gate == 0.0
     assert result.predicted_label in {"MCI", "AD"}
     assert result.fused_probabilities["MCI"] / result.fused_probabilities["AD"] == pytest.approx(
         frozen["MCI"] / frozen["AD"]
@@ -206,6 +207,71 @@ def test_public_speech_is_report_only_and_preserves_frozen_prediction() -> None:
     assert result.state_authority_gate == 0.0
     assert result.agent_authority_gate == 0.0
     assert _bits(result.fused_probabilities.values()) == _bits(frozen.values())
+
+
+def test_state_gate_uses_delta_not_absolute_post_state_class() -> None:
+    # Both state outputs favour impairment, but the revision reduces that evidence.
+    frozen = {"HC": 0.55, "MCI": 0.30, "AD": 0.15}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities={"HC": 0.05, "MCI": 0.50, "AD": 0.45},
+        post_state_probabilities={"HC": 0.30, "MCI": 0.40, "AD": 0.30},
+        blind_ordinal_scores={"HC": 4, "MCI": 1, "AD": 0},
+    )
+    assert result.state_authority_gate == 0.0
+    assert result.frozen_parity
+
+
+def test_counter_delta_can_be_used_before_post_state_crosses_class_boundary() -> None:
+    result = _fuse(
+        frozen_probabilities={"HC": 0.55, "MCI": 0.30, "AD": 0.15},
+        pre_state_probabilities={"HC": 0.95, "MCI": 0.03, "AD": 0.02},
+        post_state_probabilities={"HC": 0.60, "MCI": 0.25, "AD": 0.15},
+        blind_ordinal_scores={"HC": 0, "MCI": 4, "AD": 3},
+    )
+    assert result.state_authority_gate > 0.0
+    assert result.agent_authority_gate == 0.0
+    assert result.fused_probabilities["HC"] < 0.55
+
+
+@pytest.mark.parametrize("scores", [{"HC": 4, "MCI": 0, "AD": 0}, {"HC": 2, "MCI": 1, "AD": 0}])
+def test_uncertain_supervisor_state_agent_opposition_does_not_silence_agent(scores) -> None:
+    frozen = {"HC": 0.30, "MCI": 0.40, "AD": 0.30}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities={"HC": 0.95, "MCI": 0.03, "AD": 0.02},
+        post_state_probabilities={"HC": 0.60, "MCI": 0.25, "AD": 0.15},
+        blind_ordinal_scores=scores,
+    )
+    assert result.state_authority_gate == 0.0
+    assert result.agent_authority_gate > 0.0
+    assert result.agent_authority_gate <= (scores["HC"] - max(scores["MCI"], scores["AD"])) / 4
+    assert result.fused_probabilities["HC"] > frozen["HC"]
+
+
+def test_binary_opposing_state_revision_cannot_override_agent_agreement() -> None:
+    frozen = {"HC": 0.55, "AD": 0.45}
+    result = _fuse(
+        class_order=("HC", "AD"),
+        frozen_probabilities=frozen,
+        pre_state_probabilities={"HC": 0.80, "AD": 0.20},
+        post_state_probabilities={"HC": 0.20, "AD": 0.80},
+        blind_ordinal_scores={"HC": 4, "AD": 0},
+    )
+    assert result.state_authority_gate == 0.0
+    assert result.frozen_parity
+
+
+def test_stage_uncertainty_does_not_unlock_weak_screening_counterevidence() -> None:
+    frozen = {"HC": 0.05, "MCI": 0.475, "AD": 0.475}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 3, "MCI": 2, "AD": 1},
+    )
+    assert result.agent_authority_gate == 0.0
+    assert result.frozen_parity
 
 
 def _softmax(values: tuple[float, ...]) -> tuple[float, ...]:

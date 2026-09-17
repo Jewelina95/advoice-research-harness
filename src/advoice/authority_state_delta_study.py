@@ -26,6 +26,7 @@ from .authority_review_runtime import AuthorityReviewResult, AuthorityReviewRunt
 from .authority_review_transaction_bridge import compile_authority_review_decision
 from .authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
 from .authority_joint_fusion import (
+    AUTHORITY_JOINT_FUSION_SCHEMA_VERSION,
     AuthorityJointFusionConfig,
     AuthorityJointFusionResult,
     fuse_authority_joint,
@@ -92,6 +93,7 @@ class AuthorityStateDeltaStudyConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": STUDY_SCHEMA_VERSION,
+            "fusion_schema_version": AUTHORITY_JOINT_FUSION_SCHEMA_VERSION,
             "joint_fusion": self.joint_fusion.to_dict(),
             "evaluation_bins": self.evaluation_bins,
             "selection_order": self.selection_order,
@@ -146,14 +148,23 @@ def run_authority_state_delta_cohort(
     output_dir: str | Path,
     config: AuthorityStateDeltaStudyConfig | None = None,
     cache_dir: str | Path | None = None,
+    decision_only: bool = True,
 ) -> AuthorityStateDeltaStudyResult:
     """Run a deterministic prepared test cohort without outcome-aware tuning.
 
     ``runtime`` is injected so tests can use a no-network fake.  Production
     callers should use :func:`build_authority_review_runtime`, which passes
     ``cache_dir`` directly into :class:`AuthorityReviewRuntime`.
+
+    This evaluation path is decision-only: both blind assessment and advisor
+    reconciliation are decision-relevant and remain enabled. Structured
+    rationales/report_trace are audit data, not clinician report generation.
+    Report requests fail before any I/O; that workflow is deferred until
+    formal testing. This flag does not disable classification provider calls.
     """
 
+    if decision_only is not True:
+        raise ValueError("Clinician report generation is deferred until formal testing; decision_only must be True.")
     if not isinstance(dataset, AuthorityStudyDataset):
         raise TypeError("dataset must be an AuthorityStudyDataset.")
     selected_config = config or AuthorityStateDeltaStudyConfig()
@@ -408,6 +419,7 @@ def _packet_audit(packet: ExplanationPacket) -> dict[str, Any]:
 
 def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
     return {
+        "schema_version": fusion.schema_version,
         "audit_hash": fusion.audit_hash,
         "input_hash": fusion.input_hash,
         "predicted_label": fusion.predicted_label,
@@ -418,6 +430,7 @@ def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
         "state_authority_gate": fusion.state_authority_gate,
         "agent_component_neutral": fusion.agent_component_neutral,
         "agent_authority_gate": fusion.agent_authority_gate,
+        "state_agent_conflict": fusion.state_agent_conflict,
         "state_delta": dict(fusion.state_log_evidence),
         "clipped_state_delta": dict(fusion.bounded_state_log_evidence),
         "agent_log_evidence": dict(fusion.agent_log_evidence),

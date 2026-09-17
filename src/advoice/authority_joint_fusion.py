@@ -25,7 +25,7 @@ from typing import Any
 from .utils import hash_values
 
 
-AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v2"
+AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v3"
 PROBABILITY_FLOOR = 1e-12
 _FORBIDDEN_PROVENANCE_TOKENS = frozenset({"label", "labels", "truth", "ground_truth", "target"})
 
@@ -235,6 +235,7 @@ class AuthorityJointFusionResult:
     state_authority_gate: float
     agent_component_neutral: bool
     agent_authority_gate: float
+    state_agent_conflict: bool
     frozen_parity: bool
     config: AuthorityJointFusionConfig
     provenance: Mapping[str, Any]
@@ -274,6 +275,7 @@ class AuthorityJointFusionResult:
             "state_authority_gate": self.state_authority_gate,
             "agent_component_neutral": self.agent_component_neutral,
             "agent_authority_gate": self.agent_authority_gate,
+            "state_agent_conflict": self.state_agent_conflict,
             "frozen_parity": self.frozen_parity,
             "config": self.config.to_dict(),
             "provenance": _thaw_json(self.provenance),
@@ -343,23 +345,43 @@ def fuse_authority_joint(
         or pre_state == post_state
         or all(item == 0.0 for item in bounded_state)
     )
-    frozen_uncertainty = _normalized_entropy(frozen)
+    # Uncertainty must refer to the decision this route can actually change.
+    # Ambiguity between MCI and AD is not uncertainty about impairment itself.
+    frozen_uncertainty = _normalized_entropy(
+        (frozen[hc_index], math.fsum(frozen[index] for index in impaired_indices))
+        if is_three_stage else frozen
+    )
     report_only_channel = normalized_channel == "public_speech"
+    # Gate the same relative evidence that is actually added to the logits.
+    # An absolute post-state class can disagree with the direction of its delta.
+    if is_three_stage:
+        frozen_impaired = math.fsum(frozen[index] for index in impaired_indices)
+        state_direction = bounded_state[impaired_indices[0]] - bounded_state[hc_index]
+        agent_direction = max(ordinal[index] for index in impaired_indices) - ordinal[hc_index]
+        state_counterevidence = (
+            state_direction < 0.0 if frozen_impaired >= 0.5 else state_direction > 0.0
+        )
+        state_agent_conflict = state_direction * agent_direction < 0.0
+    else:
+        frozen_top_index = max(range(len(labels)), key=frozen.__getitem__)
+        state_top_index = max(range(len(labels)), key=bounded_state.__getitem__)
+        agent_top_index = max(range(len(labels)), key=ordinal.__getitem__)
+        state_counterevidence = (
+            bounded_state[state_top_index] > bounded_state[frozen_top_index]
+        )
+        # Different strict preferences expose a contradiction; ties are neutral.
+        state_agent_conflict = (
+            bounded_state[state_top_index] > bounded_state[agent_top_index]
+            and ordinal[agent_top_index] > ordinal[state_top_index]
+        )
     if state_neutral or report_only_channel:
         state_gate = 0.0
     elif not config.conflict_aware_gating:
         state_gate = 1.0
     else:
-        if is_three_stage:
-            frozen_impaired = math.fsum(frozen[index] for index in impaired_indices)
-            post_impaired = math.fsum(post_state[index] for index in impaired_indices)
-            state_conflict = (frozen_impaired >= 0.5) != (post_impaired >= 0.5)
-        else:
-            frozen_top_index = max(range(len(labels)), key=frozen.__getitem__)
-            post_state_top_index = max(range(len(labels)), key=post_state.__getitem__)
-            state_conflict = post_state_top_index != frozen_top_index
         state_gate = float(
-            state_conflict
+            state_counterevidence
+            and not state_agent_conflict
             and frozen_uncertainty >= config.min_state_uncertainty
         )
     state_neutral = state_neutral or state_gate == 0.0
@@ -449,6 +471,7 @@ def fuse_authority_joint(
         "state_authority_gate": state_gate,
         "agent_component_neutral": agent_neutral,
         "agent_authority_gate": agent_gate,
+        "state_agent_conflict": state_agent_conflict,
         "frozen_parity": frozen_parity,
         "fused_probabilities": list(fused),
         "predicted_label": predicted_label,
@@ -469,6 +492,7 @@ def fuse_authority_joint(
         state_authority_gate=state_gate,
         agent_component_neutral=agent_neutral,
         agent_authority_gate=agent_gate,
+        state_agent_conflict=state_agent_conflict,
         frozen_parity=frozen_parity,
         config=config,
         provenance=frozen_provenance,

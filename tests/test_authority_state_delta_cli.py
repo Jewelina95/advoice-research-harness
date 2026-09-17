@@ -25,6 +25,7 @@ def _args(tmp_path: Path, **overrides: object) -> object:
         "alpha": None,
         "max_abs_delta": 0.75,
         "skill_path": None,
+        "decision_only": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -93,6 +94,41 @@ def test_run_passes_all_controls_without_provider_fallback(tmp_path: Path, monke
     assert study_kwargs["config"].selection_salt == "fixture-pilot-v1"  # type: ignore[index]
     assert study_kwargs["config"].joint_fusion.state_strength == 1.0  # type: ignore[index]
     assert study_kwargs["config"].joint_fusion.agent_strength == 1.0  # type: ignore[index]
+    assert study_kwargs["decision_only"] is True
+    assert summary["decision_only"] is True
+    assert summary["report_generation"] == "deferred"
+
+
+def test_report_opt_in_is_deferred_before_loading_dataset(tmp_path, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Report request must fail before dataset or provider work")
+    monkeypatch.setattr(cli.AuthorityStudyDataset, "from_artifact_dir", forbidden)
+    monkeypatch.setattr(cli, "build_authority_review_runtime", forbidden)
+    status = cli.main([
+        "--artifact-dir", str(tmp_path / "missing"), "--output-dir", str(tmp_path / "out"),
+        "--cache-dir", str(tmp_path / "cache"), "--provider", "openai_api",
+        "--model", "test", "--report",
+    ])
+    assert status == 1
+    assert "report generation is deferred" in json.loads(capsys.readouterr().out)["error"]
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("flags", [[], ["--decision-only"], ["--report"]])
+def test_parser_defaults_to_decision_only(flags):
+    args = cli.build_parser().parse_args([
+        "--artifact-dir", "artifact", "--output-dir", "output", "--cache-dir", "cache",
+        "--provider", "disabled", "--model", "test", *flags,
+    ])
+    assert args.decision_only is (flags != ["--report"])
+
+
+def test_parser_rejects_conflicting_output_modes():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args([
+            "--artifact-dir", "artifact", "--output-dir", "output", "--cache-dir", "cache",
+            "--provider", "disabled", "--model", "test", "--decision-only", "--report",
+        ])
 
 
 def test_failed_cases_return_nonzero_and_keep_json_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

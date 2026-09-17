@@ -44,10 +44,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max-abs-delta", type=float, default=0.75)
     parser.add_argument("--skill-path", type=Path, default=None)
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument(
+        "--decision-only", dest="decision_only", action="store_true", default=True,
+        help="Classification and audit only (default); retains both decision review passes.",
+    )
+    output_mode.add_argument(
+        "--report", dest="decision_only", action="store_false",
+        help="Request clinician reporting; currently rejected because reporting is deferred until formal testing.",
+    )
     return parser
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    if args.decision_only is not True:
+        raise ValueError("Clinician report generation is deferred until formal testing; use --decision-only.")
     if not str(args.model).strip():
         raise ValueError("--model must be a non-empty explicit model identifier.")
     if args.max_cases is not None and args.max_cases < 1:
@@ -72,6 +83,8 @@ def _summary(result: Any, *, provider: str, model: str) -> dict[str, Any]:
         "status": "completed" if not result.failed_case_ids else "failed",
         "provider": provider,
         "model": model,
+        "decision_only": True,
+        "report_generation": "deferred",
         "study_hash": result.study_hash,
         "attempted_cases": len(result.attempted_case_ids),
         "completed_cases": len(result.completed_case_ids),
@@ -109,6 +122,7 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         runtime,
         output_dir=output_dir,
         cache_dir=cache_dir,
+        decision_only=args.decision_only,
         config=AuthorityStateDeltaStudyConfig(
             joint_fusion=AuthorityJointFusionConfig(
                 state_strength=(args.state_strength if args.alpha is None else args.alpha),

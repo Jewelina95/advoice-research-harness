@@ -179,6 +179,82 @@ def _compiled(transaction: _Transaction | None):
     return SimpleNamespace(decision=SimpleNamespace(decision_hash="d" * 64), transaction=transaction)
 
 
+def test_fusion_schema_change_invalidates_completed_study(tmp_path, monkeypatch):
+    dataset, cases, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(None))
+    config = AuthorityStateDeltaStudyConfig()
+    original_hash = study_module._study_hash(dataset, cases, config)
+    result = run_authority_state_delta_cohort(dataset, runtime, output_dir=tmp_path)
+    audit = __import__("json").loads(result.aggregate_json_path.read_text())
+    assert audit["config"]["fusion_schema_version"] == study_module.AUTHORITY_JOINT_FUSION_SCHEMA_VERSION
+    monkeypatch.setattr(study_module, "AUTHORITY_JOINT_FUSION_SCHEMA_VERSION", "future-test-schema")
+    assert study_module._study_hash(dataset, cases, config) != original_hash
+    new_hash = study_module._study_hash(dataset, cases, config)
+    assert study_module._load_resumable_audits(result.audit_jsonl_path, new_hash) == {}
+    new_dataset, _, _ = _fixture_dataset()
+    new_runtime = _Runtime(new_dataset)
+    refreshed = run_authority_state_delta_cohort(new_dataset, new_runtime, output_dir=tmp_path)
+    assert refreshed.study_hash == new_hash
+    assert new_runtime.calls == ["case-1", "case-2"]
+
+
+@pytest.mark.parametrize("scores, expected", [({"HC": 4, "AD": 0}, True), ({"HC": 0, "AD": 4}, False)])
+def test_fusion_audit_retains_state_agent_conflict(scores, expected):
+    from advoice.authority_joint_fusion import fuse_authority_joint
+
+    fusion = fuse_authority_joint(
+        {"HC": 0.5, "AD": 0.5}, {"HC": 0.7, "AD": 0.3},
+        {"HC": 0.3, "AD": 0.7}, scores, class_order=LABELS,
+        config=study_module.DEFAULT_JOINT_FUSION_CONFIG,
+    )
+    audit = study_module._fusion_audit(fusion)
+    assert audit["state_agent_conflict"] is expected
+    assert audit["schema_version"] == fusion.schema_version
+
+
+@pytest.mark.parametrize("decision_only", [False, None, 0, "false"])
+def test_report_mode_is_rejected_before_any_work(tmp_path, decision_only):
+    with pytest.raises(ValueError, match="report generation is deferred"):
+        run_authority_state_delta_cohort(
+            None, None, output_dir=tmp_path / "unused", decision_only=decision_only,
+        )
+    assert not (tmp_path / "unused").exists()
+
+
+def test_decision_only_is_default_and_preserves_audits_and_resume(tmp_path, monkeypatch):
+    from advoice import diagnostic_agent_report, report_agent, report_scoring_agent
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Decision-only evaluation cannot invoke a report provider or renderer")
+    for module, entry in (
+        (diagnostic_agent_report, "run_diagnostic_agent_reports"),
+        (report_agent, "run_ours_report_agent"),
+        (report_scoring_agent, "run_report_scoring_agent"),
+    ):
+        monkeypatch.setattr(module, entry, forbidden)
+        monkeypatch.setattr(module, "run_structured_batch", forbidden)
+    monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(None))
+    outputs = []
+    for name, options in (("default", {}), ("explicit", {"decision_only": True})):
+        dataset, _, _ = _fixture_dataset()
+        runtime = _Runtime(dataset)
+        result = run_authority_state_delta_cohort(dataset, runtime, output_dir=tmp_path / name, **options)
+        assert result.failed_case_ids == ()
+        outputs.append(result)
+        assert {path.name for path in result.output_dir.iterdir()} == {
+            "case_audit.jsonl", "case_audit.json", "aggregate.json",
+        }
+        before = result.audit_jsonl_path.read_bytes()
+        # Explicit classification mode can resume an existing default-mode run.
+        run_authority_state_delta_cohort(dataset, runtime, output_dir=result.output_dir, decision_only=True)
+        assert runtime.calls == ["case-1", "case-2"]
+        assert result.audit_jsonl_path.read_bytes() == before
+    assert outputs[0].study_hash == outputs[1].study_hash
+    for artifact in ("case_audit.jsonl", "case_audit.json", "aggregate.json"):
+        assert (outputs[0].output_dir / artifact).read_bytes() == (outputs[1].output_dir / artifact).read_bytes()
+
+
 def test_no_transaction_preserves_frozen_bits_and_reads_truth_only_after_predictions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -4,8 +4,9 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from advoice.state_graph import build_state_graph_frame
+from advoice.state_graph import build_state_graph_frame, deserialize_state_card_ids
 
 
 def _states(metrics: list[str]) -> dict:
@@ -269,3 +270,12 @@ def test_state_cards_preserve_typed_evidence_and_provenance_contract() -> None:
     assert {item["task_id"] for item in provenance} == {"cookie"}
     assert {item["case_id"] for item in provenance} == {"case-7"}
     assert {item["source_asset_id"] for item in provenance} == {"audio-7"}
+
+
+def test_state_card_id_lists_have_a_strict_csv_deserialization_boundary() -> None:
+    assert deserialize_state_card_ids(["metric:a", "metric:b"]) == ("metric:a", "metric:b")
+    assert deserialize_state_card_ids('["metric:a", "metric:b"]') == ("metric:a", "metric:b")
+    with pytest.raises(ValueError, match="JSON array"):
+        deserialize_state_card_ids("metric:a")
+    with pytest.raises(ValueError, match="non-string"):
+        deserialize_state_card_ids('["metric:a", 2]')

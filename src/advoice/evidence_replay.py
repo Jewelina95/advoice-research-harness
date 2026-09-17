@@ -38,6 +38,17 @@ def evidence_snapshot_hash(evidence: Sequence[MetricEvidenceV2]) -> str:
     }])
 
 
+def replay_revision_hash(revision: "EvidenceRevision | None") -> str:
+    """Return the explicit revision identity used by replay StateCards."""
+
+    if revision is not None:
+        return revision.revision_hash
+    return hash_values([{
+        "schema_version": REVISION_SCHEMA_VERSION,
+        "action": "no_revision",
+    }])
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceRevision:
     """The only Agent-editable evidence operation.
@@ -357,21 +368,21 @@ def replay_evidence(
     original = tuple(snapshot)
     parent_hash = evidence_snapshot_hash(original)
     revised, revised_hash = apply_evidence_revision(original, revision)
+    revision_hash = replay_revision_hash(revision)
     graph = build_state_graph_v2(
         revised, states_config, correlation_config=correlation_config,
         dataset_id=dataset_id, label=label, split=split,
-    )
+    ).bind_revision(revision_hash)
     model_hash = str(module_a.artifact_hash_)
     case = _case_from_graph(graph, module_a, case_context)
     consumed_ids = _module_a_consumed_evidence_ids(revised, graph, module_a)
     packet = module_a.explain_case(
         case,
         consumed_evidence_ids=consumed_ids,
-        evidence_snapshot={"evidence_hash": revised_hash, "revision_hash": revision.revision_hash if revision else "none"},
+        evidence_snapshot={"evidence_hash": revised_hash, "revision_hash": revision_hash},
         state_snapshot={"state_hash": graph.state_hash, "state_wide": graph.wide.to_dict("records")},
     )
     packet_hash = hash_values([packet.to_json()])
-    revision_hash = revision.revision_hash if revision is not None else hash_values([{"action": "no_revision"}])
     audit_payload = {
         "schema_version": REPLAY_SCHEMA_VERSION,
         "revision_hash": revision_hash,

@@ -8,7 +8,9 @@ from advoice.evidence_replay import (
     EvidenceRevision,
     EvidenceRevisionError,
     apply_evidence_revision,
+    build_state_graph_v2,
     evidence_snapshot_hash,
+    replay_revision_hash,
     replay_evidence,
 )
 from advoice.module_a import TaskConditionedStatisticalExpert
@@ -72,6 +74,27 @@ def test_replay_audit_is_idempotent() -> None:
 
     assert first.audit == second.audit
     assert first.packet.to_json() == second.packet.to_json()
+
+
+def test_replay_binds_revision_hash_to_every_state_card_and_state_hash() -> None:
+    snapshot = _snapshot()
+    baseline = replay_evidence(snapshot, None, states_config=_states(), module_a=_expert())
+    expected_no_revision = replay_revision_hash(None)
+    assert set(baseline.state_graph.cards["revision_hash"]) == {expected_no_revision}
+    assert set(baseline.state_graph.cards["state_revision_hash"]) == {expected_no_revision}
+    assert baseline.audit.revision_hash == expected_no_revision
+    unbound = build_state_graph_v2(snapshot, _states())
+    assert baseline.state_graph.state_hash != unbound.state_hash
+
+    revision = EvidenceRevision(
+        evidence_id="metric:a", action="downweight",
+        expected_evidence_hash=evidence_snapshot_hash(snapshot),
+        reliability_multiplier=0.5,
+    )
+    accepted = replay_evidence(snapshot, revision, states_config=_states(), module_a=_expert())
+    assert set(accepted.state_graph.cards["revision_hash"]) == {revision.revision_hash}
+    assert set(accepted.state_graph.cards["state_revision_hash"]) == {revision.revision_hash}
+    assert accepted.audit.revision_hash == revision.revision_hash
 
 
 def test_stale_hash_and_forbidden_edits_are_rejected() -> None:

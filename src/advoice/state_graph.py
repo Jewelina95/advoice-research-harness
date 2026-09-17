@@ -52,11 +52,23 @@ class StateGraphV2:
     ) -> "StateGraphV2":
         cards, wide = build_state_graph_frame(evidence, states_config, correlation_config)
         evidence_hash = state_graph_evidence_hash(evidence)
-        state_hash = hash_values([{
-            "cards": _json_safe(cards.sort_index(axis=1).to_dict("records")),
-            "wide": _json_safe(wide.sort_index(axis=1).to_dict("records")),
-        }])
+        state_hash = _state_graph_hash(cards, wide)
         return cls(evidence_hash=evidence_hash, state_hash=state_hash, cards=cards, wide=wide)
+
+    def bind_revision(self, revision_hash: str) -> "StateGraphV2":
+        """Bind every StateCard to an explicit evidence revision identity."""
+
+        if not isinstance(revision_hash, str) or not revision_hash:
+            raise ValueError("StateGraphV2 revision binding requires a non-empty hash.")
+        cards = self.cards.copy()
+        cards["revision_hash"] = revision_hash
+        cards["state_revision_hash"] = revision_hash
+        return StateGraphV2(
+            evidence_hash=self.evidence_hash,
+            state_hash=_state_graph_hash(cards, self.wide),
+            cards=cards,
+            wide=self.wide.copy(),
+        )
 
 
 def _as_bool(series: pd.Series, default: bool = False) -> pd.Series:
@@ -100,6 +112,39 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _state_graph_hash(cards: pd.DataFrame, wide: pd.DataFrame) -> str:
+    return hash_values([{
+        "cards": _json_safe(cards.sort_index(axis=1).to_dict("records")),
+        "wide": _json_safe(wide.sort_index(axis=1).to_dict("records")),
+    }])
+
+
+def deserialize_state_card_ids(value: Any, *, field: str = "state-card IDs") -> tuple[str, ...]:
+    """Strictly decode ID lists from in-memory or CSV-backed StateCards.
+
+    State cards are often persisted as CSV, where a list becomes a JSON string.
+    Treating that string as an iterable would expose individual characters to
+    the report validator, so malformed or non-list values fail closed.
+    """
+
+    if value is None or value is pd.NA:
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field} must be a JSON array of strings.") from exc
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError(f"{field} must be a list, tuple, set, or JSON array.")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field} contains a non-string or empty identifier.")
+        if item not in result:
+            result.append(item)
+    return tuple(result)
 
 
 def state_graph_evidence_hash(evidence: pd.DataFrame) -> str:

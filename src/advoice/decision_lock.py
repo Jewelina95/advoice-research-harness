@@ -429,6 +429,10 @@ def validate_report_trace(
 ) -> ReportTrace:
     """Validate ``claim -> state -> metric -> task/segment -> asset`` links."""
 
+    # CSV persistence turns list-valued StateCard fields into JSON strings.
+    # Decode them at this boundary instead of iterating raw strings as chars.
+    from .state_graph import deserialize_state_card_ids
+
     trace = ReportTrace.from_mapping(report_trace)
     revision_hash = _required_hash(revision_hash, "revision_hash")
     states = _records(
@@ -476,11 +480,19 @@ def validate_report_trace(
         if str(_get(state, "case_id", default=case_id)) != case_id:
             raise EvidenceTraceError(f"StateCard {entry.state_card_id!r} belongs to another case.")
         state_tasks = {str(_get(state, "task_id", "task_scope", default=""))}
-        state_tasks.update(str(item) for item in (_get(state, "task_ids", default=()) or ()))
+        state_tasks.update(deserialize_state_card_ids(
+            _get(state, "task_ids", default=()), field="StateCard.task_ids"
+        ))
         if entry.task_id not in state_tasks:
             raise EvidenceTraceError(f"Claim {entry.claim_id!r} crosses the StateCard task boundary.")
-        allowed_state_evidence = set(str(item) for item in (_get(state, "supporting_evidence_ids", "metric_evidence_ids", default=()) or ()))
-        allowed_state_evidence.update(str(item) for item in (_get(state, "counterevidence_ids", default=()) or ()))
+        allowed_state_evidence = set(deserialize_state_card_ids(
+            _get(state, "supporting_evidence_ids", "metric_evidence_ids", default=()),
+            field="StateCard.supporting_evidence_ids",
+        ))
+        allowed_state_evidence.update(deserialize_state_card_ids(
+            _get(state, "counter_evidence_ids", "counterevidence_ids", default=()),
+            field="StateCard.counter_evidence_ids",
+        ))
         allowed_state_evidence.discard("")
         if not allowed_state_evidence:
             raise EvidenceTraceError(
@@ -504,7 +516,10 @@ def validate_report_trace(
                 raise EvidenceTraceError(f"MetricEvidence {evidence_id!r} is not clinical-support evidence.")
             if str(_get(evidence, "task_id", "task_scope", default=entry.task_id)) != entry.task_id:
                 raise EvidenceTraceError(f"MetricEvidence {evidence_id!r} crosses the task boundary.")
-            evidence_segments = set(str(item) for item in (_get(evidence, "segment_ids", "source_segment_ids", default=()) or ()))
+            evidence_segments = set(deserialize_state_card_ids(
+                _get(evidence, "segment_ids", "source_segment_ids", default=()),
+                field="MetricEvidence.segment_ids",
+            ))
             if not set(entry.segment_ids).issubset(evidence_segments):
                 raise EvidenceTraceError(f"Claim {entry.claim_id!r} cites segments absent from MetricEvidence.")
             provenance = _get(evidence, "provenance", default=None)

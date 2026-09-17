@@ -139,7 +139,10 @@ def _prepared_decision(
 ) -> AgentAuthorityDecision:
     _require_bound_state_cards(executor, evidence)
     supervised = tuple(item for item in evidence if not item.incremental_for_agent)
-    pre = replay_evidence(supervised, None, states_config=STATES, module_a=executor.module_a)
+    replay_kwargs = {
+        "dataset_id": CASE["dataset_id"], "label": "unknown", "split": "inference",
+    }
+    pre = replay_evidence(supervised, None, states_config=STATES, module_a=executor.module_a, **replay_kwargs)
     pre_evidence_hash = hash_artifact(executor._evidence_artifact("case-1", pre.revised_evidence))
     pre_cards = executor._state_cards(case_id="case-1", replay=pre, revision_hash=pre.audit.revision_hash)
     pre_state_hash = hash_artifact(executor._state_artifact("case-1", pre, pre_cards))
@@ -147,7 +150,7 @@ def _prepared_decision(
         executor._packet_artifact("case-1", pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
     )
     post = pre if revision is None else replay_evidence(
-        supervised, revision, states_config=STATES, module_a=executor.module_a
+        supervised, revision, states_config=STATES, module_a=executor.module_a, **replay_kwargs
     )
     cards = executor._state_cards(case_id="case-1", replay=post, revision_hash=post.audit.revision_hash)
     card = next(item for item in cards if item["available"] and item["report_permission"])

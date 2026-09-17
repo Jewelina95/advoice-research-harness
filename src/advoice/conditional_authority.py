@@ -34,6 +34,7 @@ from .evidence_replay import (
 from .module_a import ExplanationPacket, TaskConditionedStatisticalExpert
 from .module_b import ConditionalArbitrator, ModuleBPrediction
 from .routing import RouteDecision, route_case
+from .state_graph import deserialize_state_card_ids
 
 
 class ConditionalAuthorityError(ValueError):
@@ -392,7 +393,14 @@ class ConditionalAuthorityExecutor:
                 )
             if str(state_revision) != revision_hash:
                 raise StaleAuthorityError("StateGraphV2 card is bound to a stale evidence revision.")
-            linked_ids = tuple(str(item) for item in row["supporting_evidence_ids"])
+            linked_ids = deserialize_state_card_ids(
+                row["supporting_evidence_ids"],
+                field="StateCard.supporting_evidence_ids",
+            )
+            counter_ids = deserialize_state_card_ids(
+                row.get("counter_evidence_ids", row.get("counterevidence_ids", ())),
+                field="StateCard.counter_evidence_ids",
+            )
             linked = [item for item in evidence if item.evidence_id in set(linked_ids)]
             task_ids = sorted({str(item.task_id or "overall") for item in linked})
             segment_ids = sorted({segment for item in linked for segment in item.source_segment_ids})
@@ -404,6 +412,7 @@ class ConditionalAuthorityExecutor:
                 "task_id": str(row["task_scope"]),
                 "task_ids": task_ids,
                 "supporting_evidence_ids": list(linked_ids),
+                "counter_evidence_ids": list(counter_ids),
                 "segment_ids": segment_ids,
                 "available": bool(row.get("available", False)),
                 "report_permission": bool(row.get("report_permission", False)),

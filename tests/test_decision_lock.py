@@ -219,6 +219,15 @@ def test_locked_report_must_match_the_immutable_trace() -> None:
         validate_locked_report({**report, "case_id": "case_000000000002"}, lock)
 
 
+def test_report_trace_reads_json_encoded_state_card_id_lists() -> None:
+    values = _inputs()
+    values["state_graph"]["state_cards"][0]["supporting_evidence_ids"] = '["metric:e1"]'
+    values["state_graph"]["state_cards"][0]["task_ids"] = '["task_cookie"]'
+    values["metric_evidence"][0]["segment_ids"] = '["segment_0000000001"]'
+    lock = create_decision_lock(**values)
+    assert lock.locked is True
+
+
 def test_canonical_hash_accepts_real_pipeline_objects_and_normalizes_nonfinite_values() -> None:
     values = _typed_inputs()
     first = create_decision_lock(**values)

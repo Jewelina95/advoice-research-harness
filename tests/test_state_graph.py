@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from advoice.state_graph import build_state_graph_frame, deserialize_state_card_ids
+from advoice.states import build_fold_calibrated_state_frame
 
 
 def _states(metrics: list[str]) -> dict:
@@ -104,6 +105,25 @@ def test_correlated_duplicates_share_one_budget_and_are_order_invariant() -> Non
     assert np.isclose(single_shared["confidence"], 0.8)
     assert duplicate_shared["independent_family_count"] == 1
     pd.testing.assert_frame_equal(duplicate, shuffled)
+
+
+def test_fold_calibration_uses_embedded_family_registry() -> None:
+    rows = []
+    for subject_id, label, value in [("h1", "HC", 0.0), ("h2", "HC", 2.0), ("p", "AD", 4.0)]:
+        for metric in ["pause_a", "pause_b"]:
+            row = _row(metric, value)
+            row.update(subject_id=subject_id, label=label, direction=1.0)
+            rows.append(row)
+    states = _states(["pause_a", "pause_b"])
+    states["correlation_families"] = _families(["pause_a", "pause_b"])
+
+    wide = build_fold_calibrated_state_frame(
+        pd.DataFrame(rows), states, {"h1", "h2"}, "HC"
+    )
+
+    patient = wide.loc[wide.subject_id.eq("p")].iloc[0]
+    assert patient["state_S01"] == pytest.approx(3.0 / 1.4826)
+    assert patient["rel_S01"] == pytest.approx(0.8)
 
 
 def test_task_residuals_are_centered_and_shrunk() -> None:

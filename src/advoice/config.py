@@ -118,24 +118,32 @@ def load_all(dataset_id: str) -> dict[str, Any]:
 
     routing = load_routing_config()
     observability = load_observability_config()
+    selected_correlation_families = {
+        **{
+            key: value
+            for key, value in correlation_families.items()
+            if key != "states"
+        },
+        "states": {
+            state_id: definition
+            for state_id, definition in correlation_families.get("states", {}).items()
+            if state_id in enabled_states
+        },
+    }
+    selected_states_config = {
+        "states": selected_states,
+        "unavailable_states": unavailable_states,
+        # Keep the family registry attached to the state contract so every
+        # fold-local rebuild uses the same de-duplication rule as inference.
+        "correlation_families": selected_correlation_families,
+    }
     return {
         "project": load_yaml(p.configs / "project.yaml"),
         "dataset": dataset,
         "channel_profile": {"id": profile_name, **profile},
         "metrics": {"metrics": selected_metrics},
-        "states": {"states": selected_states, "unavailable_states": unavailable_states},
-        "correlation_families": {
-            **{
-                key: value
-                for key, value in correlation_families.items()
-                if key != "states"
-            },
-            "states": {
-                state_id: definition
-                for state_id, definition in correlation_families.get("states", {}).items()
-                if state_id in enabled_states
-            },
-        },
+        "states": selected_states_config,
+        "correlation_families": selected_correlation_families,
         "models": load_yaml(p.model_config),
         "agents": load_yaml(p.configs / "agents" / "default.yaml"),
         "evaluation": load_yaml(p.configs / "evaluation" / "default.yaml"),

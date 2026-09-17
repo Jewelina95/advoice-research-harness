@@ -128,6 +128,23 @@ def build_fold_calibrated_state_frame(
             part["fold_missing"] = missing
             calibrated_parts.append(part)
     calibrated = pd.concat(calibrated_parts, ignore_index=True)
+    correlation_config = states_config.get("correlation_families")
+    if correlation_config:
+        # Import lazily because state_graph uses the schema helpers above.
+        from .state_graph import build_state_graph_frame
+
+        graph_evidence = calibrated.copy()
+        graph_evidence["directional_z"] = graph_evidence["fold_directional_z"]
+        graph_evidence["missing"] = graph_evidence["fold_missing"]
+        graph_evidence["evidence_status"] = np.where(
+            graph_evidence["fold_missing"], "unavailable", "available"
+        )
+        _, wide = build_state_graph_frame(
+            graph_evidence,
+            states_config,
+            correlation_config,
+        )
+        return wide
     identity = ["dataset_id", "subject_id", "label", "split"]
     mapping_rows = [
         {
@@ -286,6 +303,20 @@ def build_state_cards_frame(
     recording/segment frames enrich traces only; omitted frames yield metric traces.
     Inputs are not mutated.
     """
+    correlation_config = states_config.get("correlation_families")
+    if correlation_config:
+        # The family-aware graph is the production state builder when the
+        # registry is present. Legacy callers without it retain old behavior.
+        from .state_graph import build_state_graph_frame
+
+        return build_state_graph_frame(
+            evidence,
+            states_config,
+            correlation_config,
+            recordings=recordings,
+            segments=segments,
+        )
+
     evidence = _normalize_evidence_schema(evidence)
     if (recordings is None) != (segments is None):
         raise ValueError("recordings and segments must be supplied together")

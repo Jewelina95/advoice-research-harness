@@ -149,7 +149,8 @@ def run_openai_batch(
     schema = api_schema(schema)
     client = OpenAI()
     response = None
-    for attempt, delay_seconds in enumerate((0, 20, 40, 80, 120), start=1):
+    retry_delays = (0, 20, 40, 80, 120)
+    for attempt, delay_seconds in enumerate(retry_delays, start=1):
         if delay_seconds:
             time.sleep(delay_seconds)
         try:
@@ -171,7 +172,14 @@ def run_openai_batch(
             break
         except Exception as error:
             status_code = getattr(error, "status_code", None)
-            if status_code != 429 or attempt == 5:
+            error_name = type(error).__name__
+            transient_transport = error_name in {
+                "APIConnectionError", "APITimeoutError", "TimeoutError",
+            }
+            transient_status = status_code in {408, 409, 429} or (
+                isinstance(status_code, int) and 500 <= status_code < 600
+            )
+            if not (transient_transport or transient_status) or attempt == len(retry_delays):
                 raise
     if response is None:
         raise RuntimeError("OpenAI agent request exhausted its rate-limit retries.")

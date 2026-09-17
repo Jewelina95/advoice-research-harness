@@ -1,4 +1,4 @@
-"""Bounded, two-pass Agent review of frozen authority evidence.
+"""Bounded Agent review of frozen authority evidence.
 
 This module is deliberately only an Agent boundary.  It never chooses a
 class, changes a probability, replays evidence, or imports the compiler that
@@ -18,12 +18,15 @@ from .decision_lock import canonical_json, hash_artifact
 from .transcript_sanitization import sanitize_transcript_payload
 
 
-SCHEMA_VERSION = "advoice.authority_review_runtime.v2-compact-transport"
+SCHEMA_VERSION = "advoice.authority_review_runtime.v3-single-blind-default"
 STATE_ACTIONS = frozenset({"retain", "downweight", "invalidate", "mark_unavailable"})
 DOWNWEIGHT_MULTIPLIERS = (0.25, 0.5, 0.75)
 REVIEW_AVAILABLE = "available"
 REVIEW_UNAVAILABLE = "provider_unavailable"
 REVIEW_PROVIDER_ERROR = "failed_closed_provider_error"
+REVIEW_MODE_SINGLE_BLIND = "single_blind"
+REVIEW_MODE_LEGACY_TWO_PASS = "legacy_two_pass"
+REVIEW_MODES = frozenset({REVIEW_MODE_SINGLE_BLIND, REVIEW_MODE_LEGACY_TWO_PASS})
 _DECISION_POLICY_EXCLUSIONS = frozenset({"REFERENCES.md", "REPORT_CONTRACT.md"})
 
 
@@ -227,7 +230,7 @@ class AdvisorReconciliation:
 
 @dataclass(frozen=True, slots=True)
 class AuthorityReviewResult:
-    """Result of exactly one bounded two-pass review attempt."""
+    """Result of one bounded review attempt under an explicit review mode."""
 
     status: str
     case_id: str
@@ -237,11 +240,27 @@ class AuthorityReviewResult:
     reconciliation: AdvisorReconciliation | None = None
     effective_state_actions: Mapping[str, StateReviewAction] | None = None
     error: str | None = None
+    # Legacy is the deserialization default for archived two-pass artifacts.
+    # New runtimes explicitly stamp their selected mode.
+    review_mode: str = REVIEW_MODE_LEGACY_TWO_PASS
 
     def __post_init__(self) -> None:
+        if self.review_mode not in REVIEW_MODES:
+            raise AuthorityReviewValidationError("Authority review mode is unsupported.")
         if self.status == REVIEW_AVAILABLE:
-            if self.blind_assessment is None or self.reconciliation is None or self.effective_state_actions is None:
-                raise AuthorityReviewValidationError("Available review requires both validated passes.")
+            if self.blind_assessment is None or self.effective_state_actions is None:
+                raise AuthorityReviewValidationError(
+                    "Available review requires a validated blind assessment and effective actions."
+                )
+            if self.review_mode == REVIEW_MODE_SINGLE_BLIND:
+                if self.reconciliation is not None or self.reconciliation_request_hash is not None:
+                    raise AuthorityReviewValidationError(
+                        "Single-blind review cannot contain advisor reconciliation."
+                    )
+            elif self.reconciliation is None or self.reconciliation_request_hash is None:
+                raise AuthorityReviewValidationError(
+                    "Legacy two-pass review requires advisor reconciliation."
+                )
             object.__setattr__(self, "effective_state_actions", _actions_by_state(
                 tuple(self.effective_state_actions.values())
             ))
@@ -430,6 +449,7 @@ def _request_runtime_fingerprint(
     provider: str,
     model: str,
     policy_documents: Mapping[str, str],
+    review_mode: str,
 ) -> Mapping[str, str]:
     """Return the configuration identity that makes a provider response reusable.
 
@@ -442,6 +462,7 @@ def _request_runtime_fingerprint(
         "provider": str(provider),
         "model": str(model),
         "runtime_schema_version": SCHEMA_VERSION,
+        "review_mode": review_mode,
         "policy_content_hash": hash_artifact(dict(policy_documents)),
     })
 
@@ -776,7 +797,7 @@ def _parse_reconciliation(response: Any, prepared: PreparedAuthorityCase, blind:
 
 
 class AuthorityReviewRuntime:
-    """Run two and only two structured provider requests for one prepared case."""
+    """Run a label-blind review, optionally followed by legacy reconciliation."""
 
     def __init__(
         self,
@@ -786,12 +807,26 @@ class AuthorityReviewRuntime:
         model: str = "",
         skill_path: Path | None = None,
         cache_dir: Path | None = None,
+        review_mode: str = REVIEW_MODE_SINGLE_BLIND,
     ) -> None:
+        if review_mode not in REVIEW_MODES:
+            raise ValueError(f"Unsupported authority review mode: {review_mode!r}")
         self.root = Path(root)
         self.provider = provider
         self.model = model
         self.skill_path = None if skill_path is None else Path(skill_path)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.root / ".authority_review_cache"
+        self.review_mode = review_mode
+
+    def study_identity(self) -> Mapping[str, str]:
+        """Bind resumable cohort outputs to the exact decision runtime."""
+
+        return _request_runtime_fingerprint(
+            provider=str(self.provider),
+            model=self.model,
+            policy_documents=_policy_documents(self.root, self.skill_path),
+            review_mode=self.review_mode,
+        )
 
     def review(
         self,
@@ -802,13 +837,17 @@ class AuthorityReviewRuntime:
         pseudo, _, _ = _verify_prepared(prepared)
         if self.provider in {None, "", "disabled"}:
             unavailable_hash = hash_artifact({"case_id": pseudo, "provider": "disabled", "pass": 1})
-            return AuthorityReviewResult(REVIEW_UNAVAILABLE, pseudo, unavailable_hash, None, error="provider_disabled")
+            return AuthorityReviewResult(
+                REVIEW_UNAVAILABLE, pseudo, unavailable_hash, None,
+                error="provider_disabled", review_mode=self.review_mode,
+            )
 
         policy = _policy_documents(self.root, self.skill_path)
         runtime_fingerprint = _request_runtime_fingerprint(
             provider=str(self.provider),
             model=self.model,
             policy_documents=policy,
+            review_mode=self.review_mode,
         )
         evidence_aliases = _evidence_aliases(prepared)
         full_evidence_ids = {alias: evidence_id for evidence_id, alias in evidence_aliases.items()}
@@ -847,6 +886,17 @@ class AuthorityReviewRuntime:
             blind = _parse_blind(
                 _alias_response_citations(blind_response, full_evidence_ids), prepared
             )
+            if self.review_mode == REVIEW_MODE_SINGLE_BLIND:
+                return AuthorityReviewResult(
+                    status=REVIEW_AVAILABLE,
+                    case_id=pseudo,
+                    blind_request_hash=blind_hash,
+                    reconciliation_request_hash=None,
+                    blind_assessment=blind,
+                    reconciliation=None,
+                    effective_state_actions=blind.state_actions,
+                    review_mode=self.review_mode,
+                )
             advisor_payload = build_advisor_payload(
                 prepared, blind,
                 policy_documents=policy,
@@ -878,11 +928,13 @@ class AuthorityReviewRuntime:
             return AuthorityReviewResult(
                 REVIEW_PROVIDER_ERROR, pseudo, blind_hash,
                 locals().get("advisor_hash"), error=f"{type(error).__name__}: {error}",
+                review_mode=self.review_mode,
             )
         effective = dict(blind.state_actions)
         effective.update(reconciliation.amendments)
         return AuthorityReviewResult(
             REVIEW_AVAILABLE, pseudo, blind_hash, advisor_hash, blind, reconciliation, effective,
+            review_mode=self.review_mode,
         )
 
     def _write_schema(self, name: str, request_hash: str, schema: Mapping[str, Any]) -> Path:
@@ -893,7 +945,8 @@ class AuthorityReviewRuntime:
 
 __all__ = [
     "AdvisorReconciliation", "AuthorityReviewError", "AuthorityReviewResult", "AuthorityReviewRuntime",
-    "AuthorityReviewValidationError", "BlindEvidenceAssessment", "REVIEW_AVAILABLE", "REVIEW_PROVIDER_ERROR",
-    "REVIEW_UNAVAILABLE", "SCHEMA_VERSION", "STATE_ACTIONS", "StateReviewAction", "build_advisor_payload",
+    "AuthorityReviewValidationError", "BlindEvidenceAssessment", "REVIEW_AVAILABLE",
+    "REVIEW_MODE_LEGACY_TWO_PASS", "REVIEW_MODE_SINGLE_BLIND", "REVIEW_MODES",
+    "REVIEW_PROVIDER_ERROR", "REVIEW_UNAVAILABLE", "SCHEMA_VERSION", "STATE_ACTIONS", "StateReviewAction", "build_advisor_payload",
     "build_blind_payload", "sanitize_provider_payload",
 ]

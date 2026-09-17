@@ -25,7 +25,7 @@ from typing import Any
 from .utils import hash_values
 
 
-AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v3"
+AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v4-hierarchical-stage"
 PROBABILITY_FLOOR = 1e-12
 _FORBIDDEN_PROVENANCE_TOKENS = frozenset({"label", "labels", "truth", "ground_truth", "target"})
 
@@ -176,13 +176,16 @@ class AuthorityJointFusionConfig:
     agent_strength: float
     max_abs_state_delta: float
     ordinal_temperature: float
+    staging_strength: float = 0.0
     conflict_aware_gating: bool = True
     min_state_uncertainty: float = 0.65
     min_frozen_uncertainty: float = 0.75
     min_counterevidence_margin: float = 0.75
 
     def __post_init__(self) -> None:
-        for field_name in ("state_strength", "agent_strength", "max_abs_state_delta"):
+        for field_name in (
+            "state_strength", "agent_strength", "staging_strength", "max_abs_state_delta",
+        ):
             parsed = _finite_real(getattr(self, field_name), name=field_name)
             if parsed < 0.0:
                 raise AuthorityJointFusionError(f"{field_name} must be non-negative.")
@@ -207,6 +210,7 @@ class AuthorityJointFusionConfig:
         return {
             "state_strength": self.state_strength,
             "agent_strength": self.agent_strength,
+            "staging_strength": self.staging_strength,
             "max_abs_state_delta": self.max_abs_state_delta,
             "ordinal_temperature": self.ordinal_temperature,
             "conflict_aware_gating": self.conflict_aware_gating,
@@ -229,12 +233,16 @@ class AuthorityJointFusionResult:
     bounded_state_log_evidence: Mapping[str, float]
     agent_log_evidence: Mapping[str, float]
     agent_equal_prior_likelihood: Mapping[str, float]
+    staging_log_evidence: Mapping[str, float]
+    staging_equal_prior_likelihood: Mapping[str, float]
     fused_probabilities: Mapping[str, float]
     predicted_label: str
     state_component_neutral: bool
     state_authority_gate: float
     agent_component_neutral: bool
     agent_authority_gate: float
+    staging_component_neutral: bool
+    staging_authority_gate: float
     state_agent_conflict: bool
     frozen_parity: bool
     config: AuthorityJointFusionConfig
@@ -253,6 +261,8 @@ class AuthorityJointFusionResult:
             "bounded_state_log_evidence",
             "agent_log_evidence",
             "agent_equal_prior_likelihood",
+            "staging_log_evidence",
+            "staging_equal_prior_likelihood",
             "fused_probabilities",
         ):
             object.__setattr__(self, field_name, MappingProxyType(dict(getattr(self, field_name))))
@@ -269,12 +279,16 @@ class AuthorityJointFusionResult:
             "bounded_state_log_evidence": dict(self.bounded_state_log_evidence),
             "agent_log_evidence": dict(self.agent_log_evidence),
             "agent_equal_prior_likelihood": dict(self.agent_equal_prior_likelihood),
+            "staging_log_evidence": dict(self.staging_log_evidence),
+            "staging_equal_prior_likelihood": dict(self.staging_equal_prior_likelihood),
             "fused_probabilities": dict(self.fused_probabilities),
             "predicted_label": self.predicted_label,
             "state_component_neutral": self.state_component_neutral,
             "state_authority_gate": self.state_authority_gate,
             "agent_component_neutral": self.agent_component_neutral,
             "agent_authority_gate": self.agent_authority_gate,
+            "staging_component_neutral": self.staging_component_neutral,
+            "staging_authority_gate": self.staging_authority_gate,
             "state_agent_conflict": self.state_agent_conflict,
             "frozen_parity": self.frozen_parity,
             "config": self.config.to_dict(),
@@ -401,6 +415,54 @@ def fuse_authority_joint(
     else:
         agent_log = tuple(item / config.ordinal_temperature for item in _center(ordinal_as_float))
     agent_likelihood = _softmax(agent_log)
+    staging_log = tuple(0.0 for _ in labels)
+    staging_likelihood = tuple(1.0 / len(labels) for _ in labels)
+    staging_gate = 0.0
+    staging_neutral = True
+    if is_three_stage:
+        mci_index, ad_index = impaired_indices
+        stage_difference = (
+            float(ordinal[ad_index] - ordinal[mci_index]) / config.ordinal_temperature
+        )
+        staging_log_values = [0.0 for _ in labels]
+        staging_log_values[mci_index] = -stage_difference / 2.0
+        staging_log_values[ad_index] = stage_difference / 2.0
+        staging_log = tuple(staging_log_values)
+        # This equal-prior vector is conditional on impairment. HC is zero by
+        # construction because staging evidence cannot alter screening odds.
+        stage_pair = _softmax((staging_log[mci_index], staging_log[ad_index]))
+        staging_likelihood_values = [0.0 for _ in labels]
+        staging_likelihood_values[mci_index] = stage_pair[0]
+        staging_likelihood_values[ad_index] = stage_pair[1]
+        staging_likelihood = tuple(staging_likelihood_values)
+        staging_neutral = (
+            config.staging_strength == 0.0
+            or ordinal[mci_index] == ordinal[ad_index]
+            or report_only_channel
+        )
+        if not staging_neutral:
+            if not config.conflict_aware_gating:
+                staging_gate = 1.0
+            else:
+                impaired_mass = frozen[mci_index] + frozen[ad_index]
+                conditional_stage = (
+                    frozen[mci_index] / impaired_mass,
+                    frozen[ad_index] / impaired_mass,
+                ) if impaired_mass > 0.0 else (0.5, 0.5)
+                staging_uncertainty = _normalized_entropy(conditional_stage)
+                frozen_stage_index = (
+                    mci_index if frozen[mci_index] >= frozen[ad_index] else ad_index
+                )
+                agent_stage_index = (
+                    mci_index if ordinal[mci_index] >= ordinal[ad_index] else ad_index
+                )
+                stage_margin = abs(ordinal[mci_index] - ordinal[ad_index]) / 4.0
+                if frozen_stage_index != agent_stage_index:
+                    if staging_uncertainty >= config.min_frozen_uncertainty:
+                        staging_gate = staging_uncertainty * stage_margin
+                    elif stage_margin >= config.min_counterevidence_margin:
+                        staging_gate = stage_margin
+        staging_neutral = staging_neutral or staging_gate == 0.0
     agent_neutral = config.agent_strength == 0.0 or len(set(ordinal)) == 1
     if agent_neutral or report_only_channel:
         agent_gate = 0.0
@@ -447,7 +509,7 @@ def fuse_authority_joint(
     }
     input_hash = hash_values([inputs])
 
-    frozen_parity = state_neutral and agent_neutral
+    frozen_parity = state_neutral and agent_neutral and staging_neutral
     if frozen_parity:
         fused = frozen
     else:
@@ -455,7 +517,10 @@ def fuse_authority_joint(
             math.log(max(base, PROBABILITY_FLOOR))
             + (0.0 if state_neutral else config.state_strength * state_gate * state)
             + (0.0 if agent_neutral else config.agent_strength * agent_gate * agent)
-            for base, state, agent in zip(frozen, bounded_state, agent_log, strict=True)
+            + (0.0 if staging_neutral else config.staging_strength * staging_gate * staging)
+            for base, state, agent, staging in zip(
+                frozen, bounded_state, agent_log, staging_log, strict=True,
+            )
         )
         fused = _softmax(logits)
 
@@ -467,10 +532,14 @@ def fuse_authority_joint(
         "bounded_state_log_evidence": list(bounded_state),
         "agent_log_evidence": list(agent_log),
         "agent_equal_prior_likelihood": list(agent_likelihood),
+        "staging_log_evidence": list(staging_log),
+        "staging_equal_prior_likelihood": list(staging_likelihood),
         "state_component_neutral": state_neutral,
         "state_authority_gate": state_gate,
         "agent_component_neutral": agent_neutral,
         "agent_authority_gate": agent_gate,
+        "staging_component_neutral": staging_neutral,
+        "staging_authority_gate": staging_gate,
         "state_agent_conflict": state_agent_conflict,
         "frozen_parity": frozen_parity,
         "fused_probabilities": list(fused),
@@ -486,12 +555,16 @@ def fuse_authority_joint(
         bounded_state_log_evidence=_ordered(labels, bounded_state),
         agent_log_evidence=_ordered(labels, agent_log),
         agent_equal_prior_likelihood=_ordered(labels, agent_likelihood),
+        staging_log_evidence=_ordered(labels, staging_log),
+        staging_equal_prior_likelihood=_ordered(labels, staging_likelihood),
         fused_probabilities=_ordered(labels, fused),
         predicted_label=predicted_label,
         state_component_neutral=state_neutral,
         state_authority_gate=state_gate,
         agent_component_neutral=agent_neutral,
         agent_authority_gate=agent_gate,
+        staging_component_neutral=staging_neutral,
+        staging_authority_gate=staging_gate,
         state_agent_conflict=state_agent_conflict,
         frozen_parity=frozen_parity,
         config=config,

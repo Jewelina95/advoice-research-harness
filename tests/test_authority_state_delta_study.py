@@ -184,19 +184,43 @@ def test_fusion_schema_change_invalidates_completed_study(tmp_path, monkeypatch)
     runtime = _Runtime(dataset)
     monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(None))
     config = AuthorityStateDeltaStudyConfig()
-    original_hash = study_module._study_hash(dataset, cases, config)
+    original_hash = study_module._study_hash(dataset, cases, config, runtime=runtime)
     result = run_authority_state_delta_cohort(dataset, runtime, output_dir=tmp_path)
     audit = __import__("json").loads(result.aggregate_json_path.read_text())
     assert audit["config"]["fusion_schema_version"] == study_module.AUTHORITY_JOINT_FUSION_SCHEMA_VERSION
     monkeypatch.setattr(study_module, "AUTHORITY_JOINT_FUSION_SCHEMA_VERSION", "future-test-schema")
-    assert study_module._study_hash(dataset, cases, config) != original_hash
-    new_hash = study_module._study_hash(dataset, cases, config)
+    assert study_module._study_hash(dataset, cases, config, runtime=runtime) != original_hash
+    new_hash = study_module._study_hash(dataset, cases, config, runtime=runtime)
     assert study_module._load_resumable_audits(result.audit_jsonl_path, new_hash) == {}
     new_dataset, _, _ = _fixture_dataset()
     new_runtime = _Runtime(new_dataset)
     refreshed = run_authority_state_delta_cohort(new_dataset, new_runtime, output_dir=tmp_path)
     assert refreshed.study_hash == new_hash
     assert new_runtime.calls == ["case-1", "case-2"]
+
+
+def test_runtime_identity_change_invalidates_completed_study() -> None:
+    dataset, cases, _ = _fixture_dataset()
+    config = AuthorityStateDeltaStudyConfig()
+    first = _Runtime(dataset)
+    first.model = "model-a"
+    first.review_mode = "single_blind"
+    second = _Runtime(dataset)
+    second.model = "model-b"
+    second.review_mode = "single_blind"
+
+    assert study_module._study_hash(dataset, cases, config, runtime=first) != study_module._study_hash(
+        dataset, cases, config, runtime=second,
+    )
+
+
+def test_calibration_identity_changes_study_hash() -> None:
+    dataset, cases, _ = _fixture_dataset()
+    first = AuthorityStateDeltaStudyConfig(calibration_artifact_hash="a" * 64)
+    second = AuthorityStateDeltaStudyConfig(calibration_artifact_hash="b" * 64)
+    assert study_module._study_hash(dataset, cases, first) != study_module._study_hash(
+        dataset, cases, second,
+    )
 
 
 @pytest.mark.parametrize("scores, expected", [({"HC": 4, "AD": 0}, True), ({"HC": 0, "AD": 4}, False)])

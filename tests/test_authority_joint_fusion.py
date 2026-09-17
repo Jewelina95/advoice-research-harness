@@ -193,6 +193,39 @@ def test_three_class_state_correction_changes_screening_not_staging_ratio() -> N
     )
 
 
+def test_validated_staging_strength_can_change_mci_ad_odds_separately() -> None:
+    frozen = {"HC": 0.20, "MCI": 0.40, "AD": 0.40}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
+        config=_config(
+            state_strength=0.0,
+            agent_strength=1.0,
+            staging_strength=1.0,
+            conflict_aware_gating=False,
+        ),
+    )
+
+    assert result.fused_probabilities["AD"] > result.fused_probabilities["MCI"]
+
+
+def test_route_specific_cognitive_stages_are_not_dropped() -> None:
+    labels = ("HC", "SCD", "MCI", "mild_dementia", "moderate_dementia", "severe_dementia")
+    result = fuse_authority_joint(
+        frozen_probabilities=dict.fromkeys(labels, 1.0 / len(labels)),
+        pre_state_probabilities=dict.fromkeys(labels, 1.0 / len(labels)),
+        post_state_probabilities=dict.fromkeys(labels, 1.0 / len(labels)),
+        blind_ordinal_scores={label: min(index, 4) for index, label in enumerate(labels)},
+        class_order=labels,
+        config=_config(state_strength=0.0, agent_strength=0.0),
+    )
+    assert result.class_order == labels
+    assert tuple(result.fused_probabilities) == labels
+    assert sum(result.fused_probabilities.values()) == pytest.approx(1.0)
+
+
 def test_public_speech_is_report_only_and_preserves_frozen_prediction() -> None:
     frozen = {"HC": 0.78, "MCI": 0.12, "AD": 0.10}
     result = _fuse(
@@ -320,6 +353,7 @@ def test_invalid_or_incomplete_class_inputs_fail_closed(kwargs, message: str) ->
         ({"min_frozen_uncertainty": 1.1}, "min_frozen_uncertainty"),
         ({"min_state_uncertainty": 1.1}, "min_state_uncertainty"),
         ({"min_counterevidence_margin": -0.1}, "min_counterevidence_margin"),
+        ({"staging_strength": -0.1}, "staging_strength"),
     ],
 )
 def test_invalid_configuration_fails_closed(kwargs, message: str) -> None:

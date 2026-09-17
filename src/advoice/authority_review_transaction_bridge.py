@@ -1,4 +1,4 @@
-"""Bounded bridge from a two-pass Agent review to a case transaction.
+"""Bounded bridge from an Agent evidence review to a case transaction.
 
 The runtime deliberately keeps Agent actions at the state level.  This module
 is the only adapter that turns the effective non-retain actions into the
@@ -62,9 +62,9 @@ def _require_available(
         )
     blind = result.blind_assessment
     reconciliation = result.reconciliation
-    if blind is None or reconciliation is None or result.effective_state_actions is None:
+    if blind is None or result.effective_state_actions is None:
         raise AuthorityReviewTransactionBridgeError(
-            "Available authority review is missing one of its validated passes."
+            "Available authority review is missing its validated blind assessment."
         )
     expected = {
         "case_id": expected_case,
@@ -81,11 +81,14 @@ def _require_available(
             raise AuthorityReviewTransactionBridgeError(
                 f"Blind assessment contains stale {name}."
             )
-        if getattr(reconciliation, name) != value:
+        if reconciliation is not None and getattr(reconciliation, name) != value:
             raise AuthorityReviewTransactionBridgeError(
                 f"Advisor reconciliation contains stale {name}."
             )
-    if reconciliation.advisor_packet_hash != prepared.advisor_packet_hash:
+    if (
+        reconciliation is not None
+        and reconciliation.advisor_packet_hash != prepared.advisor_packet_hash
+    ):
         raise AuthorityReviewTransactionBridgeError(
             "Advisor reconciliation contains a stale advisor packet hash."
         )
@@ -177,8 +180,8 @@ def _merge_report_trace(
 
     blind = result.blind_assessment
     reconciliation = result.reconciliation
-    if blind is None or reconciliation is None:
-        raise AuthorityReviewTransactionBridgeError("Available review passes are required.")
+    if blind is None:
+        raise AuthorityReviewTransactionBridgeError("Available blind assessment is required.")
     records: list[dict[str, Any]] = []
     for index, text in enumerate(blind.report_trace):
         records.append({"source": "blind_assessment", "index": index, "text": str(text)})
@@ -190,12 +193,13 @@ def _merge_report_trace(
             "cited_metric_evidence_ids": list(action.cited_metric_evidence_ids),
             "rationale": action.rationale,
         })
-    records.append({
-        "source": "advisor_reconciliation",
-        "disposition": reconciliation.disposition,
-        "cited_metric_evidence_ids": list(reconciliation.cited_metric_evidence_ids),
-        "rationale": reconciliation.rationale,
-    })
+    if reconciliation is not None:
+        records.append({
+            "source": "advisor_reconciliation",
+            "disposition": reconciliation.disposition,
+            "cited_metric_evidence_ids": list(reconciliation.cited_metric_evidence_ids),
+            "rationale": reconciliation.rationale,
+        })
     unique: dict[str, Mapping[str, Any]] = {
         canonical_json(record): record for record in records
     }

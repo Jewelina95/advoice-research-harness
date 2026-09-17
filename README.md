@@ -6,13 +6,19 @@ ADvoice is an evidence-governed research pipeline for speech-based cognitive scr
 
 This software is for screening and referral-support research. It is not a diagnostic medical device and does not establish Alzheimer disease pathology or stage.
 
-## Agent-led architecture
+## Decision architecture
 
-The new [Agent-led decision runtime](docs/AGENT_LED_ARCHITECTURE.md) lets one
-Agent inspect evidence, record an independent hypothesis, optionally consult the
-two trained modules, revise evidence, and make the final research judgment.
-It is a separate inference path, not a larger weight on the old supervised
-prediction. The original bounded-correction pipeline remains a comparator.
+The maintained benchmark path combines a subject-isolated supervised reference
+with one prior-blind, evidence-grounded Agent assessment. The Agent reviews
+`MetricEvidence` and `StateCards`, returns cited state actions and separate
+screening/staging evidence, and never sees the supervised probability. A frozen
+development artifact decides whether either Agent route may affect the result;
+without validated gain, the prediction remains exactly the supervised reference.
+
+The [fully Agent-led decision runtime](docs/AGENT_LED_ARCHITECTURE.md), in which
+the Agent can inspect tools and make an independent final research judgment,
+remains an explicitly separate experimental path. Its results must not be mixed
+with the calibrated benchmark path.
 
 ```bash
 advoice agent-led --workspaces demo/agent_led/synthetic_workspace.jsonl \
@@ -74,8 +80,8 @@ The four packaged recordings are deterministic synthetic fixtures rather than pa
 3. **Construct evidence** by converting acoustic, language, dialogue, and task measurements into typed objects with values, reference scopes, directions, reliability, confounds, task IDs, segment IDs, and report permissions.
 4. **Form cognitive states** by combining non-duplicated evidence into shared and task-specific `StateCards`.
 5. **Estimate class evidence** with supervised text, audio, state, and segment branches trained under subject-level splits.
-6. **Run constrained review** with a prior-blind evidence workspace. The diagnostic Agent returns class evidence and source IDs, not an unrestricted diagnosis.
-7. **Apply frozen fusion rules** so correction occurs only when coverage, reliability, confound, and routing gates pass.
+6. **Run one constrained blind review**. The diagnostic Agent returns cited state actions plus separate HC-versus-impairment and MCI-versus-AD evidence; it does not receive the supervised prior.
+7. **Apply development-frozen hierarchical fusion**. State-action and blind-screening routes are mutually exclusive but calibrated separately, staging has its own strength, and every strength is zero until its validation gate passes.
 8. **Render the report** after the prediction is locked, preserving links from findings to states, metrics, and source segments.
 
 When served by `demo/server.py`, pressing **Run selected recording** executes routing, feature extraction, evidence construction, and state formation again. Static hosting falls back to the frozen deterministic result. The packaged synthetic cases demonstrate the interface contract without trained clinical weights or a live GPT call; full dataset experiments use the versioned model and Agent configurations below.

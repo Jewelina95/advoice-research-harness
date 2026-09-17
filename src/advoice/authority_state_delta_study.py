@@ -2,7 +2,7 @@
 
 The study runner deliberately separates inference from evaluation.  A case is
 prepared without its outcome label, reviewed exactly once by the supplied
-two-pass runtime, compiled into one atomic transaction, replayed through the
+runtime, compiled into one atomic transaction, replayed through the
 frozen Module A state expert, and only then combined with the immutable
 Condition C prediction and the first-pass blind Agent likelihood.  Labels are
 read after every requested prediction is complete.
@@ -22,7 +22,12 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import pandas as pd
 
-from .authority_review_runtime import AuthorityReviewResult, AuthorityReviewRuntime, REVIEW_AVAILABLE
+from .authority_review_runtime import (
+    AuthorityReviewResult,
+    AuthorityReviewRuntime,
+    REVIEW_AVAILABLE,
+    REVIEW_MODE_SINGLE_BLIND,
+)
 from .authority_review_transaction_bridge import compile_authority_review_decision
 from .authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
 from .authority_joint_fusion import (
@@ -40,8 +45,9 @@ from .utils import hash_values
 
 STUDY_SCHEMA_VERSION = "advoice.authority_joint_fusion_study.v1"
 DEFAULT_JOINT_FUSION_CONFIG = AuthorityJointFusionConfig(
-    state_strength=1.0,
-    agent_strength=1.0,
+    state_strength=0.0,
+    agent_strength=0.0,
+    staging_strength=0.0,
     max_abs_state_delta=0.75,
     ordinal_temperature=1.0,
 )
@@ -52,7 +58,7 @@ class AuthorityStateDeltaStudyError(RuntimeError):
 
 
 class ReviewRuntime(Protocol):
-    """Injectable boundary for a real or test two-pass review runtime."""
+    """Injectable boundary for a real or test evidence-review runtime."""
 
     cache_dir: Path
 
@@ -75,6 +81,7 @@ class AuthorityStateDeltaStudyConfig:
     selection_order: str = "longest_first"
     selection_salt: str = "authority-pilot-v1"
     max_cases: int | None = None
+    calibration_artifact_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.joint_fusion, AuthorityJointFusionConfig):
@@ -89,6 +96,10 @@ class AuthorityStateDeltaStudyConfig:
             raise ValueError("selection_salt must be non-empty.")
         if self.max_cases is not None and self.max_cases < 1:
             raise ValueError("max_cases must be positive when supplied.")
+        if self.calibration_artifact_hash is not None:
+            value = self.calibration_artifact_hash
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError("calibration_artifact_hash must be a lowercase SHA-256 hex digest.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +110,7 @@ class AuthorityStateDeltaStudyConfig:
             "selection_order": self.selection_order,
             "selection_salt": self.selection_salt,
             "max_cases": self.max_cases,
+            "calibration_artifact_hash": self.calibration_artifact_hash,
         }
 
 
@@ -129,6 +141,7 @@ def build_authority_review_runtime(
     model: str,
     cache_dir: str | Path,
     skill_path: str | Path | None = None,
+    review_mode: str = REVIEW_MODE_SINGLE_BLIND,
 ) -> AuthorityReviewRuntime:
     """Construct the production runtime with an explicit resumable cache path."""
 
@@ -138,6 +151,7 @@ def build_authority_review_runtime(
         model=model,
         skill_path=None if skill_path is None else Path(skill_path),
         cache_dir=Path(cache_dir),
+        review_mode=review_mode,
     )
 
 
@@ -156,9 +170,10 @@ def run_authority_state_delta_cohort(
     callers should use :func:`build_authority_review_runtime`, which passes
     ``cache_dir`` directly into :class:`AuthorityReviewRuntime`.
 
-    This evaluation path is decision-only: both blind assessment and advisor
-    reconciliation are decision-relevant and remain enabled. Structured
-    rationales/report_trace are audit data, not clinician report generation.
+    This evaluation path is decision-only. The production runtime defaults to
+    one blind evidence assessment; legacy advisor reconciliation is available
+    only as an explicit reproduction mode. Structured rationales/report_trace
+    are audit data, not clinician report generation.
     Report requests fail before any I/O; that workflow is deferred until
     formal testing. This flag does not disable classification provider calls.
     """
@@ -185,7 +200,7 @@ def run_authority_state_delta_cohort(
         raise AuthorityStateDeltaStudyError("The selected cohort has no prepared test cases.")
     _assert_unique_case_ids(prepared_cases)
 
-    study_hash = _study_hash(dataset, prepared_cases, selected_config)
+    study_hash = _study_hash(dataset, prepared_cases, selected_config, runtime=runtime)
     audit_jsonl_path = root / "case_audit.jsonl"
     audit_json_path = root / "case_audit.json"
     aggregate_json_path = root / "aggregate.json"
@@ -265,8 +280,9 @@ def _run_case(
             "frozen_packet_hash": _packet_hash(frozen_packet),
         }
 
-        # Exactly one runtime invocation per non-resumed case.  The runtime
-        # itself owns the two required structured provider requests.
+        # Exactly one runtime invocation per non-resumed case. The production
+        # runtime owns one structured blind request; legacy reproduction may
+        # explicitly opt into a second reconciliation request.
         review = runtime.review(prepared, transcript=prepared_case.transcript)
         base["review"] = _review_audit(review)
         if review.status != REVIEW_AVAILABLE:
@@ -402,6 +418,7 @@ def _review_audit(review: AuthorityReviewResult) -> dict[str, Any]:
         "case_pseudonym": review.case_id,
         "blind_request_hash": review.blind_request_hash,
         "reconciliation_request_hash": review.reconciliation_request_hash,
+        "review_mode": getattr(review, "review_mode", "legacy_or_test_runtime"),
         "cache_key": review.cache_key,
         "error": review.error,
     }
@@ -435,6 +452,10 @@ def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
         "clipped_state_delta": dict(fusion.bounded_state_log_evidence),
         "agent_log_evidence": dict(fusion.agent_log_evidence),
         "agent_equal_prior_likelihood": dict(fusion.agent_equal_prior_likelihood),
+        "staging_log_evidence": dict(fusion.staging_log_evidence),
+        "staging_equal_prior_likelihood": dict(fusion.staging_equal_prior_likelihood),
+        "staging_component_neutral": fusion.staging_component_neutral,
+        "staging_authority_gate": fusion.staging_authority_gate,
         "blind_ordinal_scores": dict(fusion.blind_ordinal_scores),
         "config": fusion.config.to_dict(),
         "provenance": dict(fusion.provenance),
@@ -585,12 +606,15 @@ def _study_hash(
     dataset: AuthorityStudyDataset,
     cases: Sequence[PreparedAuthorityStudyCase],
     config: AuthorityStateDeltaStudyConfig,
+    *,
+    runtime: ReviewRuntime | None = None,
 ) -> str:
     return hash_artifact({
         "schema_version": STUDY_SCHEMA_VERSION,
         "dataset_id": dataset.advisor.dataset_id,
         "class_order": list(dataset.class_order),
         "config": config.to_dict(),
+        "runtime": _runtime_study_identity(runtime),
         "cases": [
             {
                 "case_id": item.prepared_case.case_id,
@@ -601,6 +625,23 @@ def _study_hash(
             for item in cases
         ],
     })
+
+
+def _runtime_study_identity(runtime: ReviewRuntime | None) -> Mapping[str, Any] | None:
+    if runtime is None:
+        return None
+    identity = getattr(runtime, "study_identity", None)
+    if callable(identity):
+        value = identity()
+        if not isinstance(value, Mapping):
+            raise AuthorityStateDeltaStudyError("Runtime study_identity() must return a mapping.")
+        return dict(value)
+    return {
+        "runtime_class": f"{type(runtime).__module__}.{type(runtime).__qualname__}",
+        "provider": str(getattr(runtime, "provider", "test_or_unspecified")),
+        "model": str(getattr(runtime, "model", "test_or_unspecified")),
+        "review_mode": str(getattr(runtime, "review_mode", "legacy_or_test_runtime")),
+    }
 
 
 def _assert_unique_case_ids(cases: Sequence[PreparedAuthorityStudyCase]) -> None:

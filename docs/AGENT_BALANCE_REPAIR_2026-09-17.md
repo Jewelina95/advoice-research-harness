@@ -14,23 +14,24 @@ or an independently verified measure of clinical reliability.
 
 A stronger general model does not justify increasing a constant Agent weight.
 Authority must be earned on subject-disjoint development cases for the exact
-model, skill, language, task and endpoint. The current coefficients remain
-explicit pilot settings; this repair does not claim they are learned or optimal.
+model, skill, language, task and endpoint. Runtime coefficients now fail closed
+at zero unless a frozen `validated_joint_gain` calibration artifact is supplied.
 
 ## Current decision sequence
 
 1. Route the observation task and endpoint; preserve roles and task boundaries.
 2. Compile observable metrics, reliability components and reference provenance.
 3. Build StateCards and the traceable evidence workspace.
-4. Obtain the Agent's blind structured assessment and ordinal class scores.
-5. Show the learned advisor outputs and obtain cited state revisions.
-6. Validate and replay accepted revisions; calculate pre/post state change.
-7. Fuse the original predictor, eligible state change and eligible blind scores.
-8. Save the decision and audit. Generate a clinician narrative only when requested.
+4. Obtain one prior-blind structured Agent assessment containing cited state
+   actions, HC-versus-impairment scores and MCI-versus-AD scores.
+5. Validate and replay accepted state actions; calculate pre/post state change.
+6. Fuse the original predictor with one eligible screening route and a separately
+   eligible staging route using development-frozen strengths.
+7. Save the decision and audit. Generate a clinician narrative only when requested.
 
-Steps 4 and 5 are two decision calls. Step 5 is not merely report generation;
-removing it would remove the current state-revision mechanism. Narrative reports
-must not be described as the reason for all second-pass latency.
+The previous advisor reconciliation call is retained only as
+`legacy_two_pass` reproduction mode. It is not used by default and cannot be
+silently combined with single-blind artifacts.
 
 ## Implemented formula repair
 
@@ -56,10 +57,13 @@ the same Agent review twice. State evidence is bounded. Weak ordinal evidence
 cannot receive a gate larger than its own normalized score margin. Equal
 evidence or zero strengths preserve the original probabilities exactly.
 
-The three-class implementation currently acts on HC versus MCI-or-AD and
-preserves the MCI:AD odds. It cannot fix MCI/AD staging errors. Public speech
-currently preserves predictor probabilities. These are explicit current
-limitations, not newly demonstrated benefits or universal clinical rules.
+The three-class implementation now separates HC-versus-impairment screening
+from conditional MCI-versus-AD staging. Screening and staging strengths are
+selected separately. More detailed cognitive severity labels remain
+route-specific and are preserved by the generic fusion contract, but they must
+not be interpreted as Alzheimer pathology or promoted without corresponding
+development labels and calibration. Public speech currently preserves predictor
+probabilities.
 
 ## Verification and cache policy
 
@@ -121,9 +125,11 @@ class changes in each replay relative to the previous fusion. This is a behavior
 audit, not a new accuracy or superiority claim. It made zero provider calls and
 did not retrain a dataset model.
 
-Independent review accepted the delta/decision-space corrections and retained
-two methodological blockers: the ordinal fallback lacks a fitted, version-bound
-calibrator and explicit evidence eligibility beyond score margins; MCI/AD stage
-odds remain frozen. Existing threshold values were preserved, not optimized on
-the inspected cases. The repair is suitable for further development validation,
-not automatic promotion to the clinical or publication benchmark path.
+The runtime now accepts the existing versioned development calibration artifact.
+Blind screening and staging use separately selected strengths. State replay stays
+at zero unless the artifact contains its own validated state-delta coefficient;
+an ordinal-score coefficient cannot be reused for a differently scaled state
+delta. Invalid, missing or failed calibration leaves all Agent corrections at
+zero. Existing threshold values were preserved, not optimized on inspected
+cases. The repair is suitable for development validation, not automatic
+promotion to a clinical or publication benchmark claim.

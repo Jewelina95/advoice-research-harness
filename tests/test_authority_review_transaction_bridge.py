@@ -12,6 +12,7 @@ from advoice.authority_review_runtime import (
     AuthorityReviewResult,
     BlindEvidenceAssessment,
     REVIEW_AVAILABLE,
+    REVIEW_MODE_SINGLE_BLIND,
     REVIEW_PROVIDER_ERROR,
     REVIEW_UNAVAILABLE,
     StateReviewAction,
@@ -184,6 +185,32 @@ def _result(prepared: PreparedAuthorityCase, actions: dict[str, StateReviewActio
     )
 
 
+def _single_result(
+    prepared: PreparedAuthorityCase,
+    actions: dict[str, StateReviewAction],
+) -> AuthorityReviewResult:
+    pseudo = case_pseudonym(prepared.case_id)
+    blind = BlindEvidenceAssessment(
+        case_id=pseudo,
+        reviewed_packet_hash=prepared.reviewed_packet_hash,
+        reviewed_evidence_hash=prepared.reviewed_evidence_hash,
+        reviewed_state_graph_hash=prepared.reviewed_state_graph_hash,
+        state_actions=actions,
+        ordinal_scores={"HC": 2, "MCI": 2, "AD": 1},
+        report_trace=("Evidence was reviewed once without advisor probabilities.",),
+    )
+    return AuthorityReviewResult(
+        status=REVIEW_AVAILABLE,
+        case_id=pseudo,
+        blind_request_hash="a" * 64,
+        reconciliation_request_hash=None,
+        blind_assessment=blind,
+        reconciliation=None,
+        effective_state_actions=actions,
+        review_mode=REVIEW_MODE_SINGLE_BLIND,
+    )
+
+
 def test_two_non_retain_states_compile_into_one_stably_ordered_transaction() -> None:
     prepared = _prepared()
     result = _result(prepared, {
@@ -198,6 +225,20 @@ def test_two_non_retain_states_compile_into_one_stably_ordered_transaction() -> 
     assert transaction.expected_evidence_hash == prepared.reviewed_evidence_hash
     assert tuple(batch.state_id for batch in transaction.batches) == ("S01", "S02")
     assert transaction.evidence_ids == ("metric:s01", "metric:s02")
+
+
+def test_single_blind_review_compiles_without_advisor_reconciliation() -> None:
+    prepared = _prepared()
+    result = _single_result(
+        prepared, {"S01": _action(prepared, "S01", "downweight")},
+    )
+
+    compiled = compile_authority_review_decision(prepared, result)
+
+    assert compiled.transaction is not None
+    assert {item["source"] for item in compiled.decision.report_trace} == {
+        "blind_assessment", "state_action",
+    }
 
 
 def test_empty_or_retain_only_actions_return_no_transaction_and_merge_metadata() -> None:

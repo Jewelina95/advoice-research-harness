@@ -12,6 +12,8 @@ from advoice.authority_review_runtime import (
     AuthorityReviewRuntime,
     AuthorityReviewValidationError,
     REVIEW_AVAILABLE,
+    REVIEW_MODE_LEGACY_TWO_PASS,
+    REVIEW_MODE_SINGLE_BLIND,
     REVIEW_PROVIDER_ERROR,
     build_blind_payload,
     _parse_blind,
@@ -158,7 +160,10 @@ def test_two_pass_payloads_are_blind_then_advisor_bound(monkeypatch, tmp_path: P
         return _blind(prepared) if len(calls) == 1 else _advisor(prepared)
 
     monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
-    runtime = AuthorityReviewRuntime(root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path))
+    runtime = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", model="test",
+        skill_path=_skill(tmp_path), review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
+    )
     result = runtime.review(prepared)
 
     assert result.status == REVIEW_AVAILABLE
@@ -167,6 +172,28 @@ def test_two_pass_payloads_are_blind_then_advisor_bound(monkeypatch, tmp_path: P
     assert "advisor_packet" not in calls[0]
     assert calls[1]["advisor_packet"]["probabilities"]["raw"] == {"HC": 0.7, "AD": 0.3}
     assert result.effective_state_actions["S01"].action == "downweight"
+
+
+def test_default_runtime_uses_one_blind_evidence_call(monkeypatch, tmp_path: Path) -> None:
+    prepared = _prepared()
+    calls: list[dict[str, object]] = []
+
+    def provider(root, prompt, schema_path, output_path, model, provider):
+        calls.append(_payload_from_prompt(prompt))
+        return _blind(prepared)
+
+    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    result = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
+    ).review(prepared)
+
+    assert result.status == REVIEW_AVAILABLE
+    assert result.review_mode == REVIEW_MODE_SINGLE_BLIND
+    assert len(calls) == 1
+    assert "advisor_packet" not in calls[0]
+    assert result.reconciliation is None
+    assert result.reconciliation_request_hash is None
+    assert result.effective_state_actions == result.blind_assessment.state_actions
 
 
 def test_blind_review_accepts_sparse_actions_and_omits_retained_states() -> None:
@@ -251,7 +278,8 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
 
     monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
-        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path)
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
+        review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
     ).review(prepared)
 
     assert result.status == REVIEW_AVAILABLE
@@ -291,7 +319,8 @@ def test_runtime_schema_binds_each_action_to_same_state_evidence(
 
     monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
-        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path)
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
+        review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
     ).review(prepared)
 
     assert result.status == REVIEW_AVAILABLE
@@ -318,7 +347,8 @@ def test_runtime_uses_short_transport_ids_and_restores_full_audit_ids(
 
     monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
-        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path)
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
+        review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
     ).review(prepared)
 
     assert result.status == REVIEW_AVAILABLE
@@ -400,8 +430,14 @@ def test_request_hashes_are_deterministic_and_disabled_never_calls_provider(monk
 
     monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
     skill = _skill(tmp_path)
-    first = AuthorityReviewRuntime(root=tmp_path, provider="openai_api", skill_path=skill).review(prepared)
-    second = AuthorityReviewRuntime(root=tmp_path, provider="openai_api", skill_path=skill).review(prepared)
+    first = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", skill_path=skill,
+        review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
+    ).review(prepared)
+    second = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", skill_path=skill,
+        review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
+    ).review(prepared)
     disabled = AuthorityReviewRuntime(root=tmp_path, provider="disabled", skill_path=skill).review(prepared)
 
     assert calls == 4
@@ -426,7 +462,10 @@ def test_request_hashes_change_when_provider_contract_or_policy_changes(monkeypa
     skill = _skill(tmp_path)
 
     def review(**kwargs):
-        return AuthorityReviewRuntime(root=tmp_path, skill_path=skill, **kwargs).review(prepared)
+        return AuthorityReviewRuntime(
+            root=tmp_path, skill_path=skill,
+            review_mode=REVIEW_MODE_LEGACY_TWO_PASS, **kwargs,
+        ).review(prepared)
 
     baseline = review(provider="openai_api", model="model-a")
     changed_provider = review(provider="other_provider", model="model-a")

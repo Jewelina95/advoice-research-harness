@@ -20,8 +20,12 @@ The first-pass workspace never contains a supervised probability or final class.
 
 1. Read task, language, speaker-role and available-modality context.
 2. Inspect quality and decide which states are observable and reliable.
-3. Inspect the highest-priority reportable StateCards.
-4. Trace each important state to permitted MetricEvidence and source segments.
+3. Inspect inference-permitted StateCards and MetricEvidence. A metric may
+   contribute to the hidden ordinal class scores when `inference_permission`
+   is true even when `report_permission` is false.
+4. Keep inference and reporting separate. Use only report-permitted evidence
+   in clinician-facing findings or `report_trace`; non-reportable inference
+   evidence must remain internal and must not be presented as a clinical fact.
 5. Search for counterevidence, task disagreement and confounding.
 6. Assign each allowed class an integer evidence score from 0 to 4. This is an ordinal evidence judgment, not a probability.
 7. Check the medical precedence rules in `EVIDENCE_HIERARCHY.md`.
@@ -38,7 +42,11 @@ The first-pass workspace never contains a supervised probability or final class.
 - A state listed under `model_only_state_observations` may only be updated with `mark_unavailable`; it cannot enter clinical support.
 - For `mark_unavailable`, `evidence_ids` may contain the target state ID and quality IDs that establish why it is unavailable.
 - A state unavailable for the current task must have zero clinical contribution.
-- Every support, counterevidence and quality claim must cite a typed ID present in the current registry: `state:*`, `metric:*`, `segment:*` or `qc:*`.
+- Every internal state action must cite same-state MetricEvidence with
+  `inference_permission=true`.
+- Every clinician-facing support, counterevidence and quality claim must cite
+  report-permitted typed evidence present in the current registry. Evidence
+  used only for inference must not be exposed as a reportable finding.
 - Inspect material counterevidence before increasing risk.
 - Do not output final probabilities. The deterministic fusion stage converts ordinal evidence scores into evidence likelihoods after this decision is complete.
 - `evidence_class` must be a class with the largest `evidence_scores` value.

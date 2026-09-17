@@ -34,6 +34,31 @@ def test_observation_and_target_routes_are_independent() -> None:
     assert diagnosis.target_route.endpoint != progression.target_route.endpoint
 
 
+def test_structured_task_audio_routes_picture_description_by_task_metadata() -> None:
+    decision = route_case({
+        "channel": "structured_task_audio",
+        "task_type": "long_picture_description",
+        "language": "zh",
+        "target": "diagnosis",
+    })
+
+    assert decision.observation_route.id == "structured_task_audio"
+    assert decision.observation_route.family == "picture_description"
+    assert decision.observation_route.task_id == "long_picture_description"
+
+
+def test_structured_task_audio_preserves_non_picture_multitask_family() -> None:
+    decision = route_case({
+        "channel": "structured_task_audio",
+        "task_type": "semantic_fluency",
+        "language": "en",
+        "target": "diagnosis",
+    })
+
+    assert decision.observation_route.id == "structured_task_audio"
+    assert decision.observation_route.family == "structured_cognitive_multitask"
+
+
 def test_progression_requires_paired_visits_and_interval() -> None:
     with pytest.raises(RouteValidationError, match="paired visits"):
         route_case({"channel": "picture_description", "target": "progression", "visit_ids": ["v1"]})

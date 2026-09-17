@@ -404,7 +404,7 @@ def fuse_authority_joint(
         elif agent_agrees:
             agent_gate = 0.0
         elif frozen_uncertainty >= config.min_frozen_uncertainty:
-            agent_gate = max(frozen_uncertainty, agent_margin)
+            agent_gate = frozen_uncertainty * agent_margin
         elif agent_margin >= config.min_counterevidence_margin:
             agent_gate = agent_margin
         else:

@@ -643,7 +643,11 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
     if not isinstance(response, Mapping):
         raise AuthorityReviewValidationError("Blind provider response must be an object.")
     pseudo, states, _ = _verify_prepared(prepared)
-    evidence_states = {item.evidence_id: item.state_id for item in prepared.evidence}
+    evidence_states = {
+        item.evidence_id: item.state_id
+        for item in prepared.evidence
+        if item.inference_permission
+    }
     actions_value = response.get("state_actions")
     if not isinstance(actions_value, list):
         raise AuthorityReviewValidationError("Blind provider response requires state_actions.")
@@ -671,7 +675,12 @@ def _parse_reconciliation(response: Any, prepared: PreparedAuthorityCase, blind:
     if not isinstance(response, Mapping):
         raise AuthorityReviewValidationError("Advisor provider response must be an object.")
     pseudo, states, evidence_ids = _verify_prepared(prepared)
-    evidence_states = {item.evidence_id: item.state_id for item in prepared.evidence}
+    evidence_states = {
+        item.evidence_id: item.state_id
+        for item in prepared.evidence
+        if item.inference_permission
+    }
+    evidence_ids = frozenset(evidence_states)
     amendments_value = response.get("amendments")
     if not isinstance(amendments_value, list):
         raise AuthorityReviewValidationError("Advisor provider response requires amendments.")
@@ -748,7 +757,9 @@ class AuthorityReviewRuntime:
         _, state_ids, _ = _verify_prepared(prepared)
         evidence_ids_by_state = {
             state_id: tuple(sorted(
-                item.evidence_id for item in prepared.evidence if item.state_id == state_id
+                item.evidence_id
+                for item in prepared.evidence
+                if item.state_id == state_id and item.inference_permission
             ))
             for state_id in state_ids
         }

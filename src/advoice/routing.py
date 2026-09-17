@@ -106,6 +106,7 @@ OBSERVATION_ROUTE_DEFAULTS: dict[str, dict[str, Any]] = {
     "picture_description": {"family": "picture_description"},
     "picture_description_audio_only": {"family": "picture_description"},
     "structured_multitask": {"family": "structured_cognitive_multitask"},
+    "structured_task_audio": {"family": "structured_cognitive_multitask"},
     "spontaneous_multilingual": {"family": "spontaneous_speech"},
     "public_speech": {"family": "public_speech"},
     "longitudinal_progression_audio": {"family": "picture_description"},
@@ -158,11 +159,16 @@ def resolve_observation_route(
     if configured is None:
         raise RouteValidationError(f"Unknown observation route: {channel!r}.")
     task_id = _value(metadata, "task_id", "task", "task_type")
+    family = str(configured.get("family", channel))
+    if channel == "structured_task_audio" and task_id is not None:
+        normalized_task = str(task_id).strip().lower()
+        if "picture" in normalized_task and "description" in normalized_task:
+            family = "picture_description"
     roles = _value(metadata, "required_roles", default=configured.get("required_roles", ()))
     states = _value(metadata, "allowed_states", default=configured.get("allowed_states", ()))
     return ObservationRoute(
         id=channel,
-        family=str(configured.get("family", channel)),
+        family=family,
         task_id=str(task_id) if task_id is not None else None,
         language=str(_value(metadata, "language", default="unknown")),
         required_roles=tuple(str(value) for value in roles),

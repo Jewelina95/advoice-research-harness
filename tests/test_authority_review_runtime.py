@@ -207,6 +207,24 @@ def test_blind_review_rejects_retain_unknown_state_and_cross_state_citations() -
         _parse_blind(unsupported_strength, prepared)
 
 
+def test_review_rejects_citations_without_inference_permission() -> None:
+    prepared = _prepared()
+    blocked = replace(
+        prepared.evidence[0],
+        permissions=EvidencePermissions(inference=False, report=False),
+    )
+    blocked_case = replace(prepared, evidence=(blocked,))
+
+    with pytest.raises(AuthorityReviewValidationError, match="unknown MetricEvidence"):
+        _parse_blind(_blind(blocked_case), blocked_case)
+
+    blind_response = _blind(blocked_case)
+    blind_response["state_actions"] = []
+    blind = _parse_blind(blind_response, blocked_case)
+    with pytest.raises(AuthorityReviewValidationError, match="unknown MetricEvidence"):
+        _parse_reconciliation(_advisor(blocked_case), blocked_case, blind)
+
+
 def test_reconciliation_rejects_cross_state_amendment_citations() -> None:
     prepared = _prepared()
     second_evidence = replace(

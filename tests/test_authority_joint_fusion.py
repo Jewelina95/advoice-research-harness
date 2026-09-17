@@ -132,6 +132,23 @@ def test_conflict_aware_gate_rejects_weak_counterevidence_against_confident_prio
     assert _bits(result.fused_probabilities.values()) == _bits(frozen.values())
 
 
+def test_uncertain_prior_does_not_amplify_weak_agent_counterevidence() -> None:
+    frozen = {"HC": 0.208014684670914, "MCI": 0.3988898183405164, "AD": 0.3930954969885695}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 3, "MCI": 2, "AD": 1},
+        config=_config(state_strength=0.0, agent_strength=1.0),
+    )
+
+    assert 0.0 < result.agent_authority_gate < 0.3
+    assert result.predicted_label in {"MCI", "AD"}
+    assert result.fused_probabilities["MCI"] / result.fused_probabilities["AD"] == pytest.approx(
+        frozen["MCI"] / frozen["AD"]
+    )
+
+
 def test_state_gate_requires_conflict_and_frozen_uncertainty() -> None:
     confident = {"HC": 0.95, "MCI": 0.03, "AD": 0.02}
     blocked = _fuse(

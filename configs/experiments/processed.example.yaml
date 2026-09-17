@@ -1,0 +1,11 @@
+# Reuse frozen preprocessing and B1/B2, then retrain the supervised fusion.
+schema_version: 1
+workspace: /path/to/private/advoice-workspace
+source_root: /path/to/frozen/artifacts
+input_mode: processed
+mode: full
+agent_provider: disabled
+force: false
+datasets:
+  - ADReSS_2020
+  - NCMMSC2021_AD

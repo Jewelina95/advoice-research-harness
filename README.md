@@ -16,6 +16,19 @@ batch execution, and the distinction between engineering checks and benchmark cl
 The current review is maintained in [System review](docs/SYSTEM_REVIEW.md).
 Historical PREPARE results are not new results from the corrected code.
 
+For maintained research runs, use a private recipe and one command:
+
+```bash
+make experiment-check CONFIG=/absolute/path/to/private/experiment.yaml
+make experiment CONFIG=/absolute/path/to/private/experiment.yaml
+```
+
+Templates: [raw data](configs/experiments/raw.example.yaml) and
+[frozen processed inputs](configs/experiments/processed.example.yaml).
+Each successful run produces system and evaluation HTML plus Layer A/Layer B
+figures. Git/configuration identity, logs, failures and run IDs are saved locally.
+The public demo below is separate from this research execution path.
+
 ## Run the demonstration
 
 The web demonstration has two views:

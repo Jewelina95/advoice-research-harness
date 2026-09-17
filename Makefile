@@ -1,7 +1,14 @@
 PYTHON ?= .venv/bin/python
 DATASET ?= NCMMSC2021_AD
+CONFIG ?= .local/experiment.yaml
 
-.PHONY: validate quick full all all-full prepare-release-gate prepare-audit processed processed-all dataset evaluate evaluate-all report aggregate demo demo-sample test clean-cache
+.PHONY: experiment experiment-check validate quick full all all-full prepare-release-gate prepare-audit processed processed-all dataset evaluate evaluate-all report aggregate demo demo-sample test clean-cache
+
+experiment:
+	PYTHONPATH=src $(PYTHON) -m advoice experiment --config "$(CONFIG)"
+
+experiment-check:
+	PYTHONPATH=src $(PYTHON) -m advoice experiment --config "$(CONFIG)" --check
 
 validate:
 	PYTHONPATH=src $(PYTHON) -m advoice validate --dataset $(DATASET)

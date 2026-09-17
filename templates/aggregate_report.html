@@ -78,8 +78,10 @@
   <section id="layer-a">
     <div class="eyebrow">Layer A</div><h2>4. 医学预测与筛查结果</h2>
     <div class="grid3"><div class="card"><div class="value">{{ evaluation.valid_dataset_count }}</div><p>排除采集混杂后进入医学性能概括的独立任务</p></div><div class="card"><div class="value">{{ '%.3f'|format(evaluation.prepare_micro_auroc) }}</div><p>PREPARE 官方测试集 B3 微平均 AUROC</p></div><div class="card"><div class="value">{{ '%+.3f'|format(evaluation.median_auc_gain_vs_legacy) }}</div><p>排除 IAEAV 后，B3 相对旧条件 C 的中位宏平均 AUROC 变化</p></div></div>
+    {% if iaeav_audit_available %}
     <div class="notice warning"><b>IAEAV 不作为满分结果宣传。</b>本地 223 名受试者的采访者/采集批次与标签高度共线；此前随机受试者切分得到的 1.000 更符合采集流程捷径，而不是可外推的临床信号。本轮改为完整留出同时含 AD 与对照的平衡采访组，训练与测试不共享采访组；由于测试组很小，该结果仍只作为跨采集鲁棒性审计。</div>
     <img class="figure" src="{{ assets }}/figure_4b_iaeav_capture_confounding.png" alt="IAEAV capture confounding"><p class="caption">图 A-0. IAEAV 的采访者/采集组标签构成。多数采集组几乎只包含一个诊断类别；当前使用整组留出切断采访者重叠，而不是随机拆分受试者。</p>
+    {% endif %}
     <img class="figure" src="{{ assets }}/figure_A_layer_medical_standards_summary.png" alt="Layer A medical standards summary"><p class="caption">图 A. 医学评估总图：区分能力、高敏感度筛查点、相对基线增益、固定阈值指标、负控差距与三条件覆盖。图中缺失值保持为空，不用代理值补齐。</p>
     <div class="finding"><b>区分能力</b><p>AUROC 只回答排序能力，不等同于可用筛查器。必须结合准确率、MCC、AUPRC 和操作点一起解释。</p></div><div class="finding"><b>筛查操作点</b><p>Specificity@Sensitivity≥0.85 直接显示在优先降低漏诊时需要付出多少误报代价；多分类或非筛查任务不强行计算该指标。</p></div><div class="finding"><b>负控</b><p>Ours 与 QC-only 的差距若接近零，该通道即使 AUROC 很高也不能作为强临床证据。</p></div>
     <h3>A-1. 区分与固定阈值分类</h3><img class="figure" src="{{ assets }}/figure_4_layer_a_performance.png" alt="Discrimination and classification"><p class="caption">图 A-1. AUROC、Accuracy、Macro F1 和 AUPRC。高值表示更好的区分或分类表现；所有点均来自各数据集独立 held-out 受试者。</p>

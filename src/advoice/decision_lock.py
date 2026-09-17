@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, is_dataclass
 import hashlib
 import json
+import math
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -36,15 +37,103 @@ class UnlockedReportError(DecisionLockError):
     """A report is missing the lock binding or explicitly remains unlocked."""
 
 
+_NO_ARTIFACT_VIEW = object()
+
+
+def _dataframe_view(value: Any) -> Any:
+    """Return a stable table view without importing pandas at module import."""
+
+    if value.__class__.__module__.split(".", 1)[0] != "pandas":
+        return _NO_ARTIFACT_VIEW
+    class_name = value.__class__.__name__
+    if class_name == "DataFrame":
+        columns = sorted(str(column) for column in value.columns)
+        ordered = value.loc[:, columns]
+        return {
+            "artifact_type": "pandas.DataFrame",
+            "columns": columns,
+            "records": ordered.to_dict("records"),
+        }
+    if class_name == "Series":
+        return {
+            "artifact_type": "pandas.Series",
+            "name": None if value.name is None else str(value.name),
+            "values": value.tolist(),
+        }
+    return _NO_ARTIFACT_VIEW
+
+
+def _explicit_artifact_view(value: Any) -> Any:
+    """Serialize public pipeline contracts through named, versioned views."""
+
+    # Local imports avoid making the boundary module part of the predictors'
+    # import graph while still preventing accidental ``str(object)`` hashes.
+    from .evidence_replay import ReplayAudit
+    from .module_a import ExplanationPacket
+    from .module_b import ModuleBPrediction
+    from .state_graph import StateGraphV2
+
+    if isinstance(value, StateGraphV2):
+        return {
+            "artifact_type": "advoice.StateGraphV2",
+            "canonical_view_version": 1,
+            "evidence_hash": value.evidence_hash,
+            "state_hash": value.state_hash,
+            "cards": _dataframe_view(value.cards),
+            "wide": _dataframe_view(value.wide),
+        }
+    if isinstance(value, ExplanationPacket):
+        return {
+            "artifact_type": "advoice.ExplanationPacket",
+            "canonical_view_version": 1,
+            "payload": value.to_dict(),
+        }
+    if isinstance(value, ReplayAudit):
+        return {
+            "artifact_type": "advoice.ReplayAudit",
+            "canonical_view_version": 1,
+            "payload": value.to_dict(),
+        }
+    if isinstance(value, ModuleBPrediction):
+        return {
+            "artifact_type": "advoice.ModuleBPrediction",
+            "canonical_view_version": 1,
+            "payload": value.to_dict(),
+        }
+    return _NO_ARTIFACT_VIEW
+
+
 def _jsonable(value: Any) -> Any:
-    """Convert contract values to a deterministic JSON-native tree."""
+    """Convert contract values to a deterministic JSON-native tree.
+
+    Non-finite numeric values are represented as JSON ``null``.  Unknown
+    objects are rejected instead of being hashed through an unstable repr.
+    """
+
+    explicit = _explicit_artifact_view(value)
+    if explicit is not _NO_ARTIFACT_VIEW:
+        return _jsonable(explicit)
+    table = _dataframe_view(value)
+    if table is not _NO_ARTIFACT_VIEW:
+        return _jsonable(table)
+    if (
+        value.__class__.__module__.startswith("pandas.")
+        and value.__class__.__name__ in {"NAType", "NaTType"}
+    ):
+        return None
 
     if is_dataclass(value):
         return _jsonable({item.name: getattr(value, item.name) for item in fields(value)})
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _jsonable(value.to_dict())
     if isinstance(value, Mapping):
-        return {str(key): _jsonable(value[key]) for key in sorted(value, key=str)}
+        result: dict[str, Any] = {}
+        for key in sorted(value, key=str):
+            normalized_key = str(key)
+            if normalized_key in result:
+                raise TypeError(f"Mapping keys collide after string normalization: {normalized_key!r}.")
+            result[normalized_key] = _jsonable(value[key])
+        return result
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if isinstance(value, (set, frozenset)):
@@ -53,12 +142,13 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (str, int, bool)) or value is None:
         return value
     if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
-            raise TypeError("Non-finite values cannot be part of a decision lock.")
-        return value
+        return value if math.isfinite(value) else None
     if hasattr(value, "item") and callable(value.item):
         return _jsonable(value.item())
-    return str(value)
+    raise TypeError(
+        f"Unsupported decision-lock artifact type: {value.__class__.__module__}."
+        f"{value.__class__.__qualname__}."
+    )
 
 
 def canonical_json(value: Any) -> str:
@@ -82,7 +172,12 @@ def hash_artifact(value: Any) -> str:
 def _hash_options(value: Any) -> set[str]:
     """Accept the repository's older hash primitive at migration boundaries."""
 
-    return {hash_artifact(value), _legacy_hash_values([value])}
+    options = {hash_artifact(value)}
+    # Legacy hashes are accepted only for legacy mapping payloads.  Typed
+    # pipeline objects have one canonical identity at this boundary.
+    if isinstance(value, Mapping):
+        options.add(_legacy_hash_values([value]))
+    return options
 
 
 # Short aliases make the hash primitive convenient for producers and tests.
@@ -193,6 +288,12 @@ def _records(value: Any, *container_names: str) -> list[Any]:
 
     if value is None:
         return []
+    for name in (*container_names, "cards"):
+        nested = _get(value, name, default=None)
+        if nested is not None and nested is not value:
+            rows = _records(nested)
+            if rows:
+                return rows
     if hasattr(value, "to_dict") and callable(value.to_dict):
         try:
             rows = value.to_dict("records")
@@ -330,12 +431,27 @@ def validate_report_trace(
 
     trace = ReportTrace.from_mapping(report_trace)
     revision_hash = _required_hash(revision_hash, "revision_hash")
-    states = _records(state_cards if state_cards is not None else state_graph, "state_cards", "states", "state_observations")
+    states = _records(
+        state_cards if state_cards is not None else state_graph,
+        "state_cards", "states", "state_observations", "cards",
+    )
     metrics = _records(metric_evidence, "metric_evidence", "evidence", "records")
     segment_rows = _records(segments, "segments", "source_segments")
-    state_by_id = {str(_get(item, "state_card_id", "state_id", "id", default="")): item for item in states}
-    evidence_by_id = {str(_get(item, "evidence_id", "id", default="")): item for item in metrics}
-    segment_by_id = {str(_get(item, "segment_id", "id", default="")): item for item in segment_rows}
+
+    def index_records(rows: Sequence[Any], names: tuple[str, ...], kind: str) -> dict[str, Any]:
+        indexed: dict[str, Any] = {}
+        for item in rows:
+            identifier = str(_get(item, *names, default=""))
+            if not identifier:
+                raise EvidenceTraceError(f"{kind} is missing its required identifier.")
+            if identifier in indexed:
+                raise EvidenceTraceError(f"Duplicate {kind} identifier {identifier!r}.")
+            indexed[identifier] = item
+        return indexed
+
+    state_by_id = index_records(states, ("state_card_id", "state_id", "id"), "StateCard")
+    evidence_by_id = index_records(metrics, ("evidence_id", "id"), "MetricEvidence")
+    segment_by_id = index_records(segment_rows, ("segment_id", "id"), "source segment")
     if not trace.entries:
         raise EvidenceTraceError("A locked report must contain at least one report trace entry.")
 
@@ -343,7 +459,13 @@ def validate_report_trace(
         state = state_by_id.get(entry.state_card_id)
         if state is None:
             raise EvidenceTraceError(f"Unknown StateCard {entry.state_card_id!r} in claim {entry.claim_id!r}.")
-        state_revision = _get(state, "revision_hash", "state_revision_hash", "evidence_revision_hash", default=revision_hash)
+        state_revision = _get(
+            state, "revision_hash", "state_revision_hash", "evidence_revision_hash", default=None,
+        )
+        if state_revision in (None, ""):
+            raise HashMismatchError(
+                f"StateCard {entry.state_card_id!r} has no explicit evidence revision binding."
+            )
         if str(state_revision) != revision_hash or entry.state_revision_hash != revision_hash:
             raise HashMismatchError(f"Claim {entry.claim_id!r} cites a stale StateCard revision.")
         state_observable = _get(state, "observable", "observability", "available", default=True)
@@ -359,11 +481,16 @@ def validate_report_trace(
             raise EvidenceTraceError(f"Claim {entry.claim_id!r} crosses the StateCard task boundary.")
         allowed_state_evidence = set(str(item) for item in (_get(state, "supporting_evidence_ids", "metric_evidence_ids", default=()) or ()))
         allowed_state_evidence.update(str(item) for item in (_get(state, "counterevidence_ids", default=()) or ()))
+        allowed_state_evidence.discard("")
+        if not allowed_state_evidence:
+            raise EvidenceTraceError(
+                f"StateCard {entry.state_card_id!r} has no explicit state-to-evidence association."
+            )
         for evidence_id in entry.metric_evidence_ids:
             evidence = evidence_by_id.get(evidence_id)
             if evidence is None:
                 raise EvidenceTraceError(f"Unknown MetricEvidence {evidence_id!r} in claim {entry.claim_id!r}.")
-            if allowed_state_evidence and evidence_id not in allowed_state_evidence:
+            if evidence_id not in allowed_state_evidence:
                 raise EvidenceTraceError(f"MetricEvidence {evidence_id!r} is not attached to the cited StateCard.")
             if str(_get(evidence, "case_id", default=case_id)) != case_id:
                 raise EvidenceTraceError(f"MetricEvidence {evidence_id!r} belongs to another case.")
@@ -420,6 +547,7 @@ class DecisionLock:
     skill_versions: Mapping[str, str]
     tool_versions: Mapping[str, str]
     report_trace: ReportTrace
+    replay_audit_hash: str | None = None
     lock_id: str = ""
     locked: bool = True
     report_hash: str | None = None
@@ -433,6 +561,10 @@ class DecisionLock:
             "agent_decision_hash", "validator_hash", "module_b_output_hash",
         ):
             object.__setattr__(self, name, _required_hash(getattr(self, name), name))
+        if self.replay_audit_hash is not None:
+            object.__setattr__(
+                self, "replay_audit_hash", _required_hash(self.replay_audit_hash, "replay_audit_hash")
+            )
         for name in ("model_versions", "skill_versions", "tool_versions"):
             value = {str(key): str(item) for key, item in dict(getattr(self, name)).items()}
             if not value or any(not key or not item for key, item in value.items()):
@@ -487,6 +619,7 @@ class DecisionLock:
             "agent_decision_hash": self.agent_decision_hash,
             "validator_hash": self.validator_hash,
             "module_b_output_hash": self.module_b_output_hash,
+            "replay_audit_hash": self.replay_audit_hash,
             "model_versions": dict(self.model_versions),
             "skill_versions": dict(self.skill_versions),
             "tool_versions": dict(self.tool_versions),
@@ -515,6 +648,7 @@ class DecisionLock:
             skill_versions=value.get("skill_versions", {}),
             tool_versions=value.get("tool_versions", {}),
             report_trace=ReportTrace.from_mapping(value.get("report_trace", {})),
+            replay_audit_hash=value.get("replay_audit_hash"),
             lock_id=str(value.get("lock_id", "")),
             locked=bool(value.get("locked", False)),
             report_hash=value.get("report_hash"),
@@ -540,6 +674,8 @@ def create_decision_lock(
     validator_hash: str | None = None,
     module_b_output: Any = None,
     module_b_output_hash: str | None = None,
+    replay_audit: Any = None,
+    replay_audit_hash: str | None = None,
     model_versions: Mapping[str, str] | None = None,
     skill_versions: Mapping[str, str] | None = None,
     tool_versions: Mapping[str, str] | None = None,
@@ -585,6 +721,11 @@ def create_decision_lock(
         "validator": _artifact_identity(validator_result, "validator", validator_hash),
         "module_b_output": _artifact_identity(module_b_output, "module_b_output", module_b_output_hash),
     }
+    resolved_replay_audit_hash = None
+    if replay_audit is not None or replay_audit_hash is not None:
+        resolved_replay_audit_hash = _artifact_identity(
+            replay_audit, "replay_audit", replay_audit_hash,
+        )
     # A current post-replay packet must be bound to the current snapshot.  A
     # pre-replay packet may point at the parent snapshot when a revision exists.
     post_snapshot = _linked_hash(module_a_post_replay, "evidence_snapshot_hash", "snapshot_hash")
@@ -600,6 +741,27 @@ def create_decision_lock(
         linked = _linked_hash(artifacts[artifact_name], "module_a_output_hash", "module_a_post_replay_hash")
         if linked is not None and str(linked) != hashes["module_a_post_replay"]:
             raise HashMismatchError("Module B output is bound to a different post-replay Module A packet.")
+    if replay_audit is not None:
+        audit_state_hash = _linked_hash(replay_audit, "state_hash")
+        graph_state_hash = _linked_hash(state_graph, "state_hash")
+        if audit_state_hash is None or graph_state_hash is None:
+            raise HashMismatchError("Replay audit and StateGraphV2 require explicit state-hash bindings.")
+        if str(audit_state_hash) != str(graph_state_hash):
+            raise HashMismatchError("Replay audit is bound to a different StateGraphV2 state.")
+
+        audit_revision_hash = _linked_hash(replay_audit, "revision_hash")
+        internal_revision_hash = _linked_hash(revision, "revision_hash")
+        if audit_revision_hash is None or internal_revision_hash is None:
+            raise HashMismatchError("Replay audit and revision require explicit revision-hash bindings.")
+        if str(audit_revision_hash) != str(internal_revision_hash):
+            raise HashMismatchError("Replay audit is bound to a different evidence revision.")
+
+        audit_packet_hash = _linked_hash(replay_audit, "packet_hash")
+        if audit_packet_hash is None or not hasattr(module_a_post_replay, "to_json"):
+            raise HashMismatchError("Replay audit requires an explicit post-replay packet binding.")
+        expected_packet_hash = _legacy_hash_values([module_a_post_replay.to_json()])
+        if str(audit_packet_hash) != expected_packet_hash:
+            raise HashMismatchError("Replay audit is bound to a different post-replay Module A packet.")
     trace = validate_report_trace(
         report_trace,
         case_id=case_id,
@@ -623,6 +785,7 @@ def create_decision_lock(
         skill_versions=skill_versions or ({"skill": skill_version} if skill_version else {}),
         tool_versions=tool_versions or ({"tool": tool_version} if tool_version else {}),
         report_trace=trace,
+        replay_audit_hash=resolved_replay_audit_hash,
         lock_id=str(lock_id),
     )
     if report is not None:

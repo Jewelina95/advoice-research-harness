@@ -286,6 +286,238 @@
     ]
   },
   {
+    "dataset": "IAEAV",
+    "n": 3,
+    "classes": [
+      "HC",
+      "AD"
+    ],
+    "summary": [
+      {
+        "arm": "supervised",
+        "label": "仅监督",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.5,
+        "macro_f1": 0.4,
+        "log_loss": 0.5292852441500053
+      },
+      {
+        "arm": "agent_only",
+        "label": "仅 Agent",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.5,
+        "macro_f1": 0.4,
+        "log_loss": 1.1008144578865624
+      },
+      {
+        "arm": "supervised_state",
+        "label": "监督+状态",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.5,
+        "macro_f1": 0.4,
+        "log_loss": 0.5292852441500053
+      },
+      {
+        "arm": "supervised_agent",
+        "label": "监督+Agent",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.5,
+        "macro_f1": 0.4,
+        "log_loss": 0.5292852441500053
+      },
+      {
+        "arm": "full_joint",
+        "label": "完整联合",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.5,
+        "macro_f1": 0.4,
+        "log_loss": 0.5292852441500053
+      }
+    ],
+    "changed": 0,
+    "helped": 0,
+    "harmed": 0,
+    "state_gate_rate": 0.0,
+    "agent_gate_rate": 0.0,
+    "staging_gate_rate": 0.0,
+    "conflict_rate": 1.0,
+    "cases": [
+      {
+        "case_id": "iaeav-inv01-002",
+        "truth": "HC",
+        "supervised": "AD",
+        "full_joint": "AD"
+      },
+      {
+        "case_id": "iaeav-inv01-008",
+        "truth": "AD",
+        "supervised": "AD",
+        "full_joint": "AD"
+      },
+      {
+        "case_id": "iaeav-inv01-012",
+        "truth": "AD",
+        "supervised": "AD",
+        "full_joint": "AD"
+      }
+    ]
+  },
+  {
+    "dataset": "PROCESS-2",
+    "n": 3,
+    "classes": [
+      "HC",
+      "MCI",
+      "AD"
+    ],
+    "summary": [
+      {
+        "arm": "supervised",
+        "label": "仅监督",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.75,
+        "macro_f1": 0.5555555555555555,
+        "log_loss": 0.759605070494648
+      },
+      {
+        "arm": "agent_only",
+        "label": "仅 Agent",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.75,
+        "macro_f1": 0.5555555555555555,
+        "log_loss": 0.7581085987896875
+      },
+      {
+        "arm": "supervised_state",
+        "label": "监督+状态",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.75,
+        "macro_f1": 0.5555555555555555,
+        "log_loss": 0.759605070494648
+      },
+      {
+        "arm": "supervised_agent",
+        "label": "监督+Agent",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.75,
+        "macro_f1": 0.5555555555555555,
+        "log_loss": 0.759605070494648
+      },
+      {
+        "arm": "full_joint",
+        "label": "完整联合",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.75,
+        "macro_f1": 0.5555555555555555,
+        "log_loss": 0.759605070494648
+      }
+    ],
+    "changed": 0,
+    "helped": 0,
+    "harmed": 0,
+    "state_gate_rate": 0.0,
+    "agent_gate_rate": 0.0,
+    "staging_gate_rate": 0.0,
+    "conflict_rate": 0.3333333333333333,
+    "cases": [
+      {
+        "case_id": "PROCESS-2_rec__335",
+        "truth": "AD",
+        "supervised": "AD",
+        "full_joint": "AD"
+      },
+      {
+        "case_id": "PROCESS-2_rec__349",
+        "truth": "HC",
+        "supervised": "HC",
+        "full_joint": "HC"
+      },
+      {
+        "case_id": "PROCESS-2_rec__372",
+        "truth": "AD",
+        "supervised": "MCI",
+        "full_joint": "MCI"
+      }
+    ]
+  },
+  {
+    "dataset": "DementiaNet",
+    "n": 3,
+    "classes": [
+      "HC",
+      "AD"
+    ],
+    "summary": [
+      {
+        "arm": "supervised",
+        "label": "仅监督",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.6666666666666666,
+        "macro_f1": 0.4,
+        "log_loss": 1.4968122117342746
+      },
+      {
+        "arm": "agent_only",
+        "label": "仅 Agent",
+        "accuracy": 0.3333333333333333,
+        "balanced_accuracy": 0.3333333333333333,
+        "macro_f1": 0.25,
+        "log_loss": 0.9823344008819633
+      },
+      {
+        "arm": "supervised_state",
+        "label": "监督+状态",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.6666666666666666,
+        "macro_f1": 0.4,
+        "log_loss": 1.4968122117342746
+      },
+      {
+        "arm": "supervised_agent",
+        "label": "监督+Agent",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.6666666666666666,
+        "macro_f1": 0.4,
+        "log_loss": 1.4968122117342746
+      },
+      {
+        "arm": "full_joint",
+        "label": "完整联合",
+        "accuracy": 0.6666666666666666,
+        "balanced_accuracy": 0.6666666666666666,
+        "macro_f1": 0.4,
+        "log_loss": 1.4968122117342746
+      }
+    ],
+    "changed": 0,
+    "helped": 0,
+    "harmed": 0,
+    "state_gate_rate": 0.0,
+    "agent_gate_rate": 0.0,
+    "staging_gate_rate": 0.0,
+    "conflict_rate": 0.3333333333333333,
+    "cases": [
+      {
+        "case_id": "jessejackson",
+        "truth": "AD",
+        "supervised": "AD",
+        "full_joint": "AD"
+      },
+      {
+        "case_id": "jonathanmiller",
+        "truth": "AD",
+        "supervised": "HC",
+        "full_joint": "HC"
+      },
+      {
+        "case_id": "maureenforrester",
+        "truth": "AD",
+        "supervised": "AD",
+        "full_joint": "AD"
+      }
+    ]
+  },
+  {
     "dataset": "NCMMSC2021-AD",
     "n": 3,
     "classes": [

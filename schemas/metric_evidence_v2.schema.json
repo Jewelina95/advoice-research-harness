@@ -13,6 +13,7 @@
     "metric_id": {"type": "string", "minLength": 1},
     "subject_id": {"type": "string", "minLength": 1},
     "session_id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string"},
     "metric_instance_id": {"type": "string", "minLength": 1},
     "state_id": {"type": "string"},
     "task_id": {"type": ["string", "null"]},
@@ -31,6 +32,7 @@
     "inference_permission": {"type": "boolean"},
     "report_permission": {"type": "boolean"},
     "consumed_by_supervised": {"type": "boolean"},
-    "incremental_for_agent": {"type": "boolean"}
+    "incremental_for_agent": {"type": "boolean"},
+    "reliability_migration": {"type": "string"}
   }
 }

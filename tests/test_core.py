@@ -1048,6 +1048,27 @@ def test_qc_orthogonalizer_removes_train_fold_qc_component() -> None:
     assert abs(np.corrcoef(residual, duration)[0, 1]) < 0.02
 
 
+def test_qc_orthogonalizer_preserves_unobservable_state_dimension() -> None:
+    frame = pd.DataFrame(
+        {
+            "state_S01": [0.1, 0.2, 0.3, 0.4],
+            "state_S13": [np.nan, np.nan, np.nan, np.nan],
+            "original_duration_sec": [10.0, 20.0, 30.0, 40.0],
+        }
+    )
+    transformer = QCOrthogonalizer(
+        ("state_S01", "state_S13"),
+        ("original_duration_sec",),
+        alpha=1.0,
+    )
+
+    residual = transformer.fit_transform(frame)
+
+    assert residual.shape == (4, 2)
+    assert np.isfinite(residual).all()
+    assert np.allclose(residual[:, 1], 0.0)
+
+
 def test_branch_specifications_do_not_duplicate_qc_as_disease_evidence() -> None:
     frame = pd.DataFrame(
         {

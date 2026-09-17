@@ -525,6 +525,23 @@ def evaluate_predictions(
     return result
 
 
+def _optional_prediction_metric(
+    frame: pd.DataFrame,
+    bins: int,
+    labels: list[str],
+    positive_class: str,
+    metric: str,
+) -> float:
+    """Evaluate an optional ablation only when its probabilities are estimable."""
+    probability_columns = [f"prob_{label}" for label in labels]
+    if frame.empty or not all(column in frame for column in probability_columns):
+        return np.nan
+    probability = frame[probability_columns].apply(pd.to_numeric, errors="coerce")
+    if not np.isfinite(probability.to_numpy(dtype=float)).all():
+        return np.nan
+    return float(evaluate_predictions(frame, bins, labels, positive_class)[metric])
+
+
 def bootstrap_intervals(
     frame: pd.DataFrame,
     bins: int,
@@ -922,11 +939,11 @@ def build_layer_b(
         ablations["condition"].eq("Ours_overall_state_only")
     ]
     ours_auc = evaluate_predictions(ours, bins, labels, positive_class)["macro_auroc_ovr"]
-    concept_auc = evaluate_predictions(concept, bins, labels, positive_class)["macro_auroc_ovr"] if len(concept) else np.nan
-    overall_state_auc = (
-        evaluate_predictions(overall_state_only, bins, labels, positive_class)["macro_auroc_ovr"]
-        if len(overall_state_only)
-        else np.nan
+    concept_auc = _optional_prediction_metric(
+        concept, bins, labels, positive_class, "macro_auroc_ovr"
+    )
+    overall_state_auc = _optional_prediction_metric(
+        overall_state_only, bins, labels, positive_class, "macro_auroc_ovr"
     )
     ablation_gain = float(ours_auc - concept_auc) if np.isfinite(concept_auc) else np.nan
     task_state_gain = (

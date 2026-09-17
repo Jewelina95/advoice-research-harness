@@ -7,7 +7,7 @@ already fitted Module A remains the sole producer of the replayed packet.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -17,9 +17,13 @@ from .module_a import ExplanationPacket, TaskConditionedStatisticalExpert
 from .state_graph import StateGraphV2
 from .utils import hash_values
 
+if TYPE_CHECKING:
+    from .evidence_revision_batch import EvidenceRevisionBatch
+
 
 REVISION_SCHEMA_VERSION = "advoice.evidence_revision.v1"
 REPLAY_SCHEMA_VERSION = "advoice.evidence_replay.v1"
+ATOMIC_BATCH_REPLAY_SCHEMA_VERSION = "advoice.evidence_revision_batch_replay.v1"
 ALLOWED_DOWNWEIGHT_MULTIPLIERS = frozenset({0.25, 0.5, 0.75})
 RevisionAction = Literal["downweight", "invalidate", "mark_unavailable", "request_remeasurement"]
 GRAPH_FEATURE_PREFIXES = ("state_", "rel_", "available_")
@@ -38,11 +42,33 @@ def evidence_snapshot_hash(evidence: Sequence[MetricEvidenceV2]) -> str:
     }])
 
 
-def replay_revision_hash(revision: "EvidenceRevision | None") -> str:
+def atomic_revision_batch_hash(revisions: Sequence["EvidenceRevision"]) -> str:
+    """Bind one replay identity to the ordered atomic revision identities."""
+
+    atomic = tuple(revisions)
+    if not atomic or any(not isinstance(item, EvidenceRevision) for item in atomic):
+        raise EvidenceRevisionError("An atomic revision batch requires EvidenceRevision items.")
+    return hash_values([{
+        "schema_version": ATOMIC_BATCH_REPLAY_SCHEMA_VERSION,
+        "atomic_revision_hashes": [item.revision_hash for item in atomic],
+    }])
+
+
+def replay_revision_hash(
+    revision: "EvidenceRevision | EvidenceRevisionBatch | None",
+) -> str:
     """Return the explicit revision identity used by replay StateCards."""
 
-    if revision is not None:
+    if isinstance(revision, EvidenceRevision):
         return revision.revision_hash
+    if revision is not None:
+        from .evidence_revision_batch import EvidenceRevisionBatch
+
+        if not isinstance(revision, EvidenceRevisionBatch):
+            raise EvidenceRevisionError("Replay accepts an EvidenceRevision, EvidenceRevisionBatch, or None.")
+        if revision.revisions:
+            return atomic_revision_batch_hash(revision.revisions)
+        return revision.batch_hash
     return hash_values([{
         "schema_version": REVISION_SCHEMA_VERSION,
         "action": "no_revision",
@@ -123,6 +149,98 @@ def _downweighted_reliability(reliability: ReliabilityComponents, multiplier: fl
     )
 
 
+def _apply_validated_revision(
+    evidence: MetricEvidenceV2, revision: EvidenceRevision,
+) -> MetricEvidenceV2:
+    if revision.action == "downweight":
+        return replace(
+            evidence,
+            reliability_components=_downweighted_reliability(
+                evidence.reliability_components, float(revision.reliability_multiplier)
+            ),
+        )
+    if revision.action == "invalidate":
+        return _unavailable(evidence, "invalidated_by_evidence_revision")
+    if revision.action == "mark_unavailable":
+        return _unavailable(evidence, "marked_unavailable_by_evidence_revision")
+    return _unavailable(evidence, "remeasurement_requested_by_evidence_revision")
+
+
+def _validate_revision_batch(
+    snapshot: Sequence[MetricEvidenceV2],
+    revisions: Sequence[EvidenceRevision],
+    *,
+    expected_batch_hash: str | None = None,
+) -> tuple[tuple[MetricEvidenceV2, ...], tuple[EvidenceRevision, ...], str]:
+    """Validate the complete transaction before any replacement is produced."""
+
+    original = tuple(snapshot)
+    ids = [item.evidence_id for item in original]
+    if len(ids) != len(set(ids)):
+        raise EvidenceRevisionError("MetricEvidenceV2 snapshot has duplicate evidence IDs.")
+    baseline_hash = evidence_snapshot_hash(original)
+    if expected_batch_hash is not None and expected_batch_hash != baseline_hash:
+        raise EvidenceRevisionError("Revision batch was created for a stale evidence snapshot.")
+
+    atomic = tuple(revisions)
+    if not atomic:
+        raise EvidenceRevisionError("An atomic revision batch must contain at least one revision.")
+    if any(not isinstance(item, EvidenceRevision) for item in atomic):
+        raise EvidenceRevisionError("An atomic revision batch may contain EvidenceRevision items only.")
+    revision_ids = [item.evidence_id for item in atomic]
+    if len(revision_ids) != len(set(revision_ids)):
+        raise EvidenceRevisionError("An atomic revision batch has duplicate evidence IDs.")
+    expected_hashes = {item.expected_evidence_hash for item in atomic}
+    if len(expected_hashes) != 1:
+        raise EvidenceRevisionError("An atomic revision batch contains mixed evidence snapshot hashes.")
+    if expected_hashes != {baseline_hash}:
+        raise EvidenceRevisionError("Revision batch was created for a stale evidence snapshot.")
+    unknown = sorted(set(revision_ids) - set(ids))
+    if unknown:
+        raise EvidenceRevisionError(
+            f"Revision batch references evidence absent from this snapshot: {unknown}."
+        )
+    return original, atomic, baseline_hash
+
+
+def apply_evidence_revision_batch(
+    snapshot: Sequence[MetricEvidenceV2],
+    batch: "EvidenceRevisionBatch | Sequence[EvidenceRevision]",
+) -> tuple[tuple[MetricEvidenceV2, ...], str]:
+    """Apply all atomic revisions to one original snapshot transactionally."""
+
+    from .evidence_revision_batch import EvidenceRevisionBatch
+
+    if isinstance(batch, EvidenceRevisionBatch):
+        if not batch.revisions:
+            original = tuple(snapshot)
+            ids = [item.evidence_id for item in original]
+            if len(ids) != len(set(ids)):
+                raise EvidenceRevisionError("MetricEvidenceV2 snapshot has duplicate evidence IDs.")
+            baseline_hash = evidence_snapshot_hash(original)
+            if batch.action != "retain" or batch.expected_evidence_hash != baseline_hash:
+                raise EvidenceRevisionError("Revision batch was created for a stale evidence snapshot.")
+            return original, baseline_hash
+        revisions = batch.revisions
+        expected_batch_hash: str | None = batch.expected_evidence_hash
+    elif isinstance(batch, Sequence) and not isinstance(batch, (str, bytes)):
+        revisions = tuple(batch)
+        expected_batch_hash = None
+    else:
+        raise EvidenceRevisionError("Batch replay requires an EvidenceRevisionBatch or revision sequence.")
+
+    original, atomic, _ = _validate_revision_batch(
+        snapshot, revisions, expected_batch_hash=expected_batch_hash,
+    )
+    by_id = {item.evidence_id: item for item in atomic}
+    changed = tuple(
+        _apply_validated_revision(item, by_id[item.evidence_id])
+        if item.evidence_id in by_id else item
+        for item in original
+    )
+    return changed, evidence_snapshot_hash(changed)
+
+
 def apply_evidence_revision(
     snapshot: Sequence[MetricEvidenceV2], revision: EvidenceRevision | None,
 ) -> tuple[tuple[MetricEvidenceV2, ...], str]:
@@ -140,23 +258,10 @@ def apply_evidence_revision(
     matching = [item for item in original if item.evidence_id == revision.evidence_id]
     if not matching:
         raise EvidenceRevisionError("Revision references evidence absent from this snapshot.")
-    changed: list[MetricEvidenceV2] = []
-    for item in original:
-        if item.evidence_id != revision.evidence_id:
-            changed.append(item)
-        elif revision.action == "downweight":
-            changed.append(replace(
-                item,
-                reliability_components=_downweighted_reliability(
-                    item.reliability_components, float(revision.reliability_multiplier)
-                ),
-            ))
-        elif revision.action == "invalidate":
-            changed.append(_unavailable(item, "invalidated_by_evidence_revision"))
-        elif revision.action == "mark_unavailable":
-            changed.append(_unavailable(item, "marked_unavailable_by_evidence_revision"))
-        else:
-            changed.append(_unavailable(item, "remeasurement_requested_by_evidence_revision"))
+    changed = [
+        item if item.evidence_id != revision.evidence_id else _apply_validated_revision(item, revision)
+        for item in original
+    ]
     return tuple(changed), evidence_snapshot_hash(changed)
 
 
@@ -353,7 +458,7 @@ def _module_a_consumed_evidence_ids(
 
 def replay_evidence(
     snapshot: Sequence[MetricEvidenceV2],
-    revision: EvidenceRevision | None,
+    revision: "EvidenceRevision | EvidenceRevisionBatch | None",
     *,
     states_config: Mapping[str, Any],
     module_a: TaskConditionedStatisticalExpert,
@@ -367,7 +472,14 @@ def replay_evidence(
         raise EvidenceRevisionError("Replay requires a fitted, frozen Module A artifact.")
     original = tuple(snapshot)
     parent_hash = evidence_snapshot_hash(original)
-    revised, revised_hash = apply_evidence_revision(original, revision)
+    if revision is None or isinstance(revision, EvidenceRevision):
+        revised, revised_hash = apply_evidence_revision(original, revision)
+    else:
+        from .evidence_revision_batch import EvidenceRevisionBatch
+
+        if not isinstance(revision, EvidenceRevisionBatch):
+            raise EvidenceRevisionError("Replay accepts an EvidenceRevision, EvidenceRevisionBatch, or None.")
+        revised, revised_hash = apply_evidence_revision_batch(original, revision)
     revision_hash = replay_revision_hash(revision)
     graph = build_state_graph_v2(
         revised, states_config, correlation_config=correlation_config,

@@ -31,6 +31,7 @@ from .evidence_replay import (
     EvidenceRevision,
     replay_evidence,
 )
+from .evidence_revision_batch import EvidenceRevisionBatch, EvidenceRevisionBatchError
 from .module_a import ExplanationPacket, TaskConditionedStatisticalExpert
 from .module_b import ConditionalArbitrator, ModuleBPrediction
 from .routing import RouteDecision, route_case
@@ -93,6 +94,50 @@ def _revision_from(value: EvidenceRevision | Mapping[str, Any] | None) -> Eviden
     )
 
 
+def _revision_batch_from(
+    value: EvidenceRevisionBatch | Mapping[str, Any] | None,
+) -> EvidenceRevisionBatch | None:
+    if value is None or isinstance(value, EvidenceRevisionBatch):
+        return value
+    if not isinstance(value, Mapping):
+        raise ConditionalAuthorityError(
+            "revision_batch must be an EvidenceRevisionBatch, mapping, or None."
+        )
+    allowed = {
+        "case_id", "state_id", "action", "expected_evidence_hash", "revisions",
+        "schema_version", "batch_hash",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ConditionalAuthorityError(
+            f"revision_batch includes protected or unknown fields: {unknown}"
+        )
+    raw_revisions = value.get("revisions", ())
+    if not isinstance(raw_revisions, (list, tuple)):
+        raise ConditionalAuthorityError("revision_batch revisions must be a sequence.")
+    revisions: list[EvidenceRevision] = []
+    for item in raw_revisions:
+        parsed = _revision_from(item)
+        if parsed is None:
+            raise ConditionalAuthorityError("revision_batch cannot contain null revisions.")
+        revisions.append(parsed)
+    try:
+        batch = EvidenceRevisionBatch(
+            case_id=str(value.get("case_id", "")),
+            state_id=str(value.get("state_id", "")),
+            action=str(value.get("action", "")),  # type: ignore[arg-type]
+            expected_evidence_hash=str(value.get("expected_evidence_hash", "")),
+            revisions=tuple(revisions),
+            schema_version=str(value.get("schema_version", "advoice.evidence_revision_batch.v1")),
+        )
+    except EvidenceRevisionBatchError as exc:
+        raise ConditionalAuthorityError(f"Invalid revision_batch: {exc}") from exc
+    supplied_hash = value.get("batch_hash")
+    if supplied_hash is not None and str(supplied_hash) != batch.batch_hash:
+        raise ConditionalAuthorityError("revision_batch batch_hash does not match its contents.")
+    return batch
+
+
 @dataclass(frozen=True, slots=True)
 class AgentAuthorityDecision:
     """Structured Agent output accepted by the conditional authority path.
@@ -111,6 +156,7 @@ class AgentAuthorityDecision:
     advisor_current: bool
     ordinal_scores: Mapping[str, int]
     revision: EvidenceRevision | None = None
+    revision_batch: EvidenceRevisionBatch | None = None
     action_type: str = "review"
     incremental_evidence_ids: tuple[str, ...] = ()
     report_trace: tuple[Mapping[str, Any], ...] = ()
@@ -127,6 +173,14 @@ class AgentAuthorityDecision:
                 raise ConditionalAuthorityError(f"Agent decision {field} must be a SHA-256 hash.")
         if not str(self.action_type).strip():
             raise ConditionalAuthorityError("Agent decision action_type is required.")
+        if self.revision is not None and not isinstance(self.revision, EvidenceRevision):
+            raise ConditionalAuthorityError("revision must be an EvidenceRevision or None.")
+        if self.revision_batch is not None and not isinstance(self.revision_batch, EvidenceRevisionBatch):
+            raise ConditionalAuthorityError("revision_batch must be an EvidenceRevisionBatch or None.")
+        if self.revision is not None and self.revision_batch is not None:
+            raise ConditionalAuthorityError(
+                "Agent decision may carry a legacy revision or a revision batch, never both."
+            )
         scores: dict[str, int] = {}
         for key, value in dict(self.ordinal_scores).items():
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 4:
@@ -156,6 +210,9 @@ class AgentAuthorityDecision:
             "advisor_current": bool(self.advisor_current),
             "ordinal_scores": dict(self.ordinal_scores),
             "revision": None if self.revision is None else self.revision.to_dict(),
+            "revision_batch": (
+                None if self.revision_batch is None else self.revision_batch.to_dict()
+            ),
             "action_type": self.action_type,
             "incremental_evidence_ids": list(self.incremental_evidence_ids),
             "report_trace": [dict(item) for item in self.report_trace],
@@ -163,6 +220,17 @@ class AgentAuthorityDecision:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "AgentAuthorityDecision":
+        allowed = {
+            "case_id", "reviewed_packet_hash", "reviewed_evidence_hash",
+            "reviewed_state_graph_hash", "advisor_packet_hash", "advisor_current",
+            "ordinal_scores", "revision", "revision_batch", "action_type",
+            "incremental_evidence_ids", "report_trace",
+        }
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise ConditionalAuthorityError(
+                f"Agent decision includes protected or unknown fields: {unknown}"
+            )
         return cls(
             case_id=str(value.get("case_id", "")),
             reviewed_packet_hash=str(value.get("reviewed_packet_hash", "")),
@@ -172,6 +240,7 @@ class AgentAuthorityDecision:
             advisor_current=_strict_bool(value.get("advisor_current"), "advisor_current"),
             ordinal_scores=value.get("ordinal_scores", {}),
             revision=_revision_from(value.get("revision")),
+            revision_batch=_revision_batch_from(value.get("revision_batch")),
             action_type=str(value.get("action_type", "review")),
             incremental_evidence_ids=_tuple(value.get("incremental_evidence_ids")),
             report_trace=tuple(value.get("report_trace", ())),
@@ -384,7 +453,11 @@ class ConditionalAuthorityExecutor:
         }
 
     @staticmethod
-    def _revision_artifact(case_id: str, replay: EvidenceReplayResult, revision: EvidenceRevision | None) -> dict[str, Any]:
+    def _revision_artifact(
+        case_id: str,
+        replay: EvidenceReplayResult,
+        revision: EvidenceRevision | EvidenceRevisionBatch | None,
+    ) -> dict[str, Any]:
         return {
             "case_id": case_id,
             "snapshot_hash": replay.audit.revision_hash,
@@ -491,6 +564,11 @@ class ConditionalAuthorityExecutor:
             raise ConditionalAuthorityError("Agent ordinal_scores must contain exactly the configured target labels.")
         if decision.revision is not None and decision.revision.expected_evidence_hash != replay_evidence_hash:
             raise StaleAuthorityError("Agent revision references a stale evidence snapshot.")
+        if decision.revision_batch is not None:
+            if decision.revision_batch.case_id != case_id:
+                raise StaleAuthorityError("Agent revision batch is bound to a different case.")
+            if decision.revision_batch.expected_evidence_hash != replay_evidence_hash:
+                raise StaleAuthorityError("Agent revision batch references a stale evidence snapshot.")
 
     @staticmethod
     def _validate_incremental(
@@ -698,13 +776,19 @@ class ConditionalAuthorityExecutor:
         )
         if validation.case_id != case_id or validation.agent_decision_hash != decision.decision_hash:
             raise StaleAuthorityError("Validator result is stale or bound to a different Agent decision.")
-        if decision.revision is not None and decision.revision.evidence_id not in {item.evidence_id for item in supervised}:
+        proposal = decision.revision if decision.revision is not None else decision.revision_batch
+        proposal_ids = (
+            {decision.revision.evidence_id}
+            if decision.revision is not None
+            else set(decision.revision_batch.evidence_ids) if decision.revision_batch is not None else set()
+        )
+        if proposal_ids - {item.evidence_id for item in supervised}:
             raise ConditionalAuthorityError("Agent may only revise evidence consumed by the Module A replay snapshot.")
 
         # Validation governs authority to mutate the evidence snapshot.  A
         # rejected proposal remains visible in the validator artifact, but it
         # cannot reach replay or alter Module A's numerical packet.
-        accepted_revision = decision.revision if validation.approved else None
+        accepted_revision = proposal if validation.approved else None
         post = pre if accepted_revision is None else replay_evidence(
             supervised, accepted_revision, states_config=self.states_config, module_a=self.module_a,
             case_context=context, correlation_config=self.correlation_config,

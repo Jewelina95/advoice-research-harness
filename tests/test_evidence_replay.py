@@ -7,13 +7,16 @@ from advoice.evidence import MetricEvidenceV2, ReferenceMetadata
 from advoice.evidence_replay import (
     EvidenceRevision,
     EvidenceRevisionError,
+    atomic_revision_batch_hash,
+    apply_evidence_revision_batch,
     apply_evidence_revision,
     build_state_graph_v2,
     evidence_snapshot_hash,
     replay_revision_hash,
     replay_evidence,
 )
-from advoice.module_a import TaskConditionedStatisticalExpert
+from advoice.evidence_revision_batch import EvidenceRevisionBatch
+from advoice.module_a import TaskConditionedStatisticalExpert, snapshot_hash
 
 
 def _snapshot() -> tuple[MetricEvidenceV2, ...]:
@@ -42,6 +45,30 @@ def _expert() -> TaskConditionedStatisticalExpert:
 
 def _states() -> dict:
     return {"states": [{"id": "S01", "metrics": ["a", "b"], "weights": [1.0, 1.0]}]}
+
+
+def _batch(
+    snapshot: tuple[MetricEvidenceV2, ...],
+    *,
+    expected_hash: str | None = None,
+) -> EvidenceRevisionBatch:
+    snapshot_hash = expected_hash or evidence_snapshot_hash(snapshot)
+    revisions = tuple(
+        EvidenceRevision(
+            evidence_id=evidence_id,
+            action="downweight",
+            expected_evidence_hash=snapshot_hash,
+            reliability_multiplier=0.25,
+        )
+        for evidence_id in ("metric:a", "metric:b")
+    )
+    return EvidenceRevisionBatch(
+        case_id="case-1",
+        state_id="S01",
+        action="downweight",
+        expected_evidence_hash=snapshot_hash,
+        revisions=revisions,
+    )
 
 
 def test_accepted_revision_rebuilds_numeric_state_and_packet() -> None:
@@ -74,6 +101,90 @@ def test_replay_audit_is_idempotent() -> None:
 
     assert first.audit == second.audit
     assert first.packet.to_json() == second.packet.to_json()
+
+
+def test_batch_replay_applies_every_metric_atomically_and_binds_combined_hash() -> None:
+    snapshot = _snapshot()
+    batch = _batch(snapshot)
+
+    result = replay_evidence(snapshot, batch, states_config=_states(), module_a=_expert())
+
+    assert [
+        item.reliability_components.measurement_stability
+        for item in result.revised_evidence
+    ] == [0.25, 0.25]
+    assert result.audit.revision_hash == replay_revision_hash(batch)
+    assert result.audit.revision_hash not in {item.revision_hash for item in batch.revisions}
+    assert result.audit.revision_hash == atomic_revision_batch_hash(batch.revisions)
+    assert set(result.state_graph.cards["revision_hash"]) == {result.audit.revision_hash}
+    assert set(result.state_graph.cards["state_revision_hash"]) == {result.audit.revision_hash}
+    assert result.packet.hashes["evidence_snapshot_hash"] == snapshot_hash({
+        "evidence_hash": result.audit.evidence_hash,
+        "revision_hash": result.audit.revision_hash,
+    })
+    assert result.packet.hashes["state_snapshot_hash"] == snapshot_hash({
+        "state_hash": result.state_graph.state_hash,
+        "state_wide": result.state_graph.wide.to_dict("records"),
+    })
+
+
+def test_batch_replay_hash_is_deterministic_for_ordered_atomic_revisions() -> None:
+    snapshot = _snapshot()
+    first = replay_evidence(snapshot, _batch(snapshot), states_config=_states(), module_a=_expert())
+    second = replay_evidence(snapshot, _batch(snapshot), states_config=_states(), module_a=_expert())
+
+    assert first.audit.revision_hash == second.audit.revision_hash
+    assert first.audit == second.audit
+    assert first.packet.to_json() == second.packet.to_json()
+    assert atomic_revision_batch_hash(_batch(snapshot).revisions) != atomic_revision_batch_hash(
+        tuple(reversed(_batch(snapshot).revisions))
+    )
+
+
+def test_batch_prevalidation_rejects_stale_member_without_partial_application() -> None:
+    snapshot = _snapshot()
+    stale_batch = _batch(snapshot, expected_hash="f" * 64)
+    mixed = (
+        _batch(snapshot).revisions[0],
+        stale_batch.revisions[1],
+    )
+    before = tuple(item.to_json() for item in snapshot)
+
+    with pytest.raises(EvidenceRevisionError, match="stale"):
+        apply_evidence_revision_batch(snapshot, stale_batch)
+    with pytest.raises(EvidenceRevisionError, match="mixed"):
+        apply_evidence_revision_batch(snapshot, mixed)
+
+    assert tuple(item.to_json() for item in snapshot) == before
+
+
+def test_batch_prevalidation_rejects_duplicate_and_unknown_evidence_ids() -> None:
+    snapshot = _snapshot()
+    snapshot_hash = evidence_snapshot_hash(snapshot)
+    duplicate = EvidenceRevision(
+        evidence_id="metric:a", action="invalidate", expected_evidence_hash=snapshot_hash,
+    )
+    unknown = EvidenceRevision(
+        evidence_id="metric:unknown", action="invalidate", expected_evidence_hash=snapshot_hash,
+    )
+
+    with pytest.raises(EvidenceRevisionError, match="duplicate"):
+        apply_evidence_revision_batch(snapshot, (duplicate, duplicate))
+    with pytest.raises(EvidenceRevisionError, match="absent"):
+        apply_evidence_revision_batch(snapshot, (duplicate, unknown))
+
+
+def test_retain_batch_still_rejects_duplicate_snapshot_ids() -> None:
+    snapshot = (_snapshot()[0], _snapshot()[0])
+    batch = EvidenceRevisionBatch(
+        case_id="case-1",
+        state_id="S01",
+        action="retain",
+        expected_evidence_hash=evidence_snapshot_hash(snapshot),
+    )
+
+    with pytest.raises(EvidenceRevisionError, match="duplicate"):
+        apply_evidence_revision_batch(snapshot, batch)
 
 
 def test_replay_binds_revision_hash_to_every_state_card_and_state_hash() -> None:

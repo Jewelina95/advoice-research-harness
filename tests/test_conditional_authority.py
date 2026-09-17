@@ -15,6 +15,7 @@ from advoice.conditional_authority import (
 from advoice.decision_lock import hash_artifact
 from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2, ReferenceMetadata
 from advoice.evidence_replay import EvidenceRevision, replay_evidence
+from advoice.evidence_revision_batch import EvidenceRevisionBatch
 from advoice.module_a import TaskConditionedStatisticalExpert
 from advoice.module_b import ConditionalArbitrator, compute_fit_subject_hash
 
@@ -151,6 +152,7 @@ def _prepared_decision(
     evidence: tuple[MetricEvidenceV2, ...],
     *,
     revision: EvidenceRevision | None = None,
+    revision_batch: EvidenceRevisionBatch | None = None,
     incremental_ids: tuple[str, ...] = (),
     stale_packet: bool = False,
     trace_post_revision: bool = True,
@@ -167,8 +169,9 @@ def _prepared_decision(
     pre_packet_hash = hash_artifact(
         executor._packet_artifact("case-1", pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
     )
-    post = pre if revision is None or not trace_post_revision else replay_evidence(
-        supervised, revision, states_config=STATES, module_a=executor.module_a, **replay_kwargs
+    proposed_revision = revision if revision is not None else revision_batch
+    post = pre if proposed_revision is None or not trace_post_revision else replay_evidence(
+        supervised, proposed_revision, states_config=STATES, module_a=executor.module_a, **replay_kwargs
     )
     cards = executor._state_cards(case_id="case-1", replay=post, revision_hash=post.audit.revision_hash)
     card = next(item for item in cards if item["available"] and item["report_permission"])
@@ -192,6 +195,7 @@ def _prepared_decision(
         advisor_current=True,
         ordinal_scores={"HC": 0, "MCI": 2, "AD": 4},
         revision=revision,
+        revision_batch=revision_batch,
         action_type="review",
         incremental_evidence_ids=incremental_ids,
         report_trace=trace,
@@ -215,6 +219,32 @@ def _validation(decision: AgentAuthorityDecision, *, incremental_ids: tuple[str,
 
 def _rejected_validation(decision: AgentAuthorityDecision) -> AuthorityValidation:
     return replace(_validation(decision), approved=False)
+
+
+def _revision_batch(evidence: tuple[MetricEvidenceV2, ...]) -> EvidenceRevisionBatch:
+    supervised = tuple(item for item in evidence if item.consumed_by_supervised)
+    expected_hash = replay_evidence(
+        supervised, None, states_config=STATES, module_a=_expert(),
+    ).audit.evidence_hash
+    revisions = tuple(
+        EvidenceRevision(
+            evidence_id=evidence_id,
+            action="downweight",
+            expected_evidence_hash=expected_hash,
+            reliability_multiplier=multiplier,
+        )
+        for evidence_id, multiplier in (
+            ("metric:pause-a", .25),
+            ("metric:pause-b", .75),
+        )
+    )
+    return EvidenceRevisionBatch(
+        case_id="case-1",
+        state_id="S01",
+        action="downweight",
+        expected_evidence_hash=expected_hash,
+        revisions=revisions,
+    )
 
 
 def _segments() -> tuple[dict[str, str], ...]:
@@ -321,6 +351,103 @@ def test_consumed_revision_replays_module_a_without_module_b_double_vote() -> No
     assert result.pre_replay.packet.raw_probabilities != result.post_replay.packet.raw_probabilities
     assert result.module_b.probabilities == (result.post_replay.packet.calibrated_probabilities or result.post_replay.packet.raw_probabilities)
     assert not result.module_b.additive_correction_applied
+
+
+def test_consumed_revision_batch_replays_all_metrics_through_module_a_once(monkeypatch) -> None:
+    executor = _executor()
+    evidence = _evidence()
+    batch = _revision_batch(evidence)
+    decision = _prepared_decision(executor, evidence, revision_batch=batch)
+    prepared = executor.prepare_case(case_metadata=CASE, evidence=evidence)
+    calls = 0
+    explain_case = executor.module_a.explain_case
+
+    def counted_explain_case(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return explain_case(*args, **kwargs)
+
+    monkeypatch.setattr(executor.module_a, "explain_case", counted_explain_case)
+    result = executor.finalize_case(
+        prepared=prepared,
+        agent_decision=decision,
+        validator=_validation(decision),
+        segments=_segments(),
+        lock_id="lock-revision-batch",
+    )
+
+    assert calls == 1
+    assert result.pre_replay.packet.raw_probabilities != result.post_replay.packet.raw_probabilities
+    assert result.post_replay.audit.revision_hash not in {
+        item.revision_hash for item in batch.revisions
+    }
+    assert result.module_b.consumed_evidence_ids == ("metric:pause-a", "metric:pause-b")
+    assert result.module_b.incremental_evidence_ids == ()
+    assert not result.module_b.additive_correction_applied
+
+
+def test_agent_decision_batch_mapping_round_trip_and_legacy_revision_unchanged() -> None:
+    executor = _executor()
+    evidence = _evidence()
+    batch_decision = _prepared_decision(executor, evidence, revision_batch=_revision_batch(evidence))
+    restored_batch = AgentAuthorityDecision.from_mapping(batch_decision.to_dict())
+
+    assert restored_batch == batch_decision
+    assert restored_batch.revision is None
+    assert restored_batch.revision_batch == batch_decision.revision_batch
+
+    baseline = replay_evidence(evidence, None, states_config=STATES, module_a=executor.module_a)
+    legacy_revision = EvidenceRevision(
+        evidence_id="metric:pause-a",
+        action="invalidate",
+        expected_evidence_hash=baseline.audit.evidence_hash,
+    )
+    legacy = _prepared_decision(
+        executor, evidence, revision=legacy_revision, trace_post_revision=False,
+    )
+    restored_legacy = AgentAuthorityDecision.from_mapping(legacy.to_dict())
+    assert restored_legacy.revision == legacy_revision
+    assert restored_legacy.revision_batch is None
+
+
+def test_agent_decision_rejects_both_revision_forms_and_unknown_batch_fields() -> None:
+    executor = _executor()
+    evidence = _evidence()
+    batch = _revision_batch(evidence)
+    legacy = batch.revisions[0]
+    decision = _prepared_decision(executor, evidence)
+
+    with pytest.raises(ConditionalAuthorityError, match="never both"):
+        replace(decision, revision=legacy, revision_batch=batch)
+
+    mapping = decision.to_dict()
+    mapping["revision_batch"] = {**batch.to_dict(), "protected": "forbidden"}
+    with pytest.raises(ConditionalAuthorityError, match="unknown"):
+        AgentAuthorityDecision.from_mapping(mapping)
+
+
+def test_rejected_validation_never_replays_revision_batch(monkeypatch) -> None:
+    executor = _executor()
+    evidence = _evidence()
+    batch = _revision_batch(evidence)
+    decision = _prepared_decision(
+        executor, evidence, revision_batch=batch, trace_post_revision=False,
+    )
+    prepared = executor.prepare_case(case_metadata=CASE, evidence=evidence)
+
+    def forbidden_replay(*args, **kwargs):
+        raise AssertionError("rejected batch reached replay")
+
+    monkeypatch.setattr("advoice.conditional_authority.replay_evidence", forbidden_replay)
+    result = executor.finalize_case(
+        prepared=prepared,
+        agent_decision=decision,
+        validator=_rejected_validation(decision),
+        segments=_segments(),
+        lock_id="lock-rejected-batch",
+    )
+
+    assert result.post_replay is prepared.pre_replay
 
 
 def test_prepare_case_freezes_every_hash_required_by_agent_decision() -> None:

@@ -33,6 +33,20 @@ def parser() -> argparse.ArgumentParser:
     agent_led.add_argument("--max-steps", type=int, default=16)
     agent_led.add_argument("--max-cases", type=int)
     agent_led.add_argument("--truth", type=Path, help="Evaluation-only JSON mapping case_id to label; never sent to the Agent")
+    study = commands.add_parser(
+        "agent-led-study",
+        help="Run a label-blind frozen-cohort Agent study and compare exact-case baselines",
+    )
+    study.add_argument("--dataset-id", required=True)
+    study.add_argument("--artifact-dir", type=Path, required=True)
+    study.add_argument("--output-dir", type=Path, required=True)
+    study.add_argument("--labels", nargs="+", required=True)
+    study.add_argument("--provider", choices=["disabled", "openai_api"], default="disabled")
+    study.add_argument("--model", default=None)
+    study.add_argument("--max-steps", type=int, default=16)
+    study.add_argument("--max-cases", type=int)
+    study.add_argument("--selection-seed", type=int, default=20260917)
+    study.add_argument("--confirm-external-data-permission", action="store_true")
     validate = commands.add_parser("validate")
     validate.add_argument("--dataset", default="NCMMSC2021_AD")
     run = commands.add_parser("run")
@@ -89,6 +103,20 @@ def main() -> None:
 
 
 def _dispatch(args: argparse.Namespace) -> None:
+    if args.command == "agent-led-study":
+        from .agent_led_study import run_agent_led_study
+        from .config import load_yaml
+        p = paths()
+        model = args.model or load_yaml(p.configs / "agents" / "default.yaml")["model"]
+        result = run_agent_led_study(
+            p.root, args.artifact_dir, args.output_dir,
+            dataset_id=args.dataset_id, labels=args.labels, provider=args.provider,
+            model=model, max_cases=args.max_cases, selection_seed=args.selection_seed,
+            max_steps=args.max_steps,
+            confirm_external_data_permission=args.confirm_external_data_permission,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.command == "agent-led":
         from .agent_led_run import run_agent_led_cohort
         from .config import load_yaml
@@ -141,3 +169,7 @@ def _dispatch(args: argparse.Namespace) -> None:
     if args.command == "clean-cache":
         clean_cache(args.dataset)
         return
+
+
+if __name__ == "__main__":
+    main()

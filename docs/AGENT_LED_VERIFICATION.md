@@ -12,7 +12,7 @@ implemented waveform extractor. Missing measurement replay is not simulated.
 
 ## Software checks
 
-On 2026-09-17, the full Python test suite passed: **437 tests**. Dependencies emitted
+On 2026-09-17, the full Python test suite passed: **444 tests**. Dependencies emitted
 existing pandas/scipy/pkg_resources/OpenBLAS warnings; these were not hidden.
 `git diff --check` passed.
 

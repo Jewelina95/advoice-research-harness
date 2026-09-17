@@ -19,7 +19,7 @@ Both new margins default to zero (no deterioration). Optional agent settings
 `diagnostic_agent_log_loss_noninferiority_margin` and
 `diagnostic_agent_brier_noninferiority_margin` must be specified before the
 development comparison, not chosen after inspecting candidate results. No
-configuration defaults or F1/AUROC thresholds were changed. Margins must be
+F1/AUROC thresholds were changed. Margins must be
 finite and nonnegative and are recorded with the selection result.
 
 Log loss is mean negative natural log probability of the true class, with
@@ -62,12 +62,25 @@ versioned burden rule, followed by fresh development calibration. The typed
 interface validates structure, not medical truth. Merely supplying a string or
 renaming potential tags is insufficient.
 
-This patch does not change the separate static-tag feature in Condition C's
-supervised quality frame; that remains with its training owner. No pipeline,
-configuration, training, or cached result files were modified by this change.
+The separate static-tag feature in Condition C's supervised quality frame is
+still a heuristic, not an observed medical assessment. Its presence does not
+authorize an Agent correction.
+
+## Independent calibration participants
+
+The current default reserves a dedicated development partition before supervised
+model selection for eligible datasets. Runtime refuses selection-dependent OOF
+artifacts, calibration/test overlap, or missing workspace provenance before a
+paid calibration request. Small datasets can train the supervised heads but do
+not bypass this boundary. See [Evidence execution](EVIDENCE_EXECUTION.md) for the
+partition policy and the distinction between evaluation and clinical release.
 
 ## State execution boundary
 
-State updates still enforce evidence permissions rather than rebuilding states
-or rerunning supervised heads. Real state reaggregation remains a separate
-scorer design. The calibration and confound changes do not claim to implement it.
+Validated state edits now produce a reviewed snapshot and remove excluded IDs.
+They still do not rerun supervised heads. The system withholds clinical risk
+publication until scorer replay is available; it cannot send a withheld case to
+the report-writing API to regenerate a diagnosis from an unchanged prior.
+Full-cohort evaluation retains the numerical fallback with an explicit release
+flag. These cases do not calibrate numerical Agent correction using stale priors.
+Real state reaggregation and scorer replay remain a separate, required design.

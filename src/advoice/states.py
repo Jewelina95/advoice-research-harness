@@ -56,6 +56,14 @@ def _normalize_evidence_schema(frame: pd.DataFrame) -> pd.DataFrame:
             normalized[column] = default
     if "metric_instance_id" not in normalized.columns:
         normalized["metric_instance_id"] = normalized["metric_id"]
+    for column, default in (("missing", True), ("report_permission", False)):
+        if column in normalized:
+            normalized[column] = (
+                normalized[column].astype("string").str.strip().str.lower()
+                .map({"true": True, "false": False, "1": True, "0": False,
+                      "1.0": True, "0.0": False})
+                .fillna(default).astype(bool)
+            )
     return normalized
 
 
@@ -108,7 +116,7 @@ def build_fold_calibrated_state_frame(
                 )
             )
             part = scoped_rows.copy()
-            values = pd.to_numeric(part["value"], errors="coerce")
+            values = pd.to_numeric(part["value"], errors="coerce").replace([np.inf, -np.inf], np.nan)
             missing = values.isna() | (not available)
             part["fold_directional_z"] = np.where(
                 missing,
@@ -262,17 +270,28 @@ def _segment_evidence(
     return rows
 
 
-def build_state_cards(
-    evidence_path: Path,
-    recording_features_path: Path,
-    segments_path: Path,
+def build_state_cards_frame(
+    evidence: pd.DataFrame,
     states_config: dict[str, Any],
-    state_cards_path: Path,
-    state_wide_path: Path,
-) -> None:
-    evidence = _normalize_evidence_schema(pd.read_csv(evidence_path, dtype={"subject_id": str}))
-    recordings = pd.read_csv(recording_features_path, dtype={"subject_id": str})
-    segments = pd.read_csv(segments_path)
+    *,
+    recordings: pd.DataFrame | None = None,
+    segments: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate calibrated metric evidence into (cards, wide), without I/O.
+
+    Evidence must contain the expected applicable grid from build_metric_evidence,
+    optionally fold-recalibrated. This function does not refit references or infer
+    applicability from the state config. Model scores include all usable metrics;
+    report scores and citations use only report-permitted metrics. Optional paired
+    recording/segment frames enrich traces only; omitted frames yield metric traces.
+    Inputs are not mutated.
+    """
+    evidence = _normalize_evidence_schema(evidence)
+    if (recordings is None) != (segments is None):
+        raise ValueError("recordings and segments must be supplied together")
+    if recordings is None:
+        recordings = pd.DataFrame(columns=["case_id", "subject_id", "task_type"])
+        segments = pd.DataFrame(columns=["case_id"])
     recording_index = recordings[["case_id", "subject_id", "task_type"]].copy()
     recording_index["case_id"] = recording_index["case_id"].astype(str)
     recording_index["task_scope"] = recording_index["task_type"].fillna("").map(
@@ -303,9 +322,9 @@ def build_state_cards(
             {
                 "metric_id": metric_id,
                 "state_base_id": definition["id"],
-                "state_name_zh": definition["name_zh"],
-                "state_branch": definition["branch"],
-                "clinical_question": definition["clinical_question"],
+                "state_name_zh": definition.get("name_zh", definition["id"]),
+                "state_branch": definition.get("branch", "unassigned"),
+                "clinical_question": definition.get("clinical_question", ""),
                 "configured_weight": float(weight),
             }
             for definition in states_config["states"]
@@ -386,7 +405,8 @@ def build_state_cards(
                 / report_denominator
             )
             report_confidence = report_denominator / max(
-                float(reportable["configured_weight"].sum()), 1e-9
+                float(state.loc[state["report_permission"], "configured_weight"].sum()),
+                1e-9,
             )
         else:
             report_state_z, report_confidence = 0.0, 0.0
@@ -472,9 +492,26 @@ def build_state_cards(
             }
         )
     cards = pd.DataFrame(rows)
-    cards.to_csv(state_cards_path, index=False)
     identity = ["dataset_id", "subject_id", "label", "split"]
     score = cards.pivot(index=identity, columns="state_id", values="state_z").add_prefix("state_")
     confidence = cards.pivot(index=identity, columns="state_id", values="confidence").add_prefix("rel_")
     wide = score.join(confidence).reset_index()
+    return cards, wide
+
+
+def build_state_cards(
+    evidence_path: Path,
+    recording_features_path: Path,
+    segments_path: Path,
+    states_config: dict[str, Any],
+    state_cards_path: Path,
+    state_wide_path: Path,
+) -> None:
+    cards, wide = build_state_cards_frame(
+        pd.read_csv(evidence_path, dtype={"subject_id": str}),
+        states_config,
+        recordings=pd.read_csv(recording_features_path, dtype={"subject_id": str}),
+        segments=pd.read_csv(segments_path),
+    )
+    cards.to_csv(state_cards_path, index=False)
     wide.to_csv(state_wide_path, index=False)

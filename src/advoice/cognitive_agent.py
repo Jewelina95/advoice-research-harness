@@ -21,6 +21,7 @@ from .diagnostic_agent import (
     route_case,
 )
 from .utils import hash_values, json_dump, json_load, now_utc
+from .evidence_review import apply_reviewed_snapshot
 
 
 SKILL_FILES = [
@@ -876,6 +877,7 @@ def validate_candidate(
         # Compatibility alias for downstream readers of 8.27 audit files.
         "normalized_probabilities": probabilities,
         "rollback": bool(violations),
+        "invalidated_evidence_ids": sorted(invalidated_evidence),
     }
     if hierarchical_scores:
         result["normalized_screening_likelihoods"] = {
@@ -965,6 +967,8 @@ def _prediction_rows(
         state_update_factor = float(audit.get("state_update_factor", 0.0)) if audit else 0.0
         gate = raw_gate * state_update_factor
         candidate_valid = bool(candidate and audit and audit["valid"])
+        reviewed = apply_reviewed_snapshot(workspace, candidate or {}, audit or {})
+        replay_required = bool(reviewed.get("evidence_revision", {}).get("state_replay_required"))
         hierarchical_agent = bool(
             audit
             and "normalized_screening_likelihoods" in audit
@@ -972,6 +976,7 @@ def _prediction_rows(
         )
         eligible = bool(
             candidate_valid
+            and not replay_required
             and action == "classify"
             and (correction_strength > 0 or staging_correction_strength > 0)
             and gate > 0
@@ -1051,6 +1056,8 @@ def _prediction_rows(
                 if candidate and audit and not audit["valid"]
                 else "held_supervised_prior"
             )
+        if replay_required:
+            status = "state_replay_required"
         decision_changed = bool(labels[int(np.argmax(final))] != str(item["predicted_label"]))
         row = dict(item)
         row.update({f"prob_{label}": float(final[index]) for index, label in enumerate(labels)})
@@ -1068,9 +1075,10 @@ def _prediction_rows(
         row["agent_candidate_valid"] = candidate_valid
         row["agent_correction_applied"] = correction_applied
         row["agent_decision_changed"] = decision_changed
+        row["prediction_released"] = not replay_required
         rows.append(row)
         if workspace:
-            locked = json.loads(json.dumps(workspace, ensure_ascii=False))
+            locked = reviewed
             locked["supervised_prior_probabilities"] = {
                 label: float(base[0, index]) for index, label in enumerate(labels)
             }
@@ -1082,6 +1090,8 @@ def _prediction_rows(
             }
             locked["final_prediction"] = row["predicted_label"]
             locked["agent_decision_status"] = status
+            locked["prediction_released"] = not replay_required
+            locked["released_probabilities"] = locked["final_probabilities"] if not replay_required else None
             locked_workspaces.append(locked)
     return pd.DataFrame(rows), locked_workspaces
 
@@ -1100,6 +1110,29 @@ def _test_agent_gate_passed(
         and calibration_summary.get("selection_status") == "validated_joint_gain"
         and (correction_strength > 0.0 or staging_correction_strength > 0.0)
     )
+
+
+def _calibration_partition_error(
+    calibration: pd.DataFrame,
+    test: pd.DataFrame,
+    workspaces: dict[str, dict[str, Any]],
+    minimum_cases: int = 1,
+) -> str | None:
+    if calibration.empty or calibration.subject_id.astype(str).duplicated().any():
+        return "empty_or_duplicate_calibration_subjects"
+    if set(calibration.subject_id.astype(str)) & set(test.subject_id.astype(str)):
+        return "calibration_test_overlap"
+    for column in ("selection_independent", "dedicated_calibration_holdout"):
+        if column not in calibration or not calibration[column].astype(str).str.lower().eq("true").all():
+            return "unverified_independent_calibration"
+    for subject_id in calibration.subject_id.astype(str):
+        provenance = workspaces.get(case_pseudonym(subject_id), {}).get("oof_provenance", {})
+        if (provenance.get("selection_independent") is not True
+                or provenance.get("dedicated_calibration_holdout") is not True):
+            return "unverified_calibration_workspace"
+    if len(calibration) < minimum_cases:
+        return "insufficient_calibration_subjects"
+    return None
 
 
 def run_cognitive_diagnostic_agent(
@@ -1341,11 +1374,13 @@ def run_cognitive_diagnostic_agent(
             calibration_predictions_path, dtype={"subject_id": str}
         )
         calibration_workspaces = _read_workspaces(calibration_workspaces_path)
+        minimum_cases = max(len(labels) * 5, int(agents_config.get("diagnostic_agent_min_calibration_cases", 30)))
+        partition_error = _calibration_partition_error(calibration_prior, prior, calibration_workspaces, minimum_cases)
         calibration_cases = [
             blind_workspace(calibration_workspaces[case_pseudonym(subject_id)])
             for subject_id in calibration_prior["subject_id"].astype(str)
             if case_pseudonym(subject_id) in calibration_workspaces
-        ]
+        ] if partition_error is None else []
         calibration_decisions = request_cases(
             calibration_cases, "cognitive_agent_calibration"
         )
@@ -1386,6 +1421,8 @@ def run_cognitive_diagnostic_agent(
                 and audit
                 and audit["valid"]
                 and str(candidate.get("action")) == "classify"
+                and not apply_reviewed_snapshot(workspace, candidate, audit).get(
+                    "evidence_revision", {}).get("state_replay_required", False)
             ):
                 likelihood = [
                     float(audit["normalized_evidence_likelihoods"][label])
@@ -1546,7 +1583,8 @@ def run_cognitive_diagnostic_agent(
             correction_strength = 0.0
             staging_correction_strength = 0.0
             calibration_summary = {
-                "status": "failed_closed_insufficient_valid_cases",
+                "status": "failed_closed_invalid_calibration_partition" if partition_error else "failed_closed_insufficient_valid_cases",
+                "partition_error": partition_error,
                 "available_cases": int(len(calibration_prior)),
                 "agent_returned_cases": int(len(calibration_decisions)),
                 "valid_classify_cases": int(valid_classify_count),

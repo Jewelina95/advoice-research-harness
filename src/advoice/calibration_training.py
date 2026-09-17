@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from math import ceil
 from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
@@ -24,13 +25,28 @@ def train_with_dedicated_calibration(train: Callable, arguments: dict[str, Any])
     arguments["models_config"] = models
     features = pd.read_csv(arguments["subject_features_path"], dtype={"subject_id": str})
     eligible = features[features.split.eq("train")]
-    if (len(eligible) < int(config.get("minimum_training_subjects", 120))
-            or eligible.label.value_counts().min() < 4):
-        train(**arguments)
-        return
     fraction = float(config.get("fraction", .2))
     if not 0 < fraction < .5:
         raise ValueError("Dedicated calibration fraction must be between zero and 0.5.")
+    planned_count = ceil(len(eligible) * fraction)
+    reason = None
+    if (len(eligible) < int(config.get("minimum_training_subjects", 120))
+            or eligible.label.value_counts().min() < 4):
+        reason = "insufficient_training_subjects"
+    elif planned_count < int(config.get("minimum_calibration_subjects", 30)):
+        reason = "insufficient_calibration_subjects"
+    if reason is not None:
+        train(**arguments)
+        partition = {"status": "not_eligible", "reason": reason,
+                     "planned_calibration_subjects": planned_count,
+                     "selection_independent": False}
+        metadata = json.loads(Path(arguments["metadata_path"]).read_text())
+        metadata["dedicated_calibration"] = partition
+        json_dump(metadata, arguments["metadata_path"])
+        bundle = joblib.load(arguments["model_path"])
+        bundle["dedicated_calibration"] = partition
+        joblib.dump(bundle, arguments["model_path"])
+        return
     fit_ids, calibration_ids = train_test_split(
         eligible.subject_id.astype(str).to_numpy(), test_size=fraction,
         random_state=int(config.get("seed", 20260917)), stratify=eligible.label.astype(str),

@@ -5,7 +5,7 @@ protocol; the corrected implementation is under review on a separate Git branch.
 
 ## Current review
 
-- 323 automated tests passed locally with plugin autoload disabled.
+- 325 automated tests passed locally with plugin autoload disabled.
 - Four public synthetic examples executed successfully, without clinical diagnosis.
 - Four processed-input task pilots retrain condition C, with frozen historical
   preprocessing/B1/B2 and no live Agent: ADReSS2020 internal holdout, ADReSSo
@@ -22,6 +22,8 @@ protocol; the corrected implementation is under review on a separate Git branch.
   supervised model selection. Historical selection-dependent calibration files
   fail closed. Calibration and inference share state aggregation; expected missing
   evidence remains in coverage denominators, and coverage is batch-independent.
+- A proposed calibration cohort below the required size is rejected before
+  splitting or paid API calls; the supervised model retains its training cases.
 - Validated state edits create a reviewed snapshot and withhold clinical risk
   until scorer replay is implemented. API report writing cannot bypass this.
   State scorer replay and validated confound assessment remain release blockers.

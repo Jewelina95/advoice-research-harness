@@ -35,9 +35,10 @@ def test_overlapping_subjects_and_missing_workspace_are_rejected():
     assert _calibration_partition_error(calibration, test, {}) == "unverified_calibration_workspace"
 
 
-def test_invalid_partition_does_not_make_api_requests(tmp_path, monkeypatch):
+@pytest.mark.parametrize("independent", [False, True])
+def test_invalid_partition_does_not_make_api_requests(tmp_path, monkeypatch, independent):
     calibration, test, workspaces = _inputs()
-    calibration["selection_independent"] = False
+    calibration["selection_independent"] = independent
     for frame in (calibration, test):
         frame["label"] = "HC"
         frame["predicted_label"] = "HC"
@@ -64,6 +65,7 @@ def test_invalid_partition_does_not_make_api_requests(tmp_path, monkeypatch):
     )
     status = json.loads((tmp_path / "calibration.json").read_text())
     assert status["status"] == "failed_closed_invalid_calibration_partition"
-    assert status["partition_error"] == "unverified_independent_calibration"
+    assert status["partition_error"] == (
+        "insufficient_calibration_subjects" if independent else "unverified_independent_calibration")
     predictions = pd.read_csv(tmp_path / "predictions.csv")
     assert predictions.prob_HC.tolist() == [.8]

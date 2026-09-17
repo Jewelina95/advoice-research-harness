@@ -42,6 +42,7 @@ condition_c:
     enabled: true
     fraction: 0.20
     minimum_training_subjects: 120
+    minimum_calibration_subjects: 30
     seed: 20260917
   small_sample_correction_guard:
     enabled: true

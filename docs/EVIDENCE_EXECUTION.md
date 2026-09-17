@@ -29,7 +29,8 @@ SpeechCARE. Licensed recordings and participant-level predictions remain local.
 
 For eligible datasets, the default configuration reserves 20% of the original
 training participants before either supervised module selects or fits models.
-The threshold is 120 training participants with sufficient class support. The
+Eligibility requires at least 120 training participants, sufficient class support,
+and at least 30 participants in the proposed calibration partition. The
 remaining fit partition supplies reference distributions and all supervised
 selection. Original test participants remain untouched. Frozen encoder caches
 can be reused only after their existing model/input fingerprint checks.
@@ -39,6 +40,11 @@ calibration files explicitly declare the dedicated holdout. Runtime rejects
 overlap, duplicate calibration participants, missing independence declarations,
 and workspaces without matching provenance before requesting Agent calibration.
 Selection-dependent historical OOF files are not accepted as independent data.
+The calibration-size check runs before splitting and before paid API requests.
+For example, 120 participants with a 20% fraction yield only 24 calibration cases;
+this does not satisfy the default 30-case gate. The supervised model keeps all
+120 training participants instead of reserving a cohort that cannot enable
+correction. This decision uses cohort counts, not held-out accuracy.
 
 Small datasets still train the supervised pipeline, but do not gain permission
 to change clinical probabilities using unvalidated Agent corrections. The size

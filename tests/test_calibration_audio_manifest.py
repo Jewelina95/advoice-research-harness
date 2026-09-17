@@ -27,6 +27,7 @@ def test_dedicated_training_preserves_audio_manifest_location(
         "dedicated_calibration": {
             "enabled": True, "fraction": 0.25,
             "minimum_training_subjects": 30, "seed": 17,
+            "minimum_calibration_subjects": 10,
         },
         "deep_audio": {"enabled": True, "minimum_training_subjects": 1},
         "deep_text": {"enabled": False},

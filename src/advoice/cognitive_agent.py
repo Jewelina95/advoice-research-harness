@@ -1116,6 +1116,7 @@ def _calibration_partition_error(
     calibration: pd.DataFrame,
     test: pd.DataFrame,
     workspaces: dict[str, dict[str, Any]],
+    minimum_cases: int = 1,
 ) -> str | None:
     if calibration.empty or calibration.subject_id.astype(str).duplicated().any():
         return "empty_or_duplicate_calibration_subjects"
@@ -1129,6 +1130,8 @@ def _calibration_partition_error(
         if (provenance.get("selection_independent") is not True
                 or provenance.get("dedicated_calibration_holdout") is not True):
             return "unverified_calibration_workspace"
+    if len(calibration) < minimum_cases:
+        return "insufficient_calibration_subjects"
     return None
 
 
@@ -1371,7 +1374,8 @@ def run_cognitive_diagnostic_agent(
             calibration_predictions_path, dtype={"subject_id": str}
         )
         calibration_workspaces = _read_workspaces(calibration_workspaces_path)
-        partition_error = _calibration_partition_error(calibration_prior, prior, calibration_workspaces)
+        minimum_cases = max(len(labels) * 5, int(agents_config.get("diagnostic_agent_min_calibration_cases", 30)))
+        partition_error = _calibration_partition_error(calibration_prior, prior, calibration_workspaces, minimum_cases)
         calibration_cases = [
             blind_workspace(calibration_workspaces[case_pseudonym(subject_id)])
             for subject_id in calibration_prior["subject_id"].astype(str)

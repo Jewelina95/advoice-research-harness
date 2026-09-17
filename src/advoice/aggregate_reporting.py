@@ -1847,6 +1847,8 @@ def build_aggregate_report(paths: ProjectPaths, dataset_ids: list[str]) -> Path:
         "speechcare_rows": speechcare_rows,
         "generated_at": generated_at,
         "assets": "assets",
+        "iaeav_audit_available": any(row["dataset_id"] == "IAEAV" for row in completed)
+        and (assets / "figure_4b_iaeav_capture_confounding.png").is_file(),
     }
     output = report_dir / "aggregate_evaluation_report.html"
     evaluation_html = env.get_template("aggregate_report.html").render(**shared)

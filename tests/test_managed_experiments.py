@@ -140,6 +140,18 @@ def test_missing_or_invalid_png_rejected(tmp_path):
         e.checked_outputs(tmp_path, ("chart.png",))
 
 
+def test_report_with_missing_local_figure_fails(tmp_path):
+    report = tmp_path / "evaluation.html"
+    report.write_text('<img src="assets/missing.png"><a href="#results">Results</a>')
+    with pytest.raises(RuntimeError, match="Broken local report link"):
+        e.checked_outputs(tmp_path, ("evaluation.html",))
+
+
+def test_report_anchor_and_external_links_do_not_need_local_files(tmp_path):
+    (tmp_path / "evaluation.html").write_text('<a href="#results">Results</a><a href="https://example.org">Source</a>')
+    assert e.checked_outputs(tmp_path, ("evaluation.html",))
+
+
 def test_cli_contract():
     args = parser().parse_args(["experiment", "--config", "local.yaml", "--check"])
     assert args.check and args.config == Path("local.yaml")

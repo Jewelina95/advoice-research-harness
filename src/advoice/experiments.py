@@ -10,7 +10,9 @@ import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from .config import load_yaml, project_root
 from .workspace import LOCK_TOKEN_ENV, validate_output_paths, workspace_lock
@@ -154,8 +156,26 @@ def checked_outputs(directory: Path, names: tuple[str, ...]) -> dict:
             with path.open("rb") as stream:
                 if stream.read(8) != b"\x89PNG\r\n\x1a\n":
                     raise RuntimeError(f"Invalid PNG output: {path}")
+        if path.suffix == ".html":
+            _ReportLinks(path).feed(path.read_text(encoding="utf-8"))
         records[name] = {"path": str(path), "sha256": digest(path)}
     return records
+
+
+class _ReportLinks(HTMLParser):
+    def __init__(self, path: Path):
+        super().__init__()
+        self.path = path
+
+    def handle_starttag(self, tag, attrs):
+        for key, value in attrs:
+            if key not in {"src", "href"} or not value:
+                continue
+            parsed = urlsplit(value)
+            if parsed.scheme or parsed.netloc or not parsed.path:
+                continue
+            if not (self.path.parent / unquote(parsed.path)).exists():
+                raise RuntimeError(f"Broken local report link in {self.path}: {value}")
 
 
 def run_experiment(recipe_path: Path, check_only: bool = False) -> dict:

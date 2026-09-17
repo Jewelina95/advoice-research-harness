@@ -13,6 +13,7 @@ from .agent_led import evidence_snapshot
 from .agent_led_run import run_agent_led_cohort
 from .agent_runtime import case_pseudonym
 from .evaluation import evaluate_predictions
+from .transcript_sanitization import sanitize_transcript_payload
 from .utils import hash_values, json_dump, now_utc, sha256_file
 
 
@@ -92,14 +93,21 @@ def _case_transcripts(artifact_dir: Path) -> tuple[dict[str, dict[str, Any]], Pa
         if not text:
             continue
         case_id = case_pseudonym(str(row["subject_id"]))
-        output[case_id] = {
-            "text": text[:TRANSCRIPT_CHAR_LIMIT],
+        sanitized = sanitize_transcript_payload({
+            "text": text,
+            "language": row.get("language", ""),
             "character_count": len(text),
             "whitespace_token_count": len(text.split()),
             "truncated": len(text) > TRANSCRIPT_CHAR_LIMIT,
             "recording_count": int(row.get("recording_count", 0) or 0),
             "asr_model": str(row.get("asr_model", "")),
-        }
+            "filename": row.get("filename", row.get("transcript_path", "")),
+            "title": row.get("title", ""),
+        })
+        sanitized["character_count"] = len(str(sanitized.get("text", "")))
+        sanitized["whitespace_token_count"] = len(str(sanitized.get("text", "")).split())
+        sanitized["text"] = str(sanitized.get("text", ""))[:TRANSCRIPT_CHAR_LIMIT]
+        output[case_id] = sanitized
     return output, path
 
 

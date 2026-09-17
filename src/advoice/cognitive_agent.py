@@ -305,6 +305,8 @@ def _allowed_ids(workspace: dict[str, Any]) -> tuple[set[str], set[str], set[str
             str(segment["segment_id"])
             for segment in state.get("evidence_segments", [])
             if segment.get("segment_id")
+            and segment.get("diagnostic_disclosure", "uncertain") == "none"
+            and segment.get("prediction_eligible") is True
         )
     quality.update(
         str(item["evidence_id"]) for item in workspace.get("quality_observations", [])

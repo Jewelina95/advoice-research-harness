@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from .agent_runtime import case_pseudonym, run_structured_batch, select_agent_cohort
+from .transcript_sanitization import sanitize_workspace_transcripts
 from .utils import json_dump, now_utc
 
 
@@ -65,7 +66,9 @@ def _segment_alias(value: str) -> str:
 
 
 def _sanitize_workspace(workspace: dict[str, Any], case_id: str) -> dict[str, Any]:
-    cleaned = json.loads(json.dumps(workspace, ensure_ascii=False))
+    cleaned = sanitize_workspace_transcripts(
+        json.loads(json.dumps(workspace, ensure_ascii=False))
+    )
     cleaned["case_id"] = case_id
     cleaned.pop("subject_id", None)
     model_only_count = len(cleaned.pop("model_only_state_observations", []))

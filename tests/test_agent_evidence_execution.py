@@ -222,7 +222,11 @@ def test_task_alias_invalidation_rejects_its_segment_but_not_another_task() -> N
     workspace = _workspace()
     state = workspace["state_observations"][0]
     state.update(state_id="S1__task_reading", task_scope="reading")
-    state["evidence_segments"] = [{"segment_id": "segment:reading"}]
+    state["evidence_segments"] = [{
+        "segment_id": "segment:reading",
+        "diagnostic_disclosure": "none",
+        "prediction_eligible": True,
+    }]
     workspace["evidence_registry"].append({
         "evidence_id": "segment:reading", "evidence_type": "segment",
     })

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .agent_runtime import case_pseudonym
+from .transcript_sanitization import sanitize_segment_payload
 
 
 DIAGNOSTIC_ROLES = {
@@ -103,7 +104,7 @@ def case_input_route(
 
 
 def _sanitize_segment(segment: Mapping[str, Any]) -> dict[str, Any]:
-    item = dict(segment)
+    item = sanitize_segment_payload(segment)
     if item.get("segment_id"):
         item["segment_id"] = _private_id(item["segment_id"], "SEG")
     if item.get("case_id"):

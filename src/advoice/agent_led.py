@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .cognitive_agent import _allowed_ids, validate_candidate
 from .evidence_review import apply_reviewed_snapshot
 from .utils import hash_values
+from .transcript_sanitization import sanitize_workspace_transcripts
 
 VERSION = "agent-led-v2"
 DECISION_MODES = {"clinical", "benchmark_forced_choice"}
@@ -112,7 +113,7 @@ def normalize_workspace_ids(workspace: dict[str, Any]) -> dict[str, Any]:
 
 
 def evidence_snapshot(workspace: dict[str, Any]) -> dict[str, Any]:
-    normalized = normalize_workspace_ids(workspace)
+    normalized = normalize_workspace_ids(sanitize_workspace_transcripts(workspace))
     snapshot = public_evidence({k: deepcopy(normalized[k]) for k in WORKSPACE_KEYS if k in normalized})
     counters = snapshot.setdefault("selected_counterevidence", [])
     known = {item["evidence_id"] for item in counters}
@@ -183,6 +184,7 @@ class EvidenceSession:
         self.counter_checked = False
         self.hypothesis_recorded = False
         self.transcript_checked = False
+        self.transcript_reviewed = False
         self.models_consulted = False
         self.advisor_outputs_available = False
         self.result: dict[str, Any] | None = None
@@ -283,8 +285,7 @@ class EvidenceSession:
         }
 
     def _check_final(self, reply: dict[str, Any]) -> dict[str, Any]:
-        if not (self.quality_checked and self.counter_checked and self.hypothesis_recorded):
-            raise ValueError("Inspect quality/counterevidence and record an independent hypothesis before finalizing.")
+        self._require_review_sequence()
         if (
             self.decision_mode == "benchmark_forced_choice"
             and self._bound_advisors_current()
@@ -312,6 +313,14 @@ class EvidenceSession:
         if not audit["valid"]:
             raise ValueError("; ".join(audit["violations"]))
         return audit
+
+    def _require_review_sequence(self) -> None:
+        if not (self.quality_checked and self.counter_checked and self.hypothesis_recorded):
+            raise ValueError(
+                "Inspect quality/counterevidence and record an independent hypothesis before deciding."
+            )
+        if str((self.workspace.get("case_transcript") or {}).get("text", "")).strip() and not self.transcript_checked:
+            raise ValueError("Inspect the available case transcript before deciding.")
 
     def _revise(self, reply: dict[str, Any]) -> dict[str, Any]:
         target = self._objects().get(reply["target_id"])
@@ -352,6 +361,7 @@ class EvidenceSession:
         self.revision = hash_values([self.workspace])
         self.observed.clear()
         self.counter_checked = self.quality_checked = self.hypothesis_recorded = False
+        self.transcript_checked = self.transcript_reviewed = False
         self.models_consulted = self.advisor_outputs_available = False
         return {"status": "revised", "previous_revision": before, "revision": self.revision,
                 "supervised_advisors": "stale_unavailable", "next": "Reinspect evidence and make a new Agent judgment.",
@@ -405,7 +415,9 @@ class EvidenceSession:
         if action == "inspect_transcript":
             transcript = self.workspace.get("case_transcript")
             if not isinstance(transcript, dict) or not str(transcript.get("text", "")).strip():
+                self.transcript_reviewed = True
                 return {"status": "unavailable", "reason": "No case transcript is present in this evidence snapshot."}
+            self.transcript_reviewed = True
             self.transcript_checked = True
             return {
                 "status": "observed",
@@ -469,6 +481,7 @@ class EvidenceSession:
         if action == "abstain":
             if self.decision_mode == "benchmark_forced_choice":
                 raise ValueError("Benchmark forced-choice mode requires one configured class; record uncertainty in limitations.")
+            self._require_review_sequence()
             clinical, _, _ = _allowed_ids(self.workspace)
             if not set(reply["evidence_ids"] + reply["counterevidence_ids"]).issubset(self.observed & clinical):
                 raise ValueError("Abstention citations must be inspected clinical evidence in the current snapshot.")
@@ -520,6 +533,17 @@ class EvidenceSession:
                 "supervised_modules_consulted": self.models_consulted,
                 "supervised_outputs_available": self.advisor_outputs_available,
                 "transcript_consulted": self.transcript_checked,
+                "transcript_reviewed": self.transcript_reviewed,
+                "research_most_likely_class": (
+                    reply.get("predicted_label")
+                    if status == "abstained" and reply.get("predicted_label") in self.labels
+                    else None
+                ),
+                "research_most_likely_scores": (
+                    reply.get("scores")
+                    if status == "abstained" and reply.get("predicted_label") in self.labels
+                    else None
+                ),
                 "state_revisions": sum(e["result"].get("status") == "revised" for e in self.history)}
 
     def finish(self, status: str = "budget_exhausted") -> dict[str, Any]:

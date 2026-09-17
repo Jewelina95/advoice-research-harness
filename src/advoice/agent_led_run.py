@@ -94,6 +94,13 @@ def _report_projection(item: dict[str, Any]) -> dict[str, Any] | None:
         if key in item:
             projected[key] = [
                 child_projection for child in item[key] if isinstance(child, dict)
+                and (key != "evidence_segments" or (
+                    ("diagnostic_disclosure" not in child and "prediction_eligible" not in child)
+                    or (
+                        child.get("diagnostic_disclosure") == "none"
+                        and child.get("prediction_eligible") is True
+                    )
+                ))
                 and (child_projection := _report_projection(child)) is not None
             ]
     if "metric_evidence_ids" in item:
@@ -209,9 +216,6 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
                     reply = run_structured_batch(
                         root, prompt, schema_path, output_path, model, provider,
                     )
-                    if reply.get("revision") != observation["revision"]:
-                        revision_repairs += 1
-                        reply["revision"] = observation["revision"]
                     return reply
                 except json.JSONDecodeError:
                     try:
@@ -220,9 +224,6 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
                         pass
                     else:
                         trailing_actions_dropped += dropped
-                        if reply.get("revision") != observation["revision"]:
-                            revision_repairs += 1
-                            reply["revision"] = observation["revision"]
                         return reply
                     if attempt == 1:
                         raise

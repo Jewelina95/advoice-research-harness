@@ -164,8 +164,9 @@ def test_transport_revision_is_bound_by_runtime_not_copied_by_model(tmp_path, mo
     summary = agent_led_run.run_agent_led_cohort(
         ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test",
     )
-    assert summary["decided"] == 1
-    assert summary["transport_revision_repairs"] == 5
+    assert summary["decided"] == 0
+    assert summary["provider_requests"] == 6
+    assert summary["transport_revision_repairs"] == 0
 
 
 def test_cli_has_explicit_nontraining_inference_path():

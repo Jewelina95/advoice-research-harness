@@ -200,7 +200,10 @@ def test_nested_counterevidence_is_inspected_and_required():
 def test_abstention_cannot_cite_uninspected_findings():
     s = session()
     assert s.step(reply(s, "abstain", evidence_ids=["state:S01"]))["status"] == "rejected"
-    assert s.step(reply(s, "abstain"))["status"] == "abstained"
+    inspect(s)
+    result = s.step(reply(s, "abstain", predicted_label="AD"))
+    assert result["status"] == "abstained"
+    assert s.finish()["research_most_likely_class"] == "AD"
 
 
 def test_provider_and_advisor_versions_change_calibration_identity():

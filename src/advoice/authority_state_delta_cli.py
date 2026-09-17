@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="longest_first",
     )
     parser.add_argument("--selection-salt", default="authority-pilot-v1")
-    parser.add_argument("--state-strength", type=float, default=0.0)
+    parser.add_argument("--state-strength", type=float, default=1.0)
     parser.add_argument("--agent-strength", type=float, default=1.0)
     parser.add_argument("--ordinal-temperature", type=float, default=1.0)
     parser.add_argument("--alpha", type=float, default=None, help=argparse.SUPPRESS)

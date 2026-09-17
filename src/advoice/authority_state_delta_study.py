@@ -39,7 +39,7 @@ from .utils import hash_values
 
 STUDY_SCHEMA_VERSION = "advoice.authority_joint_fusion_study.v1"
 DEFAULT_JOINT_FUSION_CONFIG = AuthorityJointFusionConfig(
-    state_strength=0.0,
+    state_strength=1.0,
     agent_strength=1.0,
     max_abs_state_delta=0.75,
     ordinal_temperature=1.0,
@@ -298,6 +298,7 @@ def _run_case(
             blind_assessment.ordinal_scores,
             class_order=frozen_packet.class_order,
             config=study_config.joint_fusion,
+            channel=str(prepared.case_metadata.get("channel", "unknown")),
             provenance={
                 "frozen_packet_hash": _packet_hash(frozen_packet),
                 "pre_packet_hash": _packet_hash(pre_replay.packet),
@@ -414,7 +415,9 @@ def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
         "correction_applied": not fusion.frozen_parity,
         "frozen_parity": fusion.frozen_parity,
         "state_component_neutral": fusion.state_component_neutral,
+        "state_authority_gate": fusion.state_authority_gate,
         "agent_component_neutral": fusion.agent_component_neutral,
+        "agent_authority_gate": fusion.agent_authority_gate,
         "state_delta": dict(fusion.state_log_evidence),
         "clipped_state_delta": dict(fusion.bounded_state_log_evidence),
         "agent_log_evidence": dict(fusion.agent_log_evidence),

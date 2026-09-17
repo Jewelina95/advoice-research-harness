@@ -25,7 +25,7 @@ from typing import Any
 from .utils import hash_values
 
 
-AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v1"
+AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v2"
 PROBABILITY_FLOOR = 1e-12
 _FORBIDDEN_PROVENANCE_TOKENS = frozenset({"label", "labels", "truth", "ground_truth", "target"})
 
@@ -119,6 +119,20 @@ def _center(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(value - average for value in values)
 
 
+def _normalized_entropy(probabilities: Sequence[float]) -> float:
+    entropy = -math.fsum(
+        probability * math.log(probability)
+        for probability in probabilities
+        if probability > 0.0
+    )
+    return entropy / math.log(len(probabilities))
+
+
+def _logit(probability: float) -> float:
+    bounded = min(1.0 - PROBABILITY_FLOOR, max(PROBABILITY_FLOOR, probability))
+    return math.log(bounded) - math.log1p(-bounded)
+
+
 def _ordered(labels: Sequence[str], values: Sequence[float | int]) -> dict[str, float | int]:
     return dict(zip(labels, values, strict=True))
 
@@ -162,6 +176,10 @@ class AuthorityJointFusionConfig:
     agent_strength: float
     max_abs_state_delta: float
     ordinal_temperature: float
+    conflict_aware_gating: bool = True
+    min_state_uncertainty: float = 0.65
+    min_frozen_uncertainty: float = 0.75
+    min_counterevidence_margin: float = 0.75
 
     def __post_init__(self) -> None:
         for field_name in ("state_strength", "agent_strength", "max_abs_state_delta"):
@@ -173,13 +191,28 @@ class AuthorityJointFusionConfig:
         if temperature <= 0.0:
             raise AuthorityJointFusionError("ordinal_temperature must be greater than zero.")
         object.__setattr__(self, "ordinal_temperature", temperature)
+        if not isinstance(self.conflict_aware_gating, bool):
+            raise AuthorityJointFusionError("conflict_aware_gating must be boolean.")
+        for field_name in (
+            "min_state_uncertainty",
+            "min_frozen_uncertainty",
+            "min_counterevidence_margin",
+        ):
+            parsed = _finite_real(getattr(self, field_name), name=field_name)
+            if not 0.0 <= parsed <= 1.0:
+                raise AuthorityJointFusionError(f"{field_name} must be in [0, 1].")
+            object.__setattr__(self, field_name, parsed)
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float | bool]:
         return {
             "state_strength": self.state_strength,
             "agent_strength": self.agent_strength,
             "max_abs_state_delta": self.max_abs_state_delta,
             "ordinal_temperature": self.ordinal_temperature,
+            "conflict_aware_gating": self.conflict_aware_gating,
+            "min_state_uncertainty": self.min_state_uncertainty,
+            "min_frozen_uncertainty": self.min_frozen_uncertainty,
+            "min_counterevidence_margin": self.min_counterevidence_margin,
         }
 
 
@@ -199,7 +232,9 @@ class AuthorityJointFusionResult:
     fused_probabilities: Mapping[str, float]
     predicted_label: str
     state_component_neutral: bool
+    state_authority_gate: float
     agent_component_neutral: bool
+    agent_authority_gate: float
     frozen_parity: bool
     config: AuthorityJointFusionConfig
     provenance: Mapping[str, Any]
@@ -236,7 +271,9 @@ class AuthorityJointFusionResult:
             "fused_probabilities": dict(self.fused_probabilities),
             "predicted_label": self.predicted_label,
             "state_component_neutral": self.state_component_neutral,
+            "state_authority_gate": self.state_authority_gate,
             "agent_component_neutral": self.agent_component_neutral,
+            "agent_authority_gate": self.agent_authority_gate,
             "frozen_parity": self.frozen_parity,
             "config": self.config.to_dict(),
             "provenance": _thaw_json(self.provenance),
@@ -253,6 +290,7 @@ def fuse_authority_joint(
     *,
     class_order: Sequence[str],
     config: AuthorityJointFusionConfig,
+    channel: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> AuthorityJointFusionResult:
     """Fuse frozen, replay-state, and blind-Agent evidence in log space.
@@ -273,13 +311,29 @@ def fuse_authority_joint(
         post_state_probabilities, class_order=labels, name="post_state_probabilities"
     )
     ordinal = _ordinal_vector(blind_ordinal_scores, class_order=labels)
+    normalized_channel = "unknown" if channel is None else str(channel).strip().lower()
+    if not normalized_channel:
+        normalized_channel = "unknown"
     frozen_provenance = _freeze_json({} if provenance is None else provenance)
 
-    raw_state = tuple(
-        math.log(max(after, PROBABILITY_FLOOR)) - math.log(max(before, PROBABILITY_FLOOR))
-        for before, after in zip(pre_state, post_state, strict=True)
-    )
-    centered_state = _center(raw_state)
+    is_three_stage = set(labels) == {"HC", "MCI", "AD"}
+    if is_three_stage:
+        hc_index = labels.index("HC")
+        impaired_indices = (labels.index("MCI"), labels.index("AD"))
+        pre_impaired = math.fsum(pre_state[index] for index in impaired_indices)
+        post_impaired = math.fsum(post_state[index] for index in impaired_indices)
+        screening_delta = _logit(post_impaired) - _logit(pre_impaired)
+        raw_state = tuple(
+            0.0 if index == hc_index else screening_delta
+            for index in range(len(labels))
+        )
+        centered_state = _center(raw_state)
+    else:
+        raw_state = tuple(
+            math.log(max(after, PROBABILITY_FLOOR)) - math.log(max(before, PROBABILITY_FLOOR))
+            for before, after in zip(pre_state, post_state, strict=True)
+        )
+        centered_state = _center(raw_state)
     bounded_state = tuple(
         max(-config.max_abs_state_delta, min(config.max_abs_state_delta, item))
         for item in centered_state
@@ -289,11 +343,73 @@ def fuse_authority_joint(
         or pre_state == post_state
         or all(item == 0.0 for item in bounded_state)
     )
+    frozen_uncertainty = _normalized_entropy(frozen)
+    report_only_channel = normalized_channel == "public_speech"
+    if state_neutral or report_only_channel:
+        state_gate = 0.0
+    elif not config.conflict_aware_gating:
+        state_gate = 1.0
+    else:
+        if is_three_stage:
+            frozen_impaired = math.fsum(frozen[index] for index in impaired_indices)
+            post_impaired = math.fsum(post_state[index] for index in impaired_indices)
+            state_conflict = (frozen_impaired >= 0.5) != (post_impaired >= 0.5)
+        else:
+            frozen_top_index = max(range(len(labels)), key=frozen.__getitem__)
+            post_state_top_index = max(range(len(labels)), key=post_state.__getitem__)
+            state_conflict = post_state_top_index != frozen_top_index
+        state_gate = float(
+            state_conflict
+            and frozen_uncertainty >= config.min_state_uncertainty
+        )
+    state_neutral = state_neutral or state_gate == 0.0
 
     ordinal_as_float = tuple(float(item) for item in ordinal)
-    agent_log = tuple(item / config.ordinal_temperature for item in _center(ordinal_as_float))
+    if is_three_stage:
+        hc_index = labels.index("HC")
+        impaired_indices = (labels.index("MCI"), labels.index("AD"))
+        screening_score = max(ordinal[index] for index in impaired_indices) - ordinal[hc_index]
+        agent_raw = tuple(
+            0.0 if index == hc_index else float(screening_score)
+            for index in range(len(labels))
+        )
+        agent_log = tuple(
+            item / config.ordinal_temperature for item in _center(agent_raw)
+        )
+    else:
+        agent_log = tuple(item / config.ordinal_temperature for item in _center(ordinal_as_float))
     agent_likelihood = _softmax(agent_log)
     agent_neutral = config.agent_strength == 0.0 or len(set(ordinal)) == 1
+    if agent_neutral or report_only_channel:
+        agent_gate = 0.0
+    elif not config.conflict_aware_gating:
+        agent_gate = 1.0
+    else:
+        if is_three_stage:
+            frozen_top_is_impaired = math.fsum(
+                frozen[index] for index in impaired_indices
+            ) >= 0.5
+            agent_impaired_score = max(ordinal[index] for index in impaired_indices)
+            agent_top_is_impaired = agent_impaired_score > ordinal[hc_index]
+            agent_agrees = agent_top_is_impaired == frozen_top_is_impaired
+            agent_margin = abs(agent_impaired_score - ordinal[hc_index]) / 4.0
+        else:
+            frozen_top_index = max(range(len(labels)), key=frozen.__getitem__)
+            agent_top_score = max(ordinal)
+            ordered_scores = sorted(ordinal, reverse=True)
+            agent_agrees = ordinal[frozen_top_index] == agent_top_score
+            agent_margin = (ordered_scores[0] - ordered_scores[1]) / 4.0
+        if not state_neutral:
+            agent_gate = 0.0
+        elif agent_agrees:
+            agent_gate = 0.0
+        elif frozen_uncertainty >= config.min_frozen_uncertainty:
+            agent_gate = max(frozen_uncertainty, agent_margin)
+        elif agent_margin >= config.min_counterevidence_margin:
+            agent_gate = agent_margin
+        else:
+            agent_gate = 0.0
+    agent_neutral = agent_neutral or agent_gate == 0.0
 
     inputs = {
         "schema_version": AUTHORITY_JOINT_FUSION_SCHEMA_VERSION,
@@ -302,6 +418,8 @@ def fuse_authority_joint(
         "pre_state_probabilities": list(pre_state),
         "post_state_probabilities": list(post_state),
         "blind_ordinal_scores": list(ordinal),
+        "channel": normalized_channel,
+        "fusion_route": "three_class_screening" if is_three_stage else "class_likelihood",
         "config": config.to_dict(),
         "provenance": _thaw_json(frozen_provenance),
     }
@@ -313,8 +431,8 @@ def fuse_authority_joint(
     else:
         logits = tuple(
             math.log(max(base, PROBABILITY_FLOOR))
-            + (0.0 if state_neutral else config.state_strength * state)
-            + (0.0 if agent_neutral else config.agent_strength * agent)
+            + (0.0 if state_neutral else config.state_strength * state_gate * state)
+            + (0.0 if agent_neutral else config.agent_strength * agent_gate * agent)
             for base, state, agent in zip(frozen, bounded_state, agent_log, strict=True)
         )
         fused = _softmax(logits)
@@ -328,7 +446,9 @@ def fuse_authority_joint(
         "agent_log_evidence": list(agent_log),
         "agent_equal_prior_likelihood": list(agent_likelihood),
         "state_component_neutral": state_neutral,
+        "state_authority_gate": state_gate,
         "agent_component_neutral": agent_neutral,
+        "agent_authority_gate": agent_gate,
         "frozen_parity": frozen_parity,
         "fused_probabilities": list(fused),
         "predicted_label": predicted_label,
@@ -346,7 +466,9 @@ def fuse_authority_joint(
         fused_probabilities=_ordered(labels, fused),
         predicted_label=predicted_label,
         state_component_neutral=state_neutral,
+        state_authority_gate=state_gate,
         agent_component_neutral=agent_neutral,
+        agent_authority_gate=agent_gate,
         frozen_parity=frozen_parity,
         config=config,
         provenance=frozen_provenance,

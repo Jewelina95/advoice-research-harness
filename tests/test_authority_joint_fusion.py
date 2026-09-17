@@ -16,7 +16,7 @@ from advoice.authority_joint_fusion import (
 LABELS = ("HC", "MCI", "AD")
 
 
-def _config(**overrides: float) -> AuthorityJointFusionConfig:
+def _config(**overrides) -> AuthorityJointFusionConfig:
     values = {
         "state_strength": 0.5,
         "agent_strength": 0.75,
@@ -74,14 +74,11 @@ def test_equal_state_and_equal_ordinal_components_are_strictly_neutral() -> None
     assert tuple(result.agent_equal_prior_likelihood.values()) == pytest.approx((1 / 3, 1 / 3, 1 / 3))
 
 
-def test_joint_log_linear_arithmetic_uses_centered_state_and_equal_prior_agent_likelihood() -> None:
-    result = _fuse()
-    state_raw = tuple(
-        math.log(after) - math.log(before)
-        for before, after in zip((0.4, 0.4, 0.2), (0.2, 0.3, 0.5), strict=True)
-    )
-    state = tuple(value - sum(state_raw) / 3 for value in state_raw)
-    agent = (-2.0, 0.0, 2.0)
+def test_three_class_log_linear_arithmetic_uses_screening_evidence() -> None:
+    screening_delta = math.log(0.8 / 0.2) - math.log(0.6 / 0.4)
+    state = (-2 * screening_delta / 3, screening_delta / 3, screening_delta / 3)
+    agent = (-8 / 3, 4 / 3, 4 / 3)
+    result = _fuse(config=_config(conflict_aware_gating=False))
     logits = tuple(
         math.log(base) + 0.5 * state_value + 0.75 * agent_value
         for base, state_value, agent_value in zip((0.6, 0.3, 0.1), state, agent, strict=True)
@@ -94,7 +91,104 @@ def test_joint_log_linear_arithmetic_uses_centered_state_and_equal_prior_agent_l
     assert tuple(result.agent_log_evidence.values()) == pytest.approx(agent)
     assert tuple(result.agent_equal_prior_likelihood.values()) == pytest.approx(_softmax(agent))
     assert tuple(result.fused_probabilities.values()) == pytest.approx(expected)
-    assert result.predicted_label == "AD"
+    assert result.predicted_label == "MCI"
+
+
+def test_conflict_aware_gate_keeps_agreement_at_exact_frozen_parity() -> None:
+    frozen = {"HC": 0.98, "MCI": 0.01, "AD": 0.01}
+    gated = _fuse(
+        frozen_probabilities=frozen,
+        blind_ordinal_scores={"HC": 4, "MCI": 1, "AD": 0},
+        config=_config(state_strength=0.0, agent_strength=1.0),
+    )
+    assert gated.agent_authority_gate == 0.0
+    assert _bits(gated.fused_probabilities.values()) == _bits(frozen.values())
+
+
+def test_conflict_aware_gate_preserves_clear_counter_evidence() -> None:
+    frozen = {"HC": 0.8, "MCI": 0.1, "AD": 0.1}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 0, "AD": 4},
+        config=_config(state_strength=0.0, agent_strength=1.0),
+    )
+
+    assert result.agent_authority_gate == pytest.approx(1.0)
+    assert result.fused_probabilities["MCI"] + result.fused_probabilities["AD"] > 0.5
+    assert result.fused_probabilities["MCI"] / result.fused_probabilities["AD"] == pytest.approx(
+        frozen["MCI"] / frozen["AD"]
+    )
+
+
+def test_conflict_aware_gate_rejects_weak_counterevidence_against_confident_prior() -> None:
+    frozen = {"HC": 0.05, "MCI": 0.05, "AD": 0.9}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        blind_ordinal_scores={"HC": 3, "MCI": 1, "AD": 1},
+        config=_config(state_strength=0.0, agent_strength=1.0),
+    )
+
+    assert result.agent_authority_gate == 0.0
+    assert _bits(result.fused_probabilities.values()) == _bits(frozen.values())
+
+
+def test_state_gate_requires_conflict_and_frozen_uncertainty() -> None:
+    confident = {"HC": 0.95, "MCI": 0.03, "AD": 0.02}
+    blocked = _fuse(
+        frozen_probabilities=confident,
+        pre_state_probabilities={"HC": 0.8, "MCI": 0.1, "AD": 0.1},
+        post_state_probabilities={"HC": 0.05, "MCI": 0.05, "AD": 0.9},
+        blind_ordinal_scores={"HC": 2, "MCI": 2, "AD": 2},
+        config=_config(state_strength=1.0, agent_strength=0.0),
+    )
+    uncertain = {"HC": 0.55, "MCI": 0.3, "AD": 0.15}
+    active = _fuse(
+        frozen_probabilities=uncertain,
+        pre_state_probabilities={"HC": 0.8, "MCI": 0.1, "AD": 0.1},
+        post_state_probabilities={"HC": 0.05, "MCI": 0.05, "AD": 0.9},
+        blind_ordinal_scores={"HC": 2, "MCI": 2, "AD": 2},
+        config=_config(state_strength=1.0, agent_strength=0.0),
+    )
+
+    assert blocked.state_authority_gate == 0.0
+    assert _bits(blocked.fused_probabilities.values()) == _bits(confident.values())
+    assert active.state_authority_gate == 1.0
+    assert active.fused_probabilities["MCI"] + active.fused_probabilities["AD"] > 0.45
+
+
+def test_three_class_state_correction_changes_screening_not_staging_ratio() -> None:
+    frozen = {"HC": 0.51, "MCI": 0.36, "AD": 0.13}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities={"HC": 0.2, "MCI": 0.41, "AD": 0.39},
+        post_state_probabilities={"HC": 0.04, "MCI": 0.14, "AD": 0.82},
+        blind_ordinal_scores={"HC": 1, "MCI": 3, "AD": 2},
+        config=_config(state_strength=1.0, agent_strength=1.0),
+        channel="structured_multitask",
+    )
+
+    assert result.state_authority_gate == 1.0
+    assert result.agent_authority_gate == 0.0
+    assert result.predicted_label == "MCI"
+    assert result.fused_probabilities["MCI"] / result.fused_probabilities["AD"] == pytest.approx(
+        frozen["MCI"] / frozen["AD"]
+    )
+
+
+def test_public_speech_is_report_only_and_preserves_frozen_prediction() -> None:
+    frozen = {"HC": 0.78, "MCI": 0.12, "AD": 0.10}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities={"HC": 0.8, "MCI": 0.1, "AD": 0.1},
+        post_state_probabilities={"HC": 0.02, "MCI": 0.08, "AD": 0.9},
+        blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
+        config=_config(state_strength=1.0, agent_strength=1.0),
+        channel="public_speech",
+    )
+
+    assert result.state_authority_gate == 0.0
+    assert result.agent_authority_gate == 0.0
+    assert _bits(result.fused_probabilities.values()) == _bits(frozen.values())
 
 
 def _softmax(values: tuple[float, ...]) -> tuple[float, ...]:
@@ -140,6 +234,9 @@ def test_invalid_or_incomplete_class_inputs_fail_closed(kwargs, message: str) ->
         ({"agent_strength": -0.1}, "agent_strength"),
         ({"max_abs_state_delta": -0.1}, "max_abs_state_delta"),
         ({"ordinal_temperature": 0.0}, "ordinal_temperature"),
+        ({"min_frozen_uncertainty": 1.1}, "min_frozen_uncertainty"),
+        ({"min_state_uncertainty": 1.1}, "min_state_uncertainty"),
+        ({"min_counterevidence_margin": -0.1}, "min_counterevidence_margin"),
     ],
 )
 def test_invalid_configuration_fails_closed(kwargs, message: str) -> None:

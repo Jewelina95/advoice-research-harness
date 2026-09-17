@@ -7,8 +7,9 @@ frozen Module A state expert, and only then fused with the immutable Condition
 C prediction.  Labels are read after every requested prediction is complete.
 
 Provider, schema, compilation, replay, and fusion failures are recorded as
-explicit failed cases.  They never inherit the frozen prediction merely to
-make a cohort metric look complete.
+explicit failed cases.  The frozen Condition C prediction is computed before
+each provider call and retained for the entire requested cohort, while a
+failed case never receives a synthetic fused prediction.
 """
 
 from __future__ import annotations
@@ -98,6 +99,9 @@ class AuthorityStateDeltaStudyResult:
     attempted_case_ids: tuple[str, ...]
     completed_case_ids: tuple[str, ...]
     failed_case_ids: tuple[str, ...]
+    # Full-queue frozen baseline and completed-case fused metrics.  Their
+    # comparable counterparts are explicit in ``aggregate.json`` under the
+    # ``paired_*`` keys.
     frozen_metrics: Mapping[str, Any] | None
     fused_metrics: Mapping[str, Any] | None
     paired_counts: Mapping[str, int]
@@ -223,7 +227,20 @@ def _run_case(
 ) -> dict[str, Any]:
     prepared = prepared_case.prepared_case
     base = _audit_base(prepared, study_config, study_hash)
+    frozen_packet: ExplanationPacket | None = None
     try:
+        # Freeze the non-Agent prediction before any provider interaction.
+        # This keeps the baseline on the full predeclared test queue even when
+        # the Agent later fails.  It is inference-only and has no label access.
+        frozen_packet = dataset.advisor.explain_subject(
+            prepared.case_id,
+            evidence_snapshot=prepared.pre_replay.revised_evidence,
+        )
+        base["frozen"] = _packet_audit(frozen_packet)
+        base["provenance"] = {
+            "frozen_packet_hash": _packet_hash(frozen_packet),
+        }
+
         # Exactly one runtime invocation per non-resumed case.  The runtime
         # itself owns the two required structured provider requests.
         review = runtime.review(prepared, transcript=prepared_case.transcript)
@@ -236,10 +253,7 @@ def _run_case(
         compiled = compile_authority_review_decision(prepared, review)
         transaction = compiled.transaction
         pre_replay = prepared.pre_replay
-        frozen_packet = dataset.advisor.explain_subject(
-            prepared.case_id,
-            evidence_snapshot=pre_replay.revised_evidence,
-        )
+        assert frozen_packet is not None
         if transaction is None:
             post_replay = pre_replay
             revision_hash = pre_replay.audit.revision_hash
@@ -278,7 +292,6 @@ def _run_case(
             "status": "completed",
             "transaction": None if transaction is None else transaction.to_dict(),
             "decision_hash": compiled.decision.decision_hash,
-            "frozen": _packet_audit(frozen_packet),
             "pre_state": _packet_audit(pre_replay.packet),
             "post_state": _packet_audit(post_replay.packet),
             "fusion": _fusion_audit(fusion),
@@ -408,14 +421,30 @@ def _aggregate(
     completed = sorted(case_id for case_id, audit in audits.items() if audit.get("status") == "completed")
     failed = sorted(case_id for case_id, audit in audits.items() if audit.get("status") != "completed")
     labels = list(class_order)
+    frozen_available = sorted(case_id for case_id, audit in audits.items() if "frozen" in audit)
+    frozen_missing = sorted(set(audits) - set(frozen_available))
     frozen_metrics: Mapping[str, Any] | None = None
+    paired_frozen_metrics: Mapping[str, Any] | None = None
     fused_metrics: Mapping[str, Any] | None = None
     paired = {"changed": 0, "unchanged": 0, "corrected": 0, "harmed": 0}
+
+    # The immutable baseline is evaluated over every requested case for which
+    # it was available before Agent execution.  A provider failure must not
+    # remove the case from this baseline.
+    if frozen_available:
+        frozen_frame = _prediction_frame(audits, truth, frozen_available, "frozen", labels)
+        frozen_metrics = _cohort_metrics(
+            frozen_frame, bins=config.evaluation_bins, labels=labels, positive=labels[-1],
+        )
+
+    # Only cases with a genuine Agent transaction/replay/fusion are eligible
+    # for a paired frozen-vs-fused comparison.  Failed cases retain frozen
+    # output above but never receive a substituted fused prediction.
     if completed:
         frozen_frame = _prediction_frame(audits, truth, completed, "frozen", labels)
         fused_frame = _prediction_frame(audits, truth, completed, "fusion", labels)
         positive = labels[-1]
-        frozen_metrics = _cohort_metrics(
+        paired_frozen_metrics = _cohort_metrics(
             frozen_frame, bins=config.evaluation_bins, labels=labels, positive=positive,
         )
         fused_metrics = _cohort_metrics(
@@ -441,12 +470,33 @@ def _aggregate(
         "completed_case_ids": completed,
         "failed_case_ids": failed,
         "failed_case_count": len(failed),
-        "metrics_cohort_case_ids": completed,
-        "metrics_exclude_failed_cases": True,
+        "agent_coverage": {
+            "attempted_case_count": len(audits),
+            "completed_case_count": len(completed),
+            "failed_case_count": len(failed),
+            "coverage_rate": _rate(len(completed), len(audits)),
+            "failure_rate": _rate(len(failed), len(audits)),
+        },
+        "frozen_full_queue_case_ids": frozen_available,
+        "frozen_full_queue_missing_case_ids": frozen_missing,
+        "frozen_full_queue_complete": len(frozen_missing) == 0,
+        "paired_case_ids": completed,
+        # Kept for consumers of the original result object.  It now denotes
+        # the full-queue frozen baseline, not a complete-case baseline.
+        "metrics_cohort_case_ids": frozen_available,
+        "metrics_exclude_failed_cases": False,
         "frozen_metrics": frozen_metrics,
+        "paired_frozen_metrics": paired_frozen_metrics,
         "fused_metrics": fused_metrics,
+        "paired_fused_metrics": fused_metrics,
         "paired_counts": paired,
     }
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return float(numerator / denominator)
 
 
 def _cohort_metrics(

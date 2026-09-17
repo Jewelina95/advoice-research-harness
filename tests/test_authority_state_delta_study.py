@@ -236,7 +236,7 @@ def test_atomic_transaction_replays_once_and_applies_predeclared_delta(
     assert any(item["fusion"]["correction_applied"] for item in audit["cases"])
 
 
-def test_failed_provider_is_explicit_and_never_uses_frozen_predictions(
+def test_failed_provider_keeps_full_queue_frozen_baseline_without_synthetic_fused_predictions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, _, _ = _fixture_dataset()
@@ -247,13 +247,60 @@ def test_failed_provider_is_explicit_and_never_uses_frozen_predictions(
 
     assert result.completed_case_ids == ()
     assert result.failed_case_ids == ("case-1", "case-2")
-    assert result.frozen_metrics is None
+    assert result.frozen_metrics["n"] == 2
+    assert result.frozen_metrics["accuracy"] == 1.0
     assert result.fused_metrics is None
     aggregate = __import__("json").loads(result.aggregate_json_path.read_text(encoding="utf-8"))
-    assert aggregate["metrics_exclude_failed_cases"] is True
+    assert aggregate["metrics_exclude_failed_cases"] is False
     assert aggregate["failed_case_count"] == 2
+    assert aggregate["frozen_full_queue_case_ids"] == ["case-1", "case-2"]
+    assert aggregate["paired_case_ids"] == []
+    assert aggregate["paired_frozen_metrics"] is None
+    assert aggregate["paired_fused_metrics"] is None
+    assert aggregate["agent_coverage"] == {
+        "attempted_case_count": 2,
+        "completed_case_count": 0,
+        "failed_case_count": 2,
+        "coverage_rate": 0.0,
+        "failure_rate": 1.0,
+    }
     audits = __import__("json").loads(result.audit_json_path.read_text(encoding="utf-8"))["cases"]
-    assert all(item["status"] == "failed" and "frozen" not in item for item in audits)
+    assert all(item["status"] == "failed" and "frozen" in item and "fusion" not in item for item in audits)
+
+
+def test_complete_case_pairing_is_separate_from_full_queue_frozen_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset, _, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(None))
+
+    original_review = runtime.review
+
+    def review_one_failure(prepared, *, transcript=None):
+        if prepared.case_id == "case-2":
+            dataset.review_calls += 1
+            runtime.calls.append(prepared.case_id)
+            return SimpleNamespace(
+                status="failed_closed_provider_error",
+                case_id=f"pseudo:{prepared.case_id}",
+                blind_request_hash="a" * 64,
+                reconciliation_request_hash="b" * 64,
+                cache_key="c" * 64,
+                error="provider response invalid",
+            )
+        return original_review(prepared, transcript=transcript)
+
+    runtime.review = review_one_failure  # type: ignore[method-assign]
+    result = run_authority_state_delta_cohort(dataset, runtime, output_dir=tmp_path)
+
+    aggregate = __import__("json").loads(result.aggregate_json_path.read_text(encoding="utf-8"))
+    assert result.frozen_metrics["n"] == 2
+    assert result.fused_metrics["n"] == 1
+    assert aggregate["paired_frozen_metrics"]["n"] == 1
+    assert aggregate["paired_fused_metrics"]["n"] == 1
+    assert aggregate["agent_coverage"]["coverage_rate"] == 0.5
+    assert aggregate["agent_coverage"]["failure_rate"] == 0.5
 
 
 def test_completed_cases_resume_without_a_second_provider_call(

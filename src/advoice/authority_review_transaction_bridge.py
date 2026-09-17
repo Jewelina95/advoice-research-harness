@@ -155,9 +155,9 @@ def _compile_states(
         if not inferable_supervised_state_evidence(
             prepared.module_a_evidence, state_id=action.state_id,
         ):
-            # The action is already satisfied by the frozen snapshot.  Keep it
-            # in the merged report trace, but do not fabricate a revision for
-            # evidence that cannot contribute to replay.
+            # The report trace still records this action, but there is no
+            # replayable evidence left in the state.  Avoid fabricating a
+            # transaction or requiring a graph row that was already removed.
             continue
         review = _as_state_review(prepared, action, ordinal_scores)
         try:
@@ -221,11 +221,11 @@ def compile_authority_review_transaction(
     if blind is None:
         raise AuthorityReviewTransactionBridgeError("Available review requires a blind assessment.")
     compiled = _compile_states(prepared, actions, blind.ordinal_scores)
-    batches = tuple(item.batch for item in compiled)
-    if len(batches) != len(actions):
-        raise AuthorityReviewTransactionBridgeError(
-            "Every effective non-retain action must produce one revision batch."
-        )
+    batches = tuple(
+        item.batch for item in compiled if item.batch.action != "retain"
+    )
+    if not batches:
+        return None
     try:
         return EvidenceRevisionTransaction(
             case_id=prepared.case_id,
@@ -251,11 +251,14 @@ def compile_authority_review_decision(
         raise AuthorityReviewTransactionBridgeError("Available review requires a blind assessment.")
     compiled = _compile_states(prepared, actions, blind.ordinal_scores)
     transaction = None
-    if compiled:
+    active_batches = tuple(
+        item.batch for item in compiled if item.batch.action != "retain"
+    )
+    if active_batches:
         transaction = EvidenceRevisionTransaction(
             case_id=prepared.case_id,
             expected_evidence_hash=prepared.reviewed_evidence_hash,
-            batches=tuple(item.batch for item in compiled),
+            batches=active_batches,
         )
     decision = AgentAuthorityDecision(
         case_id=prepared.case_id,

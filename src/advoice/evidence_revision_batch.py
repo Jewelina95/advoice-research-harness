@@ -205,19 +205,38 @@ def _validate_evidence_snapshot(
 
 
 def _target_evidence(
-    evidence: Sequence[MetricEvidenceV2], *, state_id: str
+    evidence: Sequence[MetricEvidenceV2],
+    *,
+    state_id: str,
+    cited_evidence_ids: Iterable[str],
 ) -> tuple[MetricEvidenceV2, ...]:
     state_items = tuple(item for item in evidence if _text(item.state_id) == state_id)
     if not state_items:
         raise EvidenceRevisionBatchError(
             f"The evidence snapshot contains no evidence for state_id {state_id!r}."
         )
-    candidates = inferable_supervised_state_evidence(evidence, state_id=state_id)
-    if not candidates:
+    cited = tuple(sorted({str(item) for item in cited_evidence_ids}))
+    state_ids = {item.evidence_id for item in state_items}
+    foreign_or_unknown = sorted(set(cited) - state_ids)
+    if foreign_or_unknown:
         raise EvidenceRevisionBatchError(
-            "State revision has no inferable evidence currently contributing to supervised inference."
+            "Cited evidence IDs must belong to the target state: "
+            f"{foreign_or_unknown}."
         )
-    return candidates
+    inferable_ids = {
+        item.evidence_id
+        for item in inferable_supervised_state_evidence(evidence, state_id=state_id)
+    }
+    # Scope is deliberately the intersection.  An unavailable citation remains
+    # visible in the review/audit record but cannot cause another metric to be
+    # revised or be re-enabled by an Agent action.
+    return tuple(sorted(
+        (
+            item for item in state_items
+            if item.evidence_id in inferable_ids and item.evidence_id in cited
+        ),
+        key=lambda item: item.evidence_id,
+    ))
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +334,12 @@ def compile_evidence_revision_batch(
     snapshot = _validate_evidence_snapshot(
         evidence, case_id=normalized_case, expected_evidence_hash=expected_evidence_hash
     )
-    candidates = _target_evidence(snapshot, state_id=normalized_state)
+    cited = tuple(sorted({str(item) for item in cited_evidence_ids}))
+    candidates = _target_evidence(
+        snapshot,
+        state_id=normalized_state,
+        cited_evidence_ids=cited,
+    )
     if action == "retain":
         return EvidenceRevisionBatch(
             case_id=normalized_case,
@@ -338,7 +362,16 @@ def compile_evidence_revision_batch(
         raise EvidenceRevisionBatchError(
             "reliability_multiplier is valid only for downweight batches."
         )
-    cited = tuple(sorted({str(item) for item in cited_evidence_ids}))
+    if not candidates:
+        # Preserve the requested action in the surrounding review trace, while
+        # representing the replay effect as an immutable no-op batch.  This is
+        # the only safe outcome when every cited item is already unavailable.
+        return EvidenceRevisionBatch(
+            case_id=normalized_case,
+            state_id=normalized_state,
+            action="retain",
+            expected_evidence_hash=expected_evidence_hash,
+        )
     revisions = tuple(
         EvidenceRevision(
             evidence_id=item.evidence_id,

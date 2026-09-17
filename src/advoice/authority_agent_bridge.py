@@ -339,7 +339,11 @@ def compile_agent_state_review(
         advisor_packet_hash=prepared.advisor_packet_hash,
         advisor_current=True,
         ordinal_scores=parsed.ordinal_scores,
-        revision_batch=None if parsed.action == "retain" else batch,
+        # A non-retain review whose citations are all already unavailable is
+        # represented by an explicit immutable no-op batch.  Do not expose it
+        # as a replay revision, but keep the original action and citations in
+        # the review for auditability.
+        revision_batch=None if batch.action == "retain" else batch,
         action_type=parsed.action,
         incremental_evidence_ids=(),
         report_trace=parsed.report_trace,

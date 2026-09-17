@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from types import SimpleNamespace
 
 import pandas as pd
@@ -141,6 +141,48 @@ def test_valid_one_metric_downweight_binds_the_compiled_revision_batch() -> None
     assert compiled.decision.revision is None
     assert compiled.decision.revision_batch is compiled.batch
     assert compiled.decision.revision_batch.revisions[0].reliability_multiplier == 0.5
+
+
+def test_cited_metric_scopes_revision_to_one_state_metric() -> None:
+    prepared = _prepared(_evidence("metric:one"), _evidence("metric:two"))
+
+    compiled = compile_agent_state_review(
+        prepared,
+        _review(
+            prepared,
+            action="downweight",
+            reliability_multiplier=0.5,
+            cited_evidence_ids=["metric:two"],
+        ),
+    )
+
+    assert compiled.batch.evidence_ids == ("metric:two",)
+
+
+def test_citing_unavailable_metric_is_an_auditable_noop() -> None:
+    available = _evidence("metric:available")
+    unavailable = replace(
+        _evidence("metric:unavailable"),
+        permissions=EvidencePermissions(inference=False, report=False),
+        observable=False,
+        unavailable_reason="already_unavailable",
+    )
+    prepared = _prepared(unavailable, available)
+
+    compiled = compile_agent_state_review(
+        prepared,
+        _review(
+            prepared,
+            action="downweight",
+            reliability_multiplier=0.5,
+            cited_evidence_ids=["metric:unavailable"],
+        ),
+    )
+
+    assert compiled.batch.action == "retain"
+    assert compiled.batch.revisions == ()
+    assert compiled.decision.revision_batch is None
+    assert compiled.review.action == "downweight"
 
 
 @pytest.mark.parametrize("action", ["invalidate", "mark_unavailable"])

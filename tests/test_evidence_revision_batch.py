@@ -60,6 +60,7 @@ def _graph(evidence: list[MetricEvidenceV2]) -> StateGraphV2:
 
 
 def _compile(evidence: list[MetricEvidenceV2], action: str = "invalidate", **kwargs):
+    kwargs.setdefault("cited_evidence_ids", [item.evidence_id for item in evidence])
     return compile_evidence_revision_batch(
         "case-1",
         "S01",
@@ -80,6 +81,14 @@ def test_compiles_every_consumed_inferable_metric_atomically_and_sorts() -> None
     assert all(item.reliability_multiplier == 0.5 for item in batch.revisions)
     assert all(item.expected_evidence_hash == evidence_snapshot_hash(evidence) for item in batch.revisions)
     assert all("value" not in item.to_dict() for item in batch.revisions)
+
+
+def test_only_cited_inferable_evidence_is_revised() -> None:
+    evidence = [_evidence(evidence_id="m1"), _evidence(evidence_id="m2")]
+
+    batch = _compile(evidence, "downweight", cited_evidence_ids=["m2"])
+
+    assert batch.evidence_ids == ("m2",)
 
 
 def test_retain_is_an_explicit_immutable_noop() -> None:
@@ -108,7 +117,6 @@ def test_batch_serialization_is_order_invariant() -> None:
     "mutate,match",
     [
         (lambda rows: rows + [_evidence(evidence_id="foreign", case_id="case-2")], "Cross-case"),
-        (lambda rows: [_evidence(evidence_id="m1", permissions=EvidencePermissions(inference=False, report=True))], "inferable"),
         (lambda rows: [_evidence(evidence_id="m1", consumed_by_supervised=False, incremental_for_agent=True)], "Incremental Agent"),
     ],
 )
@@ -145,6 +153,36 @@ def test_already_unavailable_supervised_evidence_does_not_block_inferable_state_
     ]
     batch = _compile(evidence, "downweight")
     assert batch.evidence_ids == ("m1",)
+
+
+def test_cited_unavailable_evidence_compiles_to_an_explicit_noop() -> None:
+    evidence = [
+        _evidence(evidence_id="available"),
+        _evidence(
+            evidence_id="already-unavailable",
+            permissions=EvidencePermissions(inference=False, report=False),
+        ),
+    ]
+
+    batch = compile_evidence_revision_batch(
+        "case-1",
+        "S01",
+        "downweight",
+        {"states": ["S01"]},
+        evidence,
+        evidence_snapshot_hash(evidence),
+        cited_evidence_ids=["already-unavailable"],
+    )
+
+    assert batch.action == "retain"
+    assert batch.revisions == ()
+
+
+def test_unknown_or_foreign_citation_fails_closed() -> None:
+    evidence = [_evidence(evidence_id="m1")]
+
+    with pytest.raises(EvidenceRevisionBatchError, match="target state"):
+        _compile(evidence, "downweight", cited_evidence_ids=["not-in-snapshot"])
 
 
 def test_unknown_state_and_empty_snapshot_fail_closed() -> None:

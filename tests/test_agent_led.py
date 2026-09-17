@@ -240,6 +240,29 @@ def test_benchmark_mode_forces_classification_but_preserves_uncertainty_fields()
     assert s.finish()["decision_mode"] == "benchmark_forced_choice"
 
 
+def test_benchmark_requires_bound_advisor_review_after_blind_hypothesis():
+    source = workspace()
+    source["advisor_provenance"] = {
+        "evidence_hash": hash_values([evidence_snapshot(source)]),
+        "artifacts": {"module_a": "fixture-a-v1", "module_b": "fixture-b-v1"},
+    }
+    s = EvidenceSession(
+        source, ["HC", "AD"], model_id="test", skill_hash="fixture",
+        decision_mode="benchmark_forced_choice",
+    )
+    inspect(s)
+    final = reply(
+        s, "finalize", predicted_label="AD", scores={"HC": 0, "AD": 3},
+        evidence_ids=["state:S01"],
+    )
+    rejected = s.step(final)
+    assert rejected["status"] == "rejected"
+    assert "consult" in rejected["reason"].lower()
+    advisor = s.step(reply(s, "consult_models"))
+    assert advisor["status"] == "available"
+    assert s.step(final)["status"] == "decided"
+
+
 def test_inspecting_state_marks_returned_child_evidence_as_observed():
     source = workspace()
     source["state_observations"][0]["evidence_segments"] = [

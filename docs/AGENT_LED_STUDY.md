@@ -63,7 +63,9 @@ A SpeechCARE claim is enabled only for the complete 412-case PREPARE official
 test cohort. Subsets and other datasets are marked non-comparable. Agent ranking
 scores are not presented as calibrated probability AUROC.
 
-Whether the Agent inspected the optional supervised outputs is recorded per
-case. A class decision does not require that consultation: forcing it would turn
-the Agent path back into post-processing for another classifier and would not
-test evidence-grounded Agent judgment.
+Whether the Agent inspected the supervised outputs is recorded per case. In
+clinical mode, that consultation remains optional. In forced-choice benchmark
+mode, a bound frozen advisor must be inspected only after the Agent records a
+blind evidence hypothesis. The advisor remains correlated task-specific context,
+not a mandatory vote: the Agent may disagree, but it cannot claim a matched
+benchmark decision without reviewing the available learned calibration.

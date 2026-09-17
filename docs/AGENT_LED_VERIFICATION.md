@@ -14,13 +14,15 @@ The supervised modules are upstream evidence-organization components, not two
 mandatory votes that the Agent must follow. They may learn task-conditioned
 metric-to-state relations, reliability and state relevance when suitable labels
 are available. Their frozen class probabilities remain optional, correlated
-context. The Agent's required input is the MetricEvidence/StateCard/segment
+context in clinical mode. Forced-choice benchmark mode requires the Agent to
+inspect bound frozen outputs after recording its independent evidence hypothesis;
+the Agent still owns the final class and may disagree. The Agent's required input is the MetricEvidence/StateCard/segment
 evidence graph; its required output is an evidence-linked decision or abstention
 with an auditable trace.
 
 ## Software checks
 
-On 2026-09-17, the full Python test suite passed: **453 tests**. Dependencies emitted
+On 2026-09-17, the full Python test suite passed: **454 tests**. Dependencies emitted
 existing pandas/scipy/pkg_resources/OpenBLAS warnings; these were not hidden.
 `git diff --check` passed.
 

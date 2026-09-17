@@ -285,6 +285,14 @@ class EvidenceSession:
     def _check_final(self, reply: dict[str, Any]) -> dict[str, Any]:
         if not (self.quality_checked and self.counter_checked and self.hypothesis_recorded):
             raise ValueError("Inspect quality/counterevidence and record an independent hypothesis before finalizing.")
+        if (
+            self.decision_mode == "benchmark_forced_choice"
+            and self._bound_advisors_current()
+            and not self.models_consulted
+        ):
+            raise ValueError(
+                "Consult the bound frozen advisors after the blind evidence hypothesis before benchmark finalization."
+            )
         if str((self.workspace.get("case_transcript") or {}).get("text", "")).strip() and not self.transcript_checked:
             raise ValueError("Inspect the available case transcript before finalizing.")
         if reply["predicted_label"] not in self.labels:

@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from advoice.agent_runtime import run_openai_batch
+from advoice.agent_runtime import run_openai_batch, run_structured_batch
 
 
 class _Response:
@@ -61,3 +61,31 @@ def test_openai_batch_does_not_retry_nontransient_request_error(monkeypatch, tmp
     with pytest.raises(BadRequestError, match="invalid schema"):
         run_openai_batch("prompt", schema, tmp_path / "output.json", "test-model")
     assert len(outcomes) == 1
+
+
+def test_structured_batch_reuses_hash_bound_output_without_provider_call(
+    monkeypatch, tmp_path,
+) -> None:
+    output = tmp_path / "request-hash.output.json"
+    output.write_text('{"action":"cached"}', encoding="utf-8")
+    monkeypatch.setattr(
+        "advoice.agent_runtime.run_openai_batch",
+        lambda *args: (_ for _ in ()).throw(AssertionError("provider called")),
+    )
+
+    result = run_structured_batch(
+        tmp_path, "prompt", tmp_path / "schema.json", output, "model", "openai_api"
+    )
+
+    assert result == {"action": "cached"}
+
+
+@pytest.mark.parametrize("contents", ["not json", "[]"])
+def test_structured_batch_rejects_corrupt_cached_output(tmp_path, contents) -> None:
+    output = tmp_path / "request-hash.output.json"
+    output.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Cached structured output"):
+        run_structured_batch(
+            tmp_path, "prompt", tmp_path / "schema.json", output, "model", "openai_api"
+        )

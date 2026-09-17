@@ -202,6 +202,17 @@ def run_structured_batch(
     model: str,
     provider: str,
 ) -> dict[str, Any]:
+    # The caller binds output_path to a request hash. Reusing that exact path
+    # makes long external-provider studies resumable without silently issuing
+    # the same paid request twice. Corrupt cache entries fail closed.
+    if output_path.is_file():
+        try:
+            cached = json.loads(output_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"Cached structured output is invalid: {output_path}") from exc
+        if not isinstance(cached, dict):
+            raise RuntimeError(f"Cached structured output must be a JSON object: {output_path}")
+        return cached
     if provider == "codex_cli":
         return run_codex_batch(root, prompt, schema_path, output_path, model)
     if provider == "openai_api":

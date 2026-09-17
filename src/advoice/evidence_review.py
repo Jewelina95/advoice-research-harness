@@ -47,12 +47,12 @@ def apply_reviewed_snapshot(workspace: dict[str, Any], candidate: dict[str, Any]
     reviewed.pop("cognitive_state_reference", None)
     reviewed.pop("class_support", None)
     reviewed["evidence_revision"] = {
-        "schema_version": "reviewed-evidence-v1", "parent_hash": hash_values(workspace),
+        "schema_version": "reviewed-evidence-v1", "parent_hash": hash_values([workspace]),
         "actions": deepcopy(updates), "excluded_evidence_ids": sorted(excluded),
         "state_replay_required": True,
     }
-    reviewed["evidence_revision"]["snapshot_hash"] = hash_values({
+    reviewed["evidence_revision"]["snapshot_hash"] = hash_values([{
         key: reviewed.get(key) for key in sorted(state_keys | {
             "selected_supporting_evidence", "selected_counterevidence", "evidence_registry"})
-    })
+    }])
     return reviewed

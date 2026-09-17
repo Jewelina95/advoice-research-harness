@@ -24,6 +24,15 @@ from .pipeline import (
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="advoice", description="ADvoice reproducible research harness")
     commands = root.add_subparsers(dest="command", required=True)
+    agent_led = commands.add_parser("agent-led", help="Run Agent-led decisions on existing evidence; no supervised retraining")
+    agent_led.add_argument("--workspaces", type=Path, required=True)
+    agent_led.add_argument("--output-dir", type=Path, required=True)
+    agent_led.add_argument("--labels", nargs="+", required=True)
+    agent_led.add_argument("--provider", choices=["disabled", "openai_api"], default="disabled")
+    agent_led.add_argument("--model", default=None)
+    agent_led.add_argument("--max-steps", type=int, default=16)
+    agent_led.add_argument("--max-cases", type=int)
+    agent_led.add_argument("--truth", type=Path, help="Evaluation-only JSON mapping case_id to label; never sent to the Agent")
     validate = commands.add_parser("validate")
     validate.add_argument("--dataset", default="NCMMSC2021_AD")
     run = commands.add_parser("run")
@@ -80,6 +89,18 @@ def main() -> None:
 
 
 def _dispatch(args: argparse.Namespace) -> None:
+    if args.command == "agent-led":
+        from .agent_led_run import run_agent_led_cohort
+        from .config import load_yaml
+        p = paths()
+        model = args.model or load_yaml(p.configs / "agents" / "default.yaml")["model"]
+        result = run_agent_led_cohort(
+            p.root, args.workspaces, args.output_dir, args.labels,
+            provider=args.provider, model=model, max_steps=args.max_steps,
+            max_cases=args.max_cases, truth_path=args.truth,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.command == "experiment":
         from .experiments import run_experiment
         result = run_experiment(args.config, args.check)

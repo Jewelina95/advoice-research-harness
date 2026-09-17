@@ -6,6 +6,25 @@ ADvoice is an evidence-governed research pipeline for speech-based cognitive scr
 
 This software is for screening and referral-support research. It is not a diagnostic medical device and does not establish Alzheimer disease pathology or stage.
 
+## Agent-led architecture
+
+The new [Agent-led decision runtime](docs/AGENT_LED_ARCHITECTURE.md) lets one
+Agent inspect evidence, record an independent hypothesis, optionally consult the
+two trained modules, revise evidence, and make the final research judgment.
+It is a separate inference path, not a larger weight on the old supervised
+prediction. The original bounded-correction pipeline remains a comparator.
+
+```bash
+advoice agent-led --workspaces demo/agent_led/synthetic_workspace.jsonl \
+  --labels HC AD --provider openai_api --output-dir .local/agent-led-demo
+```
+
+This explicitly calls the model configured in `configs/agents/default.yaml`
+using `OPENAI_API_KEY`; override it with `--model`. The supplied case is synthetic.
+No training or clinical efficacy is implied. Each run saves decisions, actual
+tool traces, and an HTML report. Without a provider there is no Agent prediction;
+without independent calibration there is no diagnostic probability.
+
 ## Research workflow
 
 Use this repository for ongoing changes, not new dated system copies. Keep licensed
@@ -66,6 +85,8 @@ When served by `demo/server.py`, pressing **Run selected recording** executes ro
 | Component | Location | Responsibility |
 | --- | --- | --- |
 | Pipeline entry point | `src/advoice/pipeline.py` | dataset run orchestration |
+| Agent-led decision engine | `src/advoice/agent_led.py` | actual tool loop, evidence revisions, independent final decision |
+| Agent-led inference command | `src/advoice/agent_led_run.py` | explicit GPT calls, preserved run outputs and research reports |
 | Evidence objects | `src/advoice/evidence.py` | measurement-to-evidence conversion |
 | Cognitive states | `src/advoice/states.py` | shared and task-specific state aggregation |
 | Training and fusion | `src/advoice/condition_c.py` | out-of-fold training, constrained Agent fusion, fallback |

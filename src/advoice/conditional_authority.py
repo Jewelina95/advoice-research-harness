@@ -156,10 +156,10 @@ class AgentAuthorityDecision:
     advisor_current: bool
     ordinal_scores: Mapping[str, int]
     revision: EvidenceRevision | None = None
-    revision_batch: EvidenceRevisionBatch | None = None
     action_type: str = "review"
     incremental_evidence_ids: tuple[str, ...] = ()
     report_trace: tuple[Mapping[str, Any], ...] = ()
+    revision_batch: EvidenceRevisionBatch | None = None
 
     def __post_init__(self) -> None:
         if not str(self.case_id).strip():
@@ -784,6 +784,18 @@ class ConditionalAuthorityExecutor:
         )
         if proposal_ids - {item.evidence_id for item in supervised}:
             raise ConditionalAuthorityError("Agent may only revise evidence consumed by the Module A replay snapshot.")
+        if decision.revision_batch is not None:
+            evidence_by_id = {item.evidence_id: item for item in supervised}
+            mismatched_states = sorted(
+                evidence_id
+                for evidence_id in decision.revision_batch.evidence_ids
+                if evidence_by_id[evidence_id].state_id != decision.revision_batch.state_id
+            )
+            if mismatched_states:
+                raise ConditionalAuthorityError(
+                    "Agent revision batch state_id does not match its evidence: "
+                    f"{mismatched_states}."
+                )
 
         # Validation governs authority to mutate the evidence snapshot.  A
         # rejected proposal remains visible in the validator artifact, but it

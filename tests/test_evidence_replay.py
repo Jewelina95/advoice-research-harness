@@ -115,7 +115,7 @@ def test_batch_replay_applies_every_metric_atomically_and_binds_combined_hash() 
     ] == [0.25, 0.25]
     assert result.audit.revision_hash == replay_revision_hash(batch)
     assert result.audit.revision_hash not in {item.revision_hash for item in batch.revisions}
-    assert result.audit.revision_hash == atomic_revision_batch_hash(batch.revisions)
+    assert result.audit.revision_hash == batch.batch_hash
     assert set(result.state_graph.cards["revision_hash"]) == {result.audit.revision_hash}
     assert set(result.state_graph.cards["state_revision_hash"]) == {result.audit.revision_hash}
     assert result.packet.hashes["evidence_snapshot_hash"] == snapshot_hash({
@@ -172,6 +172,31 @@ def test_batch_prevalidation_rejects_duplicate_and_unknown_evidence_ids() -> Non
         apply_evidence_revision_batch(snapshot, (duplicate, duplicate))
     with pytest.raises(EvidenceRevisionError, match="absent"):
         apply_evidence_revision_batch(snapshot, (duplicate, unknown))
+
+
+def test_batch_rejects_mixed_actions_and_mismatched_state_provenance() -> None:
+    snapshot = _snapshot()
+    snapshot_hash = evidence_snapshot_hash(snapshot)
+    mixed = (
+        EvidenceRevision(
+            evidence_id="metric:a", action="invalidate",
+            expected_evidence_hash=snapshot_hash,
+        ),
+        EvidenceRevision(
+            evidence_id="metric:b", action="downweight",
+            expected_evidence_hash=snapshot_hash, reliability_multiplier=0.5,
+        ),
+    )
+    with pytest.raises(EvidenceRevisionError, match="mix revision actions"):
+        apply_evidence_revision_batch(snapshot, mixed)
+
+    wrong_state = EvidenceRevisionBatch(
+        case_id="case-1", state_id="S99", action="downweight",
+        expected_evidence_hash=snapshot_hash,
+        revisions=_batch(snapshot).revisions,
+    )
+    with pytest.raises(EvidenceRevisionError, match="state_id"):
+        apply_evidence_revision_batch(snapshot, wrong_state)
 
 
 def test_retain_batch_still_rejects_duplicate_snapshot_ids() -> None:

@@ -66,8 +66,6 @@ def replay_revision_hash(
 
         if not isinstance(revision, EvidenceRevisionBatch):
             raise EvidenceRevisionError("Replay accepts an EvidenceRevision, EvidenceRevisionBatch, or None.")
-        if revision.revisions:
-            return atomic_revision_batch_hash(revision.revisions)
         return revision.batch_hash
     return hash_values([{
         "schema_version": REVISION_SCHEMA_VERSION,
@@ -195,6 +193,9 @@ def _validate_revision_batch(
         raise EvidenceRevisionError("An atomic revision batch contains mixed evidence snapshot hashes.")
     if expected_hashes != {baseline_hash}:
         raise EvidenceRevisionError("Revision batch was created for a stale evidence snapshot.")
+    actions = {item.action for item in atomic}
+    if len(actions) != 1:
+        raise EvidenceRevisionError("An atomic revision batch cannot mix revision actions.")
     unknown = sorted(set(revision_ids) - set(ids))
     if unknown:
         raise EvidenceRevisionError(
@@ -223,6 +224,30 @@ def apply_evidence_revision_batch(
             return original, baseline_hash
         revisions = batch.revisions
         expected_batch_hash: str | None = batch.expected_evidence_hash
+        snapshot_by_id = {item.evidence_id: item for item in snapshot}
+        mismatched_states = sorted(
+            revision.evidence_id
+            for revision in revisions
+            if revision.evidence_id in snapshot_by_id
+            and snapshot_by_id[revision.evidence_id].state_id != batch.state_id
+        )
+        if mismatched_states:
+            raise EvidenceRevisionError(
+                "Revision batch state_id does not match its evidence: "
+                f"{mismatched_states}."
+            )
+        mismatched_cases = sorted(
+            revision.evidence_id
+            for revision in revisions
+            if revision.evidence_id in snapshot_by_id
+            and str(snapshot_by_id[revision.evidence_id].case_id or snapshot_by_id[revision.evidence_id].subject_id)
+            != batch.case_id
+        )
+        if mismatched_cases:
+            raise EvidenceRevisionError(
+                "Revision batch case_id does not match its evidence: "
+                f"{mismatched_cases}."
+            )
     elif isinstance(batch, Sequence) and not isinstance(batch, (str, bytes)):
         revisions = tuple(batch)
         expected_batch_hash = None

@@ -121,6 +121,7 @@ def test_valid_retain_compiles_hash_bound_noop_decision() -> None:
     assert compiled.batch.action == "retain"
     assert compiled.batch.revisions == ()
     assert compiled.decision.revision is None
+    assert compiled.decision.revision_batch is None
     assert compiled.decision.case_id == prepared.case_id
     assert compiled.decision.reviewed_packet_hash == prepared.reviewed_packet_hash
     assert compiled.decision.reviewed_evidence_hash == prepared.reviewed_evidence_hash
@@ -129,7 +130,7 @@ def test_valid_retain_compiles_hash_bound_noop_decision() -> None:
     assert compiled.decision.incremental_evidence_ids == ()
 
 
-def test_valid_one_metric_downweight_binds_the_compiled_revision() -> None:
+def test_valid_one_metric_downweight_binds_the_compiled_revision_batch() -> None:
     prepared = _prepared()
     review = _review(prepared, action="downweight", reliability_multiplier=0.5)
 
@@ -137,8 +138,9 @@ def test_valid_one_metric_downweight_binds_the_compiled_revision() -> None:
 
     assert compiled.batch.action == "downweight"
     assert len(compiled.batch.revisions) == 1
-    assert compiled.decision.revision is compiled.batch.revisions[0]
-    assert compiled.decision.revision.reliability_multiplier == 0.5
+    assert compiled.decision.revision is None
+    assert compiled.decision.revision_batch is compiled.batch
+    assert compiled.decision.revision_batch.revisions[0].reliability_multiplier == 0.5
 
 
 @pytest.mark.parametrize("action", ["invalidate", "mark_unavailable"])
@@ -150,7 +152,8 @@ def test_canonical_exclusion_action_compiles_to_one_atomic_revision(action: str)
     assert compiled.review.action == action
     assert compiled.batch.action == action
     assert compiled.decision.action_type == action
-    assert compiled.decision.revision is compiled.batch.revisions[0]
+    assert compiled.decision.revision is None
+    assert compiled.decision.revision_batch is compiled.batch
 
 
 def test_unknown_review_field_is_rejected() -> None:
@@ -202,19 +205,22 @@ def test_cited_evidence_must_belong_to_the_target_state() -> None:
         )
 
 
-def test_non_retain_multi_metric_state_fails_closed_without_dropping_revisions() -> None:
+def test_non_retain_multi_metric_state_compiles_one_atomic_batch_without_dropping_revisions() -> None:
     prepared = _prepared(_evidence("metric:one"), _evidence("metric:two"))
 
-    with pytest.raises(AgentStateReviewError, match="batch execution not yet supported"):
-        compile_agent_state_review(
+    compiled = compile_agent_state_review(
+        prepared,
+        _review(
             prepared,
-            _review(
-                prepared,
-                action="downweight",
-                reliability_multiplier=0.5,
-                cited_evidence_ids=["metric:one", "metric:two"],
-            ),
-        )
+            action="downweight",
+            reliability_multiplier=0.5,
+            cited_evidence_ids=["metric:one", "metric:two"],
+        ),
+    )
+
+    assert compiled.decision.revision is None
+    assert compiled.decision.revision_batch is compiled.batch
+    assert compiled.batch.evidence_ids == ("metric:one", "metric:two")
 
 
 def test_review_and_compiled_hashes_are_deterministic() -> None:

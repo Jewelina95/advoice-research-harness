@@ -243,7 +243,7 @@ class AgentStateReview:
 
 @dataclass(frozen=True, slots=True)
 class CompiledAgentStateReview:
-    """Immutable bridge output for the current one-revision executor."""
+    """Immutable bridge output for atomic state-level evidence replay."""
 
     review: AgentStateReview
     decision: AgentAuthorityDecision
@@ -331,11 +331,6 @@ def compile_agent_state_review(
     except EvidenceRevisionBatchError as exc:
         raise AgentStateReviewError(f"Agent state review batch compilation failed: {exc}") from exc
 
-    if parsed.action != "retain" and len(batch.revisions) != 1:
-        raise AgentStateReviewError(
-            "batch execution not yet supported: non-retain state reviews must compile to exactly one revision."
-        )
-    revision = None if parsed.action == "retain" else batch.revisions[0]
     decision = AgentAuthorityDecision(
         case_id=prepared.case_id,
         reviewed_packet_hash=prepared.reviewed_packet_hash,
@@ -344,7 +339,7 @@ def compile_agent_state_review(
         advisor_packet_hash=prepared.advisor_packet_hash,
         advisor_current=True,
         ordinal_scores=parsed.ordinal_scores,
-        revision=revision,
+        revision_batch=None if parsed.action == "retain" else batch,
         action_type=parsed.action,
         incremental_evidence_ids=(),
         report_trace=parsed.report_trace,

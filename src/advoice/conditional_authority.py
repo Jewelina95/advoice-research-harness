@@ -257,6 +257,34 @@ class ConditionalAuthorityResult:
         return self.module_b.probabilities
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedAuthorityCase:
+    """Immutable pre-Agent case packet produced by :meth:`prepare_case`.
+
+    The packet is the complete handoff boundary for an Agent.  In particular,
+    its four public hashes are the exact values a later
+    :class:`AgentAuthorityDecision` must echo; finalization never recomputes a
+    different pre-Agent snapshot behind the Agent's back.
+    """
+
+    case_id: str
+    route: RouteDecision
+    case_metadata: Mapping[str, Any]
+    case_context: Mapping[str, Any]
+    evidence: tuple[MetricEvidenceV2, ...]
+    module_a_evidence: tuple[MetricEvidenceV2, ...]
+    incremental_evidence: tuple[MetricEvidenceV2, ...]
+    pre_replay: EvidenceReplayResult
+    pre_state_cards: tuple[Mapping[str, Any], ...]
+    pre_evidence_artifact: Mapping[str, Any]
+    pre_state_artifact: Mapping[str, Any]
+    pre_packet_artifact: Mapping[str, Any]
+    reviewed_evidence_hash: str
+    reviewed_state_graph_hash: str
+    reviewed_packet_hash: str
+    advisor_packet_hash: str
+
+
 class ConditionalAuthorityExecutor:
     """Compose, but never replace, the existing typed numerical components."""
 
@@ -492,18 +520,14 @@ class ConditionalAuthorityExecutor:
             raise ConditionalAuthorityError("Incremental evidence does not satisfy its declared authority lane.")
         return bool(validation.approved and selected)
 
-    def execute(
+    def prepare_case(
         self,
         *,
         case_metadata: Mapping[str, Any],
         evidence: Sequence[MetricEvidenceV2],
-        agent_decision: AgentAuthorityDecision | Mapping[str, Any],
-        validator: AuthorityValidation | Mapping[str, Any],
-        segments: Sequence[Mapping[str, Any]],
         case_context: Mapping[str, Any] | None = None,
-        lock_id: str = "",
-    ) -> ConditionalAuthorityResult:
-        """Execute one strictly bound case without touching legacy Condition C."""
+    ) -> PreparedAuthorityCase:
+        """Freeze one case before the Agent receives its authority packet."""
 
         case_id = self._case_id(case_metadata)
         route = route_case(
@@ -511,24 +535,27 @@ class ConditionalAuthorityExecutor:
             observation_config=self.observation_route_config,
             target_config=self.target_route_config,
         )
-        if tuple(route.target_route.labels) != tuple(self.module_a.labels) or tuple(self.module_a.labels) != tuple(self.module_b.labels):
+        if (
+            tuple(route.target_route.labels) != tuple(self.module_a.labels)
+            or tuple(self.module_a.labels) != tuple(self.module_b.labels)
+        ):
             raise ConditionalAuthorityError("Route, Module A, and Module B must use the same ordered labels.")
-        decision = (
-            agent_decision if isinstance(agent_decision, AgentAuthorityDecision)
-            else AgentAuthorityDecision.from_mapping(agent_decision)
-        )
-        validation = validator if isinstance(validator, AuthorityValidation) else AuthorityValidation.from_mapping(validator)
         self._validate_subjects(case_id, evidence)
+        frozen_evidence = tuple(evidence)
         if route.observation_route.allowed_states:
-            unsupported = sorted({item.state_id for item in evidence} - set(route.observation_route.allowed_states))
+            unsupported = sorted(
+                {item.state_id for item in frozen_evidence} - set(route.observation_route.allowed_states)
+            )
             if unsupported:
                 raise ConditionalAuthorityError(
                     "Observation route forbids evidence states: " + ", ".join(unsupported)
                 )
-        supervised = tuple(item for item in evidence if not item.incremental_for_agent)
-        incremental = tuple(item for item in evidence if item.incremental_for_agent)
-        if not supervised:
-            raise ConditionalAuthorityError("At least one non-incremental evidence item is required for Module A.")
+        module_a_evidence = tuple(item for item in frozen_evidence if item.consumed_by_supervised)
+        incremental = tuple(item for item in frozen_evidence if item.incremental_for_agent)
+        if not module_a_evidence:
+            raise ConditionalAuthorityError(
+                "At least one MetricEvidenceV2 item with consumed_by_supervised=True is required for Module A."
+            )
 
         context = dict(case_context or {})
         injected = sorted(set(context) & set(self.module_a_state_feature_whitelist))
@@ -542,27 +569,130 @@ class ConditionalAuthorityExecutor:
         if self.module_a.language_column and self.module_a.language_column not in context:
             context[self.module_a.language_column] = route.observation_route.language or "unknown"
         pre = replay_evidence(
-            supervised, None, states_config=self.states_config, module_a=self.module_a,
-            case_context=context, correlation_config=self.correlation_config,
+            module_a_evidence,
+            None,
+            states_config=self.states_config,
+            module_a=self.module_a,
+            case_context=context,
+            correlation_config=self.correlation_config,
             dataset_id=str(case_metadata.get("dataset_id", "conditional_authority")),
-            label="unknown", split="inference",
+            label="unknown",
+            split="inference",
         )
         pre_evidence_artifact = self._evidence_artifact(case_id, pre.revised_evidence)
-        pre_evidence_lock_hash = hash_artifact(pre_evidence_artifact)
-        pre_state_cards = self._state_cards(case_id=case_id, replay=pre, revision_hash=pre.audit.revision_hash)
+        pre_evidence_hash = hash_artifact(pre_evidence_artifact)
+        pre_state_cards = self._state_cards(
+            case_id=case_id,
+            replay=pre,
+            revision_hash=pre.audit.revision_hash,
+        )
         pre_state_artifact = self._state_artifact(case_id, pre, pre_state_cards)
-        pre_state_lock_hash = hash_artifact(pre_state_artifact)
+        pre_state_hash = hash_artifact(pre_state_artifact)
         pre_packet_artifact = self._packet_artifact(
-            case_id, pre.packet,
-            evidence_lock_hash=pre_evidence_lock_hash,
-            state_lock_hash=pre_state_lock_hash,
+            case_id,
+            pre.packet,
+            evidence_lock_hash=pre_evidence_hash,
+            state_lock_hash=pre_state_hash,
         )
         pre_packet_hash = hash_artifact(pre_packet_artifact)
+        return PreparedAuthorityCase(
+            case_id=case_id,
+            route=route,
+            case_metadata=MappingProxyType(dict(case_metadata)),
+            case_context=MappingProxyType(context),
+            evidence=frozen_evidence,
+            module_a_evidence=module_a_evidence,
+            incremental_evidence=incremental,
+            pre_replay=pre,
+            pre_state_cards=tuple(_canonical_mapping(card) for card in pre_state_cards),
+            pre_evidence_artifact=MappingProxyType(pre_evidence_artifact),
+            pre_state_artifact=MappingProxyType(pre_state_artifact),
+            pre_packet_artifact=MappingProxyType(pre_packet_artifact),
+            reviewed_evidence_hash=pre.audit.evidence_hash,
+            reviewed_state_graph_hash=pre_state_hash,
+            reviewed_packet_hash=pre_packet_hash,
+            advisor_packet_hash=pre_packet_hash,
+        )
+
+    def finalize_case(
+        self,
+        *,
+        prepared: PreparedAuthorityCase,
+        agent_decision: AgentAuthorityDecision | Mapping[str, Any],
+        validator: AuthorityValidation | Mapping[str, Any],
+        segments: Sequence[Mapping[str, Any]],
+        lock_id: str = "",
+    ) -> ConditionalAuthorityResult:
+        """Validate an Agent decision against a frozen :class:`PreparedAuthorityCase`."""
+
+        if not isinstance(prepared, PreparedAuthorityCase):
+            raise TypeError("finalize_case requires a PreparedAuthorityCase from prepare_case.")
+        return self._finalize_prepared(
+            prepared=prepared,
+            agent_decision=agent_decision,
+            validator=validator,
+            segments=segments,
+            lock_id=lock_id,
+        )
+
+    def execute(
+        self,
+        *,
+        case_metadata: Mapping[str, Any],
+        evidence: Sequence[MetricEvidenceV2],
+        agent_decision: AgentAuthorityDecision | Mapping[str, Any],
+        validator: AuthorityValidation | Mapping[str, Any],
+        segments: Sequence[Mapping[str, Any]],
+        case_context: Mapping[str, Any] | None = None,
+        lock_id: str = "",
+    ) -> ConditionalAuthorityResult:
+        """Backward-compatible prepare/finalize convenience wrapper."""
+
+        return self.finalize_case(
+            prepared=self.prepare_case(
+                case_metadata=case_metadata,
+                evidence=evidence,
+                case_context=case_context,
+            ),
+            agent_decision=agent_decision,
+            validator=validator,
+            segments=segments,
+            lock_id=lock_id,
+        )
+
+    def _finalize_prepared(
+        self,
+        *,
+        prepared: PreparedAuthorityCase,
+        agent_decision: AgentAuthorityDecision | Mapping[str, Any],
+        validator: AuthorityValidation | Mapping[str, Any],
+        segments: Sequence[Mapping[str, Any]],
+        lock_id: str = "",
+    ) -> ConditionalAuthorityResult:
+        """Complete one previously frozen Agent handoff."""
+
+        case_id = prepared.case_id
+        route = prepared.route
+        decision = (
+            agent_decision if isinstance(agent_decision, AgentAuthorityDecision)
+            else AgentAuthorityDecision.from_mapping(agent_decision)
+        )
+        validation = validator if isinstance(validator, AuthorityValidation) else AuthorityValidation.from_mapping(validator)
+        pre = prepared.pre_replay
+        supervised = prepared.module_a_evidence
+        incremental = prepared.incremental_evidence
+        context = dict(prepared.case_context)
+        pre_evidence_artifact = dict(prepared.pre_evidence_artifact)
+        pre_evidence_lock_hash = hash_artifact(pre_evidence_artifact)
+        pre_state_artifact = dict(prepared.pre_state_artifact)
+        pre_state_lock_hash = prepared.reviewed_state_graph_hash
+        pre_packet_artifact = dict(prepared.pre_packet_artifact)
+        pre_packet_hash = prepared.reviewed_packet_hash
         self._validate_agent_context(
             decision,
             case_id=case_id,
             packet_hash=pre_packet_hash,
-            replay_evidence_hash=pre.audit.evidence_hash,
+            replay_evidence_hash=prepared.reviewed_evidence_hash,
             state_hash=pre_state_lock_hash,
             labels=self.module_a.labels,
         )
@@ -571,10 +701,14 @@ class ConditionalAuthorityExecutor:
         if decision.revision is not None and decision.revision.evidence_id not in {item.evidence_id for item in supervised}:
             raise ConditionalAuthorityError("Agent may only revise evidence consumed by the Module A replay snapshot.")
 
-        post = pre if decision.revision is None else replay_evidence(
-            supervised, decision.revision, states_config=self.states_config, module_a=self.module_a,
+        # Validation governs authority to mutate the evidence snapshot.  A
+        # rejected proposal remains visible in the validator artifact, but it
+        # cannot reach replay or alter Module A's numerical packet.
+        accepted_revision = decision.revision if validation.approved else None
+        post = pre if accepted_revision is None else replay_evidence(
+            supervised, accepted_revision, states_config=self.states_config, module_a=self.module_a,
             case_context=context, correlation_config=self.correlation_config,
-            dataset_id=str(case_metadata.get("dataset_id", "conditional_authority")),
+            dataset_id=str(prepared.case_metadata.get("dataset_id", "conditional_authority")),
             label="unknown", split="inference",
         )
         post_evidence_artifact = self._evidence_artifact(case_id, post.revised_evidence)
@@ -589,8 +723,8 @@ class ConditionalAuthorityExecutor:
             state_lock_hash=post_state_lock_hash,
         )
         post_packet_hash = hash_artifact(post_packet_artifact)
-        revision_artifact = self._revision_artifact(case_id, post, decision.revision)
-        consumed_by_current_revision = () if decision.revision is None else (decision.revision.evidence_id,)
+        revision_artifact = self._revision_artifact(case_id, post, accepted_revision)
+        consumed_by_module_a = tuple(post.packet.consumed_evidence_ids)
         validated_incremental = self._validate_incremental(
             decision, validation, incremental, post.packet.consumed_evidence_ids,
         )
@@ -604,7 +738,7 @@ class ConditionalAuthorityExecutor:
             "agent_ordinal_scores": dict(decision.ordinal_scores),
             "agent_scores_validated": bool(validation.approved),
             "eligible": bool(b_incremental_ids),
-            "revision_type": "none" if decision.revision is None else decision.revision.action,
+            "revision_type": "none" if accepted_revision is None else accepted_revision.action,
             "action_type": decision.action_type,
             "agreement": bool(validation.agreement),
             "evidence_coverage": validation.evidence_coverage,
@@ -614,11 +748,11 @@ class ConditionalAuthorityExecutor:
             "language": route.observation_route.language or "unknown",
             "ood": validation.ood,
             "incremental_evidence_declared": bool(b_incremental_ids),
-            "evidence_consumed_by_module_a": bool(consumed_by_current_revision),
+            "evidence_consumed_by_module_a": bool(consumed_by_module_a),
             "incremental_evidence_ids": list(b_incremental_ids),
-            "consumed_evidence_ids": list(consumed_by_current_revision),
+            "consumed_evidence_ids": list(consumed_by_module_a),
             "route_supported": bool(validation.route_supported),
-            "replay_performed": decision.revision is not None,
+            "replay_performed": accepted_revision is not None,
         }
         module_b = self.module_b.predict_one(b_input)
         module_b_artifact = {
@@ -695,5 +829,6 @@ class ConditionalAuthorityExecutor:
 
 __all__ = [
     "AgentAuthorityDecision", "AuthorityValidation", "ConditionalAuthorityError",
-    "ConditionalAuthorityExecutor", "ConditionalAuthorityResult", "StaleAuthorityError",
+    "ConditionalAuthorityExecutor", "ConditionalAuthorityResult", "PreparedAuthorityCase",
+    "StaleAuthorityError",
 ]

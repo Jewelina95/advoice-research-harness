@@ -106,8 +106,14 @@ def _evidence(*, incremental: bool = False) -> tuple[MetricEvidenceV2, ...]:
         ),
     }
     result = (
-        MetricEvidenceV2(evidence_id="metric:pause-a", metric_id="pause_a", value=1.0, **common),
-        MetricEvidenceV2(evidence_id="metric:pause-b", metric_id="pause_b", value=4.0, **common),
+        MetricEvidenceV2(
+            evidence_id="metric:pause-a", metric_id="pause_a", value=1.0,
+            consumed_by_supervised=True, **common,
+        ),
+        MetricEvidenceV2(
+            evidence_id="metric:pause-b", metric_id="pause_b", value=4.0,
+            consumed_by_supervised=True, **common,
+        ),
     )
     if not incremental:
         return result
@@ -136,9 +142,10 @@ def _prepared_decision(
     revision: EvidenceRevision | None = None,
     incremental_ids: tuple[str, ...] = (),
     stale_packet: bool = False,
+    trace_post_revision: bool = True,
 ) -> AgentAuthorityDecision:
     _require_bound_state_cards(executor, evidence)
-    supervised = tuple(item for item in evidence if not item.incremental_for_agent)
+    supervised = tuple(item for item in evidence if item.consumed_by_supervised)
     replay_kwargs = {
         "dataset_id": CASE["dataset_id"], "label": "unknown", "split": "inference",
     }
@@ -149,7 +156,7 @@ def _prepared_decision(
     pre_packet_hash = hash_artifact(
         executor._packet_artifact("case-1", pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
     )
-    post = pre if revision is None else replay_evidence(
+    post = pre if revision is None or not trace_post_revision else replay_evidence(
         supervised, revision, states_config=STATES, module_a=executor.module_a, **replay_kwargs
     )
     cards = executor._state_cards(case_id="case-1", replay=post, revision_hash=post.audit.revision_hash)
@@ -193,6 +200,10 @@ def _validation(decision: AgentAuthorityDecision, *, incremental_ids: tuple[str,
         agreement=True,
         route_supported=True,
     )
+
+
+def _rejected_validation(decision: AgentAuthorityDecision) -> AuthorityValidation:
+    return replace(_validation(decision), approved=False)
 
 
 def _segments() -> tuple[dict[str, str], ...]:
@@ -257,11 +268,13 @@ def test_dataset_specific_binary_target_route_is_supported() -> None:
 def test_no_agent_revision_keeps_module_a_and_reports_only_after_lock() -> None:
     executor = _executor()
     evidence = _evidence()
+    prepared = executor.prepare_case(case_metadata=CASE, evidence=evidence)
     decision = _prepared_decision(executor, evidence)
-    result = executor.execute(
-        case_metadata=CASE, evidence=evidence, agent_decision=decision,
+    result = executor.finalize_case(
+        prepared=prepared, agent_decision=decision,
         validator=_validation(decision), segments=_segments(), lock_id="lock-no-revision",
     )
+    assert result.pre_replay is prepared.pre_replay
     assert result.pre_replay.packet.to_json() == result.post_replay.packet.to_json()
     assert result.module_b.probabilities == (result.post_replay.packet.calibrated_probabilities or result.post_replay.packet.raw_probabilities)
     assert not result.module_b.additive_correction_applied
@@ -288,6 +301,51 @@ def test_consumed_revision_replays_module_a_without_module_b_double_vote() -> No
     assert not result.module_b.additive_correction_applied
 
 
+def test_prepare_case_freezes_every_hash_required_by_agent_decision() -> None:
+    prepared = _executor().prepare_case(case_metadata=CASE, evidence=_evidence())
+
+    assert prepared.case_id == "case-1"
+    assert len(prepared.reviewed_packet_hash) == 64
+    assert len(prepared.reviewed_evidence_hash) == 64
+    assert len(prepared.reviewed_state_graph_hash) == 64
+    assert prepared.reviewed_packet_hash == prepared.advisor_packet_hash
+
+
+def test_rejected_revision_cannot_replay_or_change_module_a() -> None:
+    executor = _executor()
+    evidence = _evidence()
+    baseline = replay_evidence(evidence, None, states_config=STATES, module_a=executor.module_a)
+    revision = EvidenceRevision(
+        evidence_id="metric:pause-a", action="downweight", expected_evidence_hash=baseline.audit.evidence_hash,
+        reliability_multiplier=.25,
+    )
+    decision = _prepared_decision(executor, evidence, revision=revision, trace_post_revision=False)
+
+    result = executor.execute(
+        case_metadata=CASE, evidence=evidence, agent_decision=decision,
+        validator=_rejected_validation(decision), segments=_segments(), lock_id="lock-rejected-revision",
+    )
+
+    assert result.pre_replay.packet.to_json() == result.post_replay.packet.to_json()
+    assert result.pre_replay.audit.evidence_hash == result.post_replay.audit.evidence_hash
+    assert result.module_b.consumed_evidence_ids == result.pre_replay.packet.consumed_evidence_ids
+
+
+def test_unconsumed_evidence_cannot_enter_module_a_or_consumption_audit() -> None:
+    executor = _executor()
+    evidence = list(_evidence())
+    evidence[1] = replace(evidence[1], consumed_by_supervised=False)
+    decision = _prepared_decision(executor, tuple(evidence))
+
+    result = executor.execute(
+        case_metadata=CASE, evidence=tuple(evidence), agent_decision=decision,
+        validator=_validation(decision), segments=_segments(), lock_id="lock-unconsumed-evidence",
+    )
+
+    assert result.pre_replay.packet.consumed_evidence_ids == ("metric:pause-a",)
+    assert "metric:pause-b" not in result.module_b.consumed_evidence_ids
+
+
 def test_only_validated_incremental_evidence_can_apply_bounded_module_b_correction() -> None:
     executor = _executor()
     evidence = _evidence(incremental=True)
@@ -299,7 +357,7 @@ def test_only_validated_incremental_evidence_can_apply_bounded_module_b_correcti
     assert result.module_b.additive_correction_applied
     assert max(abs(value) for value in result.module_b.additive_logit_correction.values()) <= executor.module_b.max_logit_correction
     assert result.module_b.incremental_evidence_ids == ("metric:incremental",)
-    assert result.module_b.consumed_evidence_ids == ()
+    assert result.module_b.consumed_evidence_ids == ("metric:pause-a", "metric:pause-b")
 
 
 def test_stale_packet_and_validator_fail_closed() -> None:

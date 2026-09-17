@@ -14,6 +14,7 @@ be fitted on evaluation predictions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -21,13 +22,30 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 
-MODULE_B_VERSION = "advoice.module_b.conditional_ridge.v2"
-MODULE_B_SCHEMA_VERSION = "advoice.module_b.contract.v2"
+MODULE_B_VERSION = "advoice.module_b.conditional_ridge.v3"
+MODULE_B_SCHEMA_VERSION = "advoice.module_b.contract.v3"
+_CROSS_FIT_QUALIFICATION_VERSION = "advoice.module_b.cross_fit_qualification.v1"
 _FALLBACK_POST_REPLAY = "module_a_post_replay"
 
 
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def compute_fit_subject_hash(subject_ids: Iterable[str]) -> str:
+    """Return the canonical, order-invariant hash for one fold's fit subjects.
+
+    The roster is required while building Module B but is deliberately not
+    serialized into the fitted artifact.  The artifact retains only this hash
+    and the independent target-subject-set hash as an audit proof.
+    """
+
+    normalized = tuple(sorted(str(subject_id).strip() for subject_id in subject_ids))
+    if not normalized or any(not subject_id for subject_id in normalized):
+        raise ValueError("fit_subject_ids must contain at least one non-empty subject ID.")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("fit_subject_ids must not contain duplicate subject IDs.")
+    return hashlib.sha256(_canonical(list(normalized)).encode("utf-8")).hexdigest()
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
@@ -83,6 +101,27 @@ def _evidence_ids(row: Mapping[str, Any], field: str) -> tuple[str, ...]:
     return tuple(sorted(ids))
 
 
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    result = str(value).strip()
+    return result or None
+
+
+def _optional_subject_ids(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or isinstance(value, Mapping):
+        raise ValueError("fit_subject_ids must be a sequence of non-empty subject IDs.")
+    try:
+        subject_ids = tuple(str(subject_id).strip() for subject_id in value)
+    except TypeError as error:
+        raise ValueError("fit_subject_ids must be a sequence of non-empty subject IDs.") from error
+    if any(not subject_id for subject_id in subject_ids) or len(set(subject_ids)) != len(subject_ids):
+        raise ValueError("fit_subject_ids must contain unique, non-empty subject IDs.")
+    return tuple(sorted(subject_ids))
+
+
 @dataclass(frozen=True)
 class ConditionalArbitrationInput:
     """One complete, label-free Module B input contract.
@@ -113,6 +152,18 @@ class ConditionalArbitrationInput:
     incremental_evidence_ids: tuple[str, ...] = ()
     consumed_evidence_ids: tuple[str, ...] = ()
     cross_fit_fold: str | int | None = None
+    # These fields are mandatory for Module B fitting, but optional at
+    # inference because a trained Module B artifact must be usable without
+    # exposing development-cohort identities in a clinical case payload.
+    subject_id: str | None = None
+    fold: str | int | None = None
+    fit_subject_ids: tuple[str, ...] = ()
+    fit_subject_hash: str | None = None
+    reference_hash: str | None = None
+    module_a_hash: str | None = None
+    agent_version: str | None = None
+    validator_version: str | None = None
+    selection_independent: bool | None = None
 
     @classmethod
     def from_mapping(
@@ -191,6 +242,19 @@ class ConditionalArbitrationInput:
             incremental_evidence_ids=incremental_ids,
             consumed_evidence_ids=consumed_ids,
             cross_fit_fold=row.get("cross_fit_fold"),
+            subject_id=_optional_text(row.get("subject_id")),
+            fold=row.get("fold"),
+            fit_subject_ids=_optional_subject_ids(row.get("fit_subject_ids")),
+            fit_subject_hash=_optional_text(row.get("fit_subject_hash")),
+            reference_hash=_optional_text(row.get("reference_hash")),
+            module_a_hash=_optional_text(row.get("module_a_hash")),
+            agent_version=_optional_text(row.get("agent_version")),
+            validator_version=_optional_text(row.get("validator_version")),
+            selection_independent=(
+                None
+                if "selection_independent" not in row or row.get("selection_independent") is None
+                else _bool(row["selection_independent"], "selection_independent")
+            ),
         )
 
     def to_dict(self, labels: Sequence[str]) -> dict[str, Any]:
@@ -217,6 +281,15 @@ class ConditionalArbitrationInput:
             "route_supported": self.route_supported,
             "replay_performed": self.replay_performed,
             "cross_fit_fold": self.cross_fit_fold,
+            "subject_id": self.subject_id,
+            "fold": self.fold,
+            "fit_subject_ids": list(self.fit_subject_ids),
+            "fit_subject_hash": self.fit_subject_hash,
+            "reference_hash": self.reference_hash,
+            "module_a_hash": self.module_a_hash,
+            "agent_version": self.agent_version,
+            "validator_version": self.validator_version,
+            "selection_independent": self.selection_independent,
         }
 
 
@@ -359,6 +432,112 @@ class ConditionalArbitrator:
         )
         return np.asarray(values, dtype=float)
 
+    @staticmethod
+    def _required_training_text(item: ConditionalArbitrationInput, field: str) -> str:
+        value = getattr(item, field)
+        result = _optional_text(value)
+        if result is None:
+            raise ValueError(f"Module B fit requires non-empty {field} on every OOF development row.")
+        return result
+
+    @classmethod
+    def _validate_cross_fit_qualification(
+        cls,
+        items: Sequence[ConditionalArbitrationInput],
+    ) -> dict[str, Any]:
+        """Validate the provenance required for a leakage-safe OOF residual fit.
+
+        ``cross_fit_fold`` alone only labels a row.  This method proves that a
+        row was the held-out target of a concrete fold, while the fold's
+        reference and Module A artifacts were fitted on a distinct, frozen
+        subject roster.  It raises rather than silently dropping invalid rows:
+        an incomplete OOF table cannot be turned into a partly trusted Module B.
+        """
+
+        subjects: set[str] = set()
+        fold_contracts: dict[str, dict[str, Any]] = {}
+        agent_versions: set[str] = set()
+        validator_versions: set[str] = set()
+
+        for item in items:
+            subject_id = cls._required_training_text(item, "subject_id")
+            if subject_id in subjects:
+                raise ValueError(
+                    "A subject may not be reused as more than one OOF target row: "
+                    f"{subject_id!r}."
+                )
+            subjects.add(subject_id)
+
+            legacy_fold = _optional_text(item.cross_fit_fold)
+            if legacy_fold is None:
+                raise ValueError("Module B fit requires cross_fit_fold on every development row.")
+            fold = _optional_text(item.fold)
+            if fold is None:
+                raise ValueError("Module B fit requires non-empty fold on every OOF development row.")
+            if fold != legacy_fold:
+                raise ValueError("fold must match cross_fit_fold for every OOF development row.")
+
+            if item.selection_independent is not True:
+                raise ValueError(
+                    "Module B fit requires selection_independent=true on every OOF development row."
+                )
+            if not item.fit_subject_ids:
+                raise ValueError("Module B fit requires non-empty fit_subject_ids on every OOF development row.")
+            expected_fit_hash = compute_fit_subject_hash(item.fit_subject_ids)
+            fit_subject_hash = cls._required_training_text(item, "fit_subject_hash")
+            if fit_subject_hash != expected_fit_hash:
+                raise ValueError(
+                    "fit_subject_hash does not match the canonical fit_subject_ids roster for "
+                    f"fold {fold!r}."
+                )
+            if subject_id in item.fit_subject_ids:
+                raise ValueError(
+                    f"OOF target subject {subject_id!r} appears in its own fit set for fold {fold!r}."
+                )
+
+            reference_hash = cls._required_training_text(item, "reference_hash")
+            module_a_hash = cls._required_training_text(item, "module_a_hash")
+            agent_version = cls._required_training_text(item, "agent_version")
+            validator_version = cls._required_training_text(item, "validator_version")
+            agent_versions.add(agent_version)
+            validator_versions.add(validator_version)
+
+            contract = {
+                "fit_subject_hash": fit_subject_hash,
+                "reference_hash": reference_hash,
+                "module_a_hash": module_a_hash,
+                "agent_version": agent_version,
+                "validator_version": validator_version,
+            }
+            existing = fold_contracts.get(fold)
+            if existing is None:
+                fold_contracts[fold] = contract
+            else:
+                for field, value in contract.items():
+                    if existing[field] != value:
+                        raise ValueError(
+                            f"OOF fold {fold!r} has inconsistent {field}; every target row in a fold "
+                            "must use one frozen provenance contract."
+                        )
+
+        if len(fold_contracts) < 2:
+            raise ValueError("Module B fit requires at least two distinct OOF folds.")
+        if len(agent_versions) != 1:
+            raise ValueError("Module B fit requires one agent_version across the OOF development table.")
+        if len(validator_versions) != 1:
+            raise ValueError("Module B fit requires one validator_version across the OOF development table.")
+
+        return {
+            "contract_version": _CROSS_FIT_QUALIFICATION_VERSION,
+            "selection_independent": True,
+            "target_subject_count": len(subjects),
+            "target_subject_hash": compute_fit_subject_hash(subjects),
+            "folds": [
+                {"fold": fold, **fold_contracts[fold]}
+                for fold in sorted(fold_contracts)
+            ],
+        }
+
     def fit(
         self,
         rows: Iterable[Mapping[str, Any] | ConditionalArbitrationInput],
@@ -381,8 +560,7 @@ class ConditionalArbitrator:
             )
             for value in raw_rows
         ]
-        if any(item.cross_fit_fold is None or str(item.cross_fit_fold) == "" for item in items):
-            raise ValueError("Module B fit requires cross_fit_fold on every development row.")
+        self.cross_fit_qualification_ = self._validate_cross_fit_qualification(items)
         if y is None:
             inferred = []
             for row in raw_rows:
@@ -420,6 +598,8 @@ class ConditionalArbitrator:
         self.coefficients_ -= self.coefficients_.mean(axis=1, keepdims=True)
         pair_counts: dict[str, int] = {}
         for item in items:
+            if not self._is_incremental(item):
+                continue
             key = f"{item.route}\u0000{item.language}"
             pair_counts[key] = pair_counts.get(key, 0) + 1
         self.supported_route_languages_ = tuple(sorted(
@@ -500,6 +680,7 @@ class ConditionalArbitrator:
             "coefficients": self.coefficients_.tolist(),
             "supported_route_languages": list(self.supported_route_languages_),
             "cross_fit_folds": list(self.cross_fit_folds_),
+            "cross_fit_qualification": self.cross_fit_qualification_,
             "fitted_rows": self.fitted_rows_,
         }
 
@@ -533,6 +714,42 @@ class ConditionalArbitrator:
         result.coefficients_ = coefficients
         result.supported_route_languages_ = tuple(sorted(str(value) for value in payload["supported_route_languages"]))
         result.cross_fit_folds_ = tuple(str(value) for value in payload["cross_fit_folds"])
+        qualification = payload.get("cross_fit_qualification")
+        if not isinstance(qualification, Mapping):
+            raise ValueError("Serialized Module B artifact is missing cross_fit_qualification.")
+        if qualification.get("contract_version") != _CROSS_FIT_QUALIFICATION_VERSION:
+            raise ValueError("Serialized Module B cross-fit qualification version is unsupported.")
+        if qualification.get("selection_independent") is not True:
+            raise ValueError("Serialized Module B artifact is not selection-independent.")
+        if int(qualification.get("target_subject_count", 0)) < 1:
+            raise ValueError("Serialized Module B target_subject_count is invalid.")
+        if not _optional_text(qualification.get("target_subject_hash")):
+            raise ValueError("Serialized Module B target_subject_hash is missing.")
+        folds = qualification.get("folds")
+        if not isinstance(folds, list) or len(folds) < 2:
+            raise ValueError("Serialized Module B cross-fit qualification requires at least two folds.")
+        normalized_folds: list[dict[str, Any]] = []
+        for fold in folds:
+            if not isinstance(fold, Mapping):
+                raise ValueError("Serialized Module B cross-fit fold qualification is invalid.")
+            normalized: dict[str, Any] = {}
+            for field in (
+                "fold", "fit_subject_hash", "reference_hash", "module_a_hash", "agent_version", "validator_version"
+            ):
+                value = _optional_text(fold.get(field))
+                if value is None:
+                    raise ValueError(f"Serialized Module B cross-fit qualification is missing {field}.")
+                normalized[field] = value
+            normalized_folds.append(normalized)
+        if tuple(sorted(item["fold"] for item in normalized_folds)) != result.cross_fit_folds_:
+            raise ValueError("Serialized Module B cross-fit fold list is inconsistent with its qualification proof.")
+        result.cross_fit_qualification_ = {
+            "contract_version": _CROSS_FIT_QUALIFICATION_VERSION,
+            "selection_independent": True,
+            "target_subject_count": int(qualification["target_subject_count"]),
+            "target_subject_hash": str(qualification["target_subject_hash"]),
+            "folds": sorted(normalized_folds, key=lambda item: item["fold"]),
+        }
         result.fitted_rows_ = int(payload["fitted_rows"])
         return result
 

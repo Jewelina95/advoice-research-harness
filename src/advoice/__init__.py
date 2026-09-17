@@ -12,6 +12,24 @@ from .evidence import (
 )
 from .routing import ObservationRoute, RouteDecision, TargetRoute, route_case
 from .evidence_replay import EvidenceRevision, EvidenceRevisionError, replay_evidence
+from .decision_lock import (
+    DecisionLock,
+    DecisionLockError,
+    EvidenceTraceError,
+    HashMismatchError,
+    ReportTrace,
+    ReportTraceEntry,
+    UnlockedReportError,
+    canonical_json,
+    create_decision_lock,
+    deserialize_decision_lock,
+    hash_artifact,
+    lock_decision,
+    serialize_decision_lock,
+    validate_decision_lock,
+    validate_locked_report,
+    validate_report_trace,
+)
 
 __version__ = "0.2.0"
 
@@ -21,4 +39,9 @@ __all__ = [
     "TargetRoute", "deserialize_metric_evidence_v2", "route_case",
     "serialize_metric_evidence_v2", "EvidenceRevision", "EvidenceRevisionError",
     "replay_evidence",
+    "DecisionLock", "DecisionLockError", "EvidenceTraceError", "HashMismatchError",
+    "ReportTrace", "ReportTraceEntry", "UnlockedReportError", "canonical_json",
+    "create_decision_lock", "hash_artifact", "lock_decision", "validate_locked_report",
+    "validate_report_trace", "serialize_decision_lock", "deserialize_decision_lock",
+    "validate_decision_lock",
 ]

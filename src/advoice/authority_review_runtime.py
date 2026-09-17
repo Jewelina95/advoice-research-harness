@@ -443,7 +443,7 @@ def build_blind_payload(
 ) -> Mapping[str, Any]:
     """Build the first-pass, label-blind provider payload."""
 
-    pseudo, _, _ = _verify_prepared(prepared)
+    pseudo, states, _ = _verify_prepared(prepared)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "review_pass": "blind_evidence_assessment",
@@ -454,6 +454,12 @@ def build_blind_payload(
             "language": prepared.route.observation_route.language,
         },
         "class_order": list(prepared.route.target_route.labels),
+        "review_contract": {
+            "reviewable_state_ids": list(states),
+            "state_id_rule": "Use state_id exactly; never use state_card_id.",
+            "output_rule": "Return only states requiring a non-retain evidence action; omitted states are retained.",
+            "citation_rule": "Each action may cite only MetricEvidence IDs whose state_id matches the action state_id.",
+        },
         "reviewed_packet_hash": prepared.reviewed_packet_hash,
         "reviewed_evidence_hash": prepared.reviewed_evidence_hash,
         "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
@@ -491,12 +497,15 @@ def build_advisor_payload(
     return _freeze_mapping(sanitize_provider_payload(payload))
 
 
-def _action_schema() -> dict[str, Any]:
+def _action_schema(
+    state_ids: Sequence[str], *, allow_retain: bool = True,
+) -> dict[str, Any]:
+    actions = STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"}
     return {
         "type": "object", "additionalProperties": False,
         "properties": {
-            "state_id": {"type": "string"},
-            "action": {"type": "string", "enum": sorted(STATE_ACTIONS)},
+            "state_id": {"type": "string", "enum": list(state_ids)},
+            "action": {"type": "string", "enum": sorted(actions)},
             "cited_metric_evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "reliability_multiplier": {"type": "number", "minimum": 0, "maximum": 1},
             "rationale": {"type": "string"},
@@ -505,7 +514,7 @@ def _action_schema() -> dict[str, Any]:
     }
 
 
-def _blind_schema(class_order: Sequence[str]) -> dict[str, Any]:
+def _blind_schema(class_order: Sequence[str], state_ids: Sequence[str]) -> dict[str, Any]:
     score_properties = {label: {"type": "integer", "minimum": 0, "maximum": 4} for label in class_order}
     return {
         "type": "object", "additionalProperties": False,
@@ -514,7 +523,10 @@ def _blind_schema(class_order: Sequence[str]) -> dict[str, Any]:
             "reviewed_packet_hash": {"type": "string"},
             "reviewed_evidence_hash": {"type": "string"},
             "reviewed_state_graph_hash": {"type": "string"},
-            "state_actions": {"type": "array", "items": _action_schema(), "minItems": 1},
+            "state_actions": {
+                "type": "array", "items": _action_schema(state_ids, allow_retain=False),
+                "minItems": 0, "maxItems": len(tuple(state_ids)),
+            },
             "ordinal_scores": {"type": "object", "properties": score_properties, "required": list(class_order), "additionalProperties": False},
             "report_trace": {"type": "array", "items": {"type": "string"}},
         },
@@ -522,7 +534,7 @@ def _blind_schema(class_order: Sequence[str]) -> dict[str, Any]:
     }
 
 
-def _reconciliation_schema() -> dict[str, Any]:
+def _reconciliation_schema(state_ids: Sequence[str]) -> dict[str, Any]:
     return {
         "type": "object", "additionalProperties": False,
         "properties": {
@@ -532,7 +544,7 @@ def _reconciliation_schema() -> dict[str, Any]:
             "reviewed_state_graph_hash": {"type": "string"},
             "advisor_packet_hash": {"type": "string"},
             "disposition": {"type": "string", "enum": ["retain", "amend"]},
-            "amendments": {"type": "array", "items": _action_schema()},
+            "amendments": {"type": "array", "items": _action_schema(state_ids)},
             "cited_metric_evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "rationale": {"type": "string"},
         },
@@ -540,14 +552,30 @@ def _reconciliation_schema() -> dict[str, Any]:
     }
 
 
-def _validate_actions(actions: Sequence[StateReviewAction], states: Sequence[str], evidence_ids: set[str]) -> Mapping[str, StateReviewAction]:
+def _validate_actions(
+    actions: Sequence[StateReviewAction],
+    states: Sequence[str],
+    evidence_states: Mapping[str, str],
+) -> Mapping[str, StateReviewAction]:
     mapped = _actions_by_state(actions)
-    if set(mapped) != set(states):
-        raise AuthorityReviewValidationError("Provider must review every and only frozen states.")
+    if not set(mapped).issubset(states):
+        raise AuthorityReviewValidationError("Provider reviewed a state outside the frozen state graph.")
     for action in mapped.values():
-        unknown = set(action.cited_metric_evidence_ids) - evidence_ids
+        if action.action == "retain":
+            raise AuthorityReviewValidationError(
+                "Blind review must omit retained states and return only non-retain actions."
+            )
+        unknown = set(action.cited_metric_evidence_ids) - set(evidence_states)
         if unknown:
             raise AuthorityReviewValidationError("Provider cited unknown MetricEvidence IDs: " + ", ".join(sorted(unknown)))
+        foreign = sorted(
+            evidence_id for evidence_id in action.cited_metric_evidence_ids
+            if evidence_states[evidence_id] != action.state_id
+        )
+        if foreign:
+            raise AuthorityReviewValidationError(
+                "Provider cited MetricEvidence outside the reviewed state: " + ", ".join(foreign)
+            )
     return mapped
 
 
@@ -555,7 +583,8 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
     _reject_leakage(response)
     if not isinstance(response, Mapping):
         raise AuthorityReviewValidationError("Blind provider response must be an object.")
-    pseudo, states, evidence_ids = _verify_prepared(prepared)
+    pseudo, states, _ = _verify_prepared(prepared)
+    evidence_states = {item.evidence_id: item.state_id for item in prepared.evidence}
     actions_value = response.get("state_actions")
     if not isinstance(actions_value, list):
         raise AuthorityReviewValidationError("Blind provider response requires state_actions.")
@@ -567,7 +596,7 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
         reviewed_packet_hash=str(response.get("reviewed_packet_hash", "")),
         reviewed_evidence_hash=str(response.get("reviewed_evidence_hash", "")),
         reviewed_state_graph_hash=str(response.get("reviewed_state_graph_hash", "")),
-        state_actions=_validate_actions(actions, states, evidence_ids),
+        state_actions=_validate_actions(actions, states, evidence_states),
         ordinal_scores=_scores(response.get("ordinal_scores", {}), prepared.route.target_route.labels),
         report_trace=tuple(response.get("report_trace", ())),
     )
@@ -583,6 +612,7 @@ def _parse_reconciliation(response: Any, prepared: PreparedAuthorityCase, blind:
     if not isinstance(response, Mapping):
         raise AuthorityReviewValidationError("Advisor provider response must be an object.")
     pseudo, states, evidence_ids = _verify_prepared(prepared)
+    evidence_states = {item.evidence_id: item.state_id for item in prepared.evidence}
     amendments_value = response.get("amendments")
     if not isinstance(amendments_value, list):
         raise AuthorityReviewValidationError("Advisor provider response requires amendments.")
@@ -598,6 +628,8 @@ def _parse_reconciliation(response: Any, prepared: PreparedAuthorityCase, blind:
     for action in mapped_amendments.values():
         if set(action.cited_metric_evidence_ids) - evidence_ids:
             raise AuthorityReviewValidationError("Advisor amendment cited unknown MetricEvidence IDs.")
+        if any(evidence_states[item] != action.state_id for item in action.cited_metric_evidence_ids):
+            raise AuthorityReviewValidationError("Advisor amendment cited MetricEvidence outside its state.")
     reconciliation = AdvisorReconciliation(
         case_id=str(response.get("case_id", "")),
         reviewed_packet_hash=str(response.get("reviewed_packet_hash", "")),
@@ -649,24 +681,27 @@ class AuthorityReviewRuntime:
 
         policy = _policy_documents(self.root, self.skill_path)
         blind_payload = build_blind_payload(prepared, policy_documents=policy, transcript=transcript)
-        blind_hash = hash_artifact({"pass": 1, "payload": blind_payload, "schema": _blind_schema(prepared.route.target_route.labels)})
+        _, state_ids, _ = _verify_prepared(prepared)
+        blind_schema = _blind_schema(prepared.route.target_route.labels, state_ids)
+        blind_hash = hash_artifact({"pass": 1, "payload": blind_payload, "schema": blind_schema})
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             blind_response = run_structured_batch(
                 self.root,
                 "Return only the requested blind evidence assessment JSON.\n" + canonical_json(blind_payload),
-                self._write_schema("blind", blind_hash, _blind_schema(prepared.route.target_route.labels)),
+                self._write_schema("blind", blind_hash, blind_schema),
                 self.cache_dir / f"{blind_hash}.blind.output.json",
                 self.model,
                 self.provider,
             )
             blind = _parse_blind(blind_response, prepared)
             advisor_payload = build_advisor_payload(prepared, blind, policy_documents=policy)
-            advisor_hash = hash_artifact({"pass": 2, "payload": advisor_payload, "schema": _reconciliation_schema()})
+            reconciliation_schema = _reconciliation_schema(state_ids)
+            advisor_hash = hash_artifact({"pass": 2, "payload": advisor_payload, "schema": reconciliation_schema})
             advisor_response = run_structured_batch(
                 self.root,
                 "Return only the requested advisor reconciliation JSON.\n" + canonical_json(advisor_payload),
-                self._write_schema("advisor", advisor_hash, _reconciliation_schema()),
+                self._write_schema("advisor", advisor_hash, reconciliation_schema),
                 self.cache_dir / f"{advisor_hash}.advisor.output.json",
                 self.model,
                 self.provider,

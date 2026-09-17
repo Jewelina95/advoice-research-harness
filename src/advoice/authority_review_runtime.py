@@ -20,6 +20,7 @@ from .transcript_sanitization import sanitize_transcript_payload
 
 SCHEMA_VERSION = "advoice.authority_review_runtime.v1"
 STATE_ACTIONS = frozenset({"retain", "downweight", "invalidate", "mark_unavailable"})
+DOWNWEIGHT_MULTIPLIERS = (0.25, 0.5, 0.75)
 REVIEW_AVAILABLE = "available"
 REVIEW_UNAVAILABLE = "provider_unavailable"
 REVIEW_PROVIDER_ERROR = "failed_closed_provider_error"
@@ -84,8 +85,11 @@ class StateReviewAction:
         multiplier = _unit(self.reliability_multiplier, field="reliability_multiplier")
         if self.action == "retain" and multiplier != 1.0:
             raise AuthorityReviewValidationError("retain requires reliability_multiplier=1.0.")
-        if self.action == "downweight" and not 0.0 < multiplier < 1.0:
-            raise AuthorityReviewValidationError("downweight requires a multiplier strictly between 0 and 1.")
+        if self.action == "downweight" and multiplier not in DOWNWEIGHT_MULTIPLIERS:
+            raise AuthorityReviewValidationError(
+                "downweight requires a pre-registered multiplier in "
+                f"{list(DOWNWEIGHT_MULTIPLIERS)}."
+            )
         if self.action in {"invalidate", "mark_unavailable"} and multiplier != 0.0:
             raise AuthorityReviewValidationError(
                 f"{self.action} requires reliability_multiplier=0.0."
@@ -507,7 +511,10 @@ def _action_schema(
             "state_id": {"type": "string", "enum": list(state_ids)},
             "action": {"type": "string", "enum": sorted(actions)},
             "cited_metric_evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-            "reliability_multiplier": {"type": "number", "minimum": 0, "maximum": 1},
+            "reliability_multiplier": {
+                "type": "number",
+                "enum": [0.0, *DOWNWEIGHT_MULTIPLIERS, 1.0],
+            },
             "rationale": {"type": "string"},
         },
         "required": ["state_id", "action", "cited_metric_evidence_ids", "reliability_multiplier", "rationale"],

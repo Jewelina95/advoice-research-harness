@@ -113,7 +113,7 @@ def _blind(prepared: PreparedAuthorityCase) -> dict[str, object]:
         "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
         "state_actions": [{
             "state_id": "S01", "action": "downweight", "cited_metric_evidence_ids": ["metric:pause"],
-            "reliability_multiplier": 0.8, "rationale": "Measurement reliability is reduced.",
+            "reliability_multiplier": 0.75, "rationale": "Measurement reliability is reduced.",
         }],
         "ordinal_scores": {"HC": 2, "AD": 2},
         "report_trace": ["S01 reviewed against metric:pause."],
@@ -201,6 +201,11 @@ def test_blind_review_rejects_retain_unknown_state_and_cross_state_citations() -
     with pytest.raises(AuthorityReviewValidationError, match="outside the reviewed state"):
         _parse_blind(response, cross_state)
 
+    unsupported_strength = _blind(prepared)
+    unsupported_strength["state_actions"][0]["reliability_multiplier"] = 0.1
+    with pytest.raises(AuthorityReviewValidationError, match="pre-registered multiplier"):
+        _parse_blind(unsupported_strength, prepared)
+
 
 def test_reconciliation_rejects_cross_state_amendment_citations() -> None:
     prepared = _prepared()
@@ -235,6 +240,9 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
     blind_action = schemas[0]["properties"]["state_actions"]["items"]
     assert blind_action["properties"]["state_id"]["enum"] == ["S01"]
     assert "retain" not in blind_action["properties"]["action"]["enum"]
+    assert blind_action["properties"]["reliability_multiplier"]["enum"] == [
+        0.0, 0.25, 0.5, 0.75, 1.0,
+    ]
 
 
 def test_payload_strips_leakage_and_chat_residue_without_mutating_input(tmp_path: Path) -> None:

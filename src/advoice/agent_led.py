@@ -8,6 +8,8 @@ from __future__ import annotations
 from copy import deepcopy
 from math import isfinite
 from pathlib import Path
+import re
+import traceback
 from typing import Any, Callable
 
 from .cognitive_agent import _allowed_ids, validate_candidate
@@ -17,6 +19,14 @@ from .transcript_sanitization import sanitize_workspace_transcripts
 
 VERSION = "agent-led-v2"
 DECISION_MODES = {"clinical", "benchmark_forced_choice"}
+
+
+def _redact_provider_error(value: str, *, limit: int = 8000) -> str:
+    """Keep transport diagnostics while preventing credential leakage."""
+    text = str(value or "")
+    text = re.sub(r"Bearer\s+\S+", "Bearer [REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-[REDACTED]", text)
+    return text[-limit:]
 STATE_KEYS = (
     "state_observations", "reportable_state_observations",
     "inference_only_state_observations", "model_only_state_observations",
@@ -571,6 +581,10 @@ def run_agent_session(workspace: dict[str, Any], labels: list[str],
         except Exception as exc:
             result = session.finish("provider_error")
             result["provider_error_type"] = type(exc).__name__
+            result["provider_error_message"] = _redact_provider_error(str(exc))
+            result["provider_error_traceback"] = _redact_provider_error(
+                traceback.format_exc(), limit=12000,
+            )
             return result
         session.step(reply)
         if session.result is not None:

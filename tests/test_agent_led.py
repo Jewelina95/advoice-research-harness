@@ -128,6 +128,9 @@ def test_provider_failure_and_budget_never_fallback_to_prior():
         raise RuntimeError("provider failed")
     result = run_agent_session(workspace(), ["HC", "AD"], broken, model_id="test", skill_hash="fixture")
     assert result["status"] == "provider_error"
+    assert result["provider_error_type"] == "RuntimeError"
+    assert result["provider_error_message"] == "provider failed"
+    assert "RuntimeError: provider failed" in result["provider_error_traceback"]
     assert result["predicted_label"] is None
     result = run_agent_session(workspace(), ["HC", "AD"], lambda _: {}, model_id="test", skill_hash="fixture", max_steps=2)
     assert result["status"] == "budget_exhausted"

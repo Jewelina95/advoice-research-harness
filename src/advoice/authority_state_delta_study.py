@@ -1,10 +1,11 @@
-"""End-to-end, label-isolated authority state-delta cohort studies.
+"""End-to-end, label-isolated authority joint-fusion cohort studies.
 
 The study runner deliberately separates inference from evaluation.  A case is
 prepared without its outcome label, reviewed exactly once by the supplied
 two-pass runtime, compiled into one atomic transaction, replayed through the
-frozen Module A state expert, and only then fused with the immutable Condition
-C prediction.  Labels are read after every requested prediction is complete.
+frozen Module A state expert, and only then combined with the immutable
+Condition C prediction and the first-pass blind Agent likelihood.  Labels are
+read after every requested prediction is complete.
 
 Provider, schema, compilation, replay, and fusion failures are recorded as
 explicit failed cases.  The frozen Condition C prediction is computed before
@@ -14,7 +15,7 @@ failed case never receives a synthetic fused prediction.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -24,10 +25,10 @@ import pandas as pd
 from .authority_review_runtime import AuthorityReviewResult, AuthorityReviewRuntime, REVIEW_AVAILABLE
 from .authority_review_transaction_bridge import compile_authority_review_decision
 from .authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
-from .condition_c_delta import (
-    DeltaFusionConfig,
-    DeltaFusionHashExpectations,
-    fuse_condition_c_state_delta,
+from .authority_joint_fusion import (
+    AuthorityJointFusionConfig,
+    AuthorityJointFusionResult,
+    fuse_authority_joint,
 )
 from .decision_lock import canonical_json, hash_artifact
 from .evaluation import evaluate_predictions
@@ -36,8 +37,13 @@ from .module_a import ExplanationPacket
 from .utils import hash_values
 
 
-STUDY_SCHEMA_VERSION = "advoice.authority_state_delta_study.v1"
-DEFAULT_DELTA_FUSION_CONFIG = DeltaFusionConfig(alpha=0.25, max_abs_delta=0.75)
+STUDY_SCHEMA_VERSION = "advoice.authority_joint_fusion_study.v1"
+DEFAULT_JOINT_FUSION_CONFIG = AuthorityJointFusionConfig(
+    state_strength=0.0,
+    agent_strength=1.0,
+    max_abs_state_delta=0.75,
+    ordinal_temperature=1.0,
+)
 
 
 class AuthorityStateDeltaStudyError(RuntimeError):
@@ -61,16 +67,16 @@ class ReviewRuntime(Protocol):
 class AuthorityStateDeltaStudyConfig:
     """Predeclared study controls that are never selected from test outcomes."""
 
-    delta_fusion: DeltaFusionConfig = field(
-        default_factory=lambda: DeltaFusionConfig(alpha=0.25, max_abs_delta=0.75)
+    joint_fusion: AuthorityJointFusionConfig = field(
+        default_factory=lambda: DEFAULT_JOINT_FUSION_CONFIG
     )
     evaluation_bins: int = 10
     selection_order: str = "longest_first"
     max_cases: int | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.delta_fusion, DeltaFusionConfig):
-            raise TypeError("delta_fusion must be a DeltaFusionConfig.")
+        if not isinstance(self.joint_fusion, AuthorityJointFusionConfig):
+            raise TypeError("joint_fusion must be an AuthorityJointFusionConfig.")
         if self.evaluation_bins < 2:
             raise ValueError("evaluation_bins must be at least 2.")
         if self.selection_order not in {"longest_first", "subject_id"}:
@@ -81,7 +87,7 @@ class AuthorityStateDeltaStudyConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": STUDY_SCHEMA_VERSION,
-            "delta_fusion": asdict(self.delta_fusion),
+            "joint_fusion": self.joint_fusion.to_dict(),
             "evaluation_bins": self.evaluation_bins,
             "selection_order": self.selection_order,
             "max_cases": self.max_cases,
@@ -273,20 +279,34 @@ def _run_case(
             revision_hash = transaction.transaction_hash
             revision_action = "multi_state_evidence_review"
 
-        fusion = fuse_condition_c_state_delta(
-            frozen_packet,
-            pre_replay.packet,
-            post_replay.packet,
-            config=study_config.delta_fusion,
-            expected_hashes=_fusion_hashes(frozen_packet, pre_replay.packet, post_replay.packet, revision_hash),
-            revision_hash=revision_hash,
-            revision_action=revision_action,
+        blind_assessment = review.blind_assessment
+        if blind_assessment is None:
+            raise AuthorityStateDeltaStudyError(
+                "Available authority review has no validated blind assessment."
+            )
+        fusion = fuse_authority_joint(
+            _packet_probabilities(frozen_packet),
+            _packet_probabilities(pre_replay.packet),
+            _packet_probabilities(post_replay.packet),
+            blind_assessment.ordinal_scores,
+            class_order=frozen_packet.class_order,
+            config=study_config.joint_fusion,
+            provenance={
+                "frozen_packet_hash": _packet_hash(frozen_packet),
+                "pre_packet_hash": _packet_hash(pre_replay.packet),
+                "post_packet_hash": _packet_hash(post_replay.packet),
+                "blind_request_hash": review.blind_request_hash,
+                "reviewed_evidence_hash": prepared.reviewed_evidence_hash,
+                "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
+                "revision_hash": revision_hash,
+                "revision_action": revision_action,
+            },
         )
-        if transaction is None and not _bits_equal(
+        if fusion.frozen_parity and not _bits_equal(
             fusion.fused_probabilities, _packet_probabilities(frozen_packet)
         ):
             raise AuthorityStateDeltaStudyError(
-                "No-op review did not preserve frozen Condition C probabilities bit-for-bit."
+                "Neutral joint fusion did not preserve frozen Condition C probabilities bit-for-bit."
             )
         base.update({
             "status": "completed",
@@ -314,25 +334,6 @@ def _run_case(
             },
         })
     return base
-
-
-def _fusion_hashes(
-    frozen: ExplanationPacket,
-    pre: ExplanationPacket,
-    post: ExplanationPacket,
-    revision_hash: str,
-) -> DeltaFusionHashExpectations:
-    return DeltaFusionHashExpectations(
-        frozen_packet_hash=_packet_hash(frozen),
-        pre_packet_hash=_packet_hash(pre),
-        post_packet_hash=_packet_hash(post),
-        frozen_evidence_hash=_packet_bound_hash(frozen, ("evidence_hash", "evidence_snapshot_hash", "evidence_snapshot_sha256")),
-        pre_evidence_hash=_packet_bound_hash(pre, ("evidence_hash", "evidence_snapshot_hash", "evidence_snapshot_sha256")),
-        post_evidence_hash=_packet_bound_hash(post, ("evidence_hash", "evidence_snapshot_hash", "evidence_snapshot_sha256")),
-        pre_state_hash=_packet_bound_hash(pre, ("state_hash", "state_snapshot_hash")),
-        post_state_hash=_packet_bound_hash(post, ("state_hash", "state_snapshot_hash")),
-        revision_hash=revision_hash,
-    )
 
 
 def _packet_hash(packet: ExplanationPacket) -> str:
@@ -372,7 +373,7 @@ def _audit_base(prepared: Any, config: AuthorityStateDeltaStudyConfig, study_has
             "route": prepared.route.target_route.id,
             "class_order": list(prepared.route.target_route.labels),
         },
-        "delta_fusion": asdict(config.delta_fusion),
+        "joint_fusion": config.joint_fusion.to_dict(),
     }
 
 
@@ -397,16 +398,23 @@ def _packet_audit(packet: ExplanationPacket) -> dict[str, Any]:
     }
 
 
-def _fusion_audit(fusion: Any) -> dict[str, Any]:
+def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
     return {
         "audit_hash": fusion.audit_hash,
+        "input_hash": fusion.input_hash,
         "predicted_label": fusion.predicted_label,
         "probabilities": dict(fusion.fused_probabilities),
-        "correction_applied": bool(fusion.correction_applied),
-        "revision_action": fusion.revision_action,
-        "state_delta": dict(fusion.state_delta),
-        "clipped_state_delta": dict(fusion.clipped_state_delta),
-        "provenance": fusion.provenance.to_dict(),
+        "correction_applied": not fusion.frozen_parity,
+        "frozen_parity": fusion.frozen_parity,
+        "state_component_neutral": fusion.state_component_neutral,
+        "agent_component_neutral": fusion.agent_component_neutral,
+        "state_delta": dict(fusion.state_log_evidence),
+        "clipped_state_delta": dict(fusion.bounded_state_log_evidence),
+        "agent_log_evidence": dict(fusion.agent_log_evidence),
+        "agent_equal_prior_likelihood": dict(fusion.agent_equal_prior_likelihood),
+        "blind_ordinal_scores": dict(fusion.blind_ordinal_scores),
+        "config": fusion.config.to_dict(),
+        "provenance": dict(fusion.provenance),
     }
 
 

@@ -1,4 +1,4 @@
-"""Command-line entry point for resumable authority state-delta cohorts."""
+"""Command-line entry point for resumable authority joint-fusion cohorts."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from .authority_state_delta_study import (
     build_authority_review_runtime,
     run_authority_state_delta_cohort,
 )
+from .authority_joint_fusion import AuthorityJointFusionConfig
 from .authority_study_dataset import AuthorityStudyDataset
 from .config import paths
-from .condition_c_delta import DeltaFusionConfig
 
 
 SUPPORTED_PROVIDERS = ("codex_cli", "openai_api", "disabled")
@@ -24,7 +24,7 @@ SUPPORTED_SELECTION_ORDERS = ("longest_first", "subject_id")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="advoice-authority-state-delta",
-        description="Run a resumable, label-isolated Agent authority state-delta cohort.",
+        description="Run a resumable, label-isolated Agent authority joint-fusion cohort.",
     )
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_SELECTION_ORDERS,
         default="longest_first",
     )
-    parser.add_argument("--alpha", type=float, default=0.25)
+    parser.add_argument("--state-strength", type=float, default=0.0)
+    parser.add_argument("--agent-strength", type=float, default=1.0)
+    parser.add_argument("--ordinal-temperature", type=float, default=1.0)
+    parser.add_argument("--alpha", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max-abs-delta", type=float, default=0.75)
     parser.add_argument("--skill-path", type=Path, default=None)
     return parser
@@ -48,10 +51,17 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--model must be a non-empty explicit model identifier.")
     if args.max_cases is not None and args.max_cases < 1:
         raise ValueError("--max-cases must be positive when supplied.")
-    if not 0.0 <= args.alpha <= 1.0:
-        raise ValueError("--alpha must be in [0, 1].")
+    if args.alpha is not None and args.state_strength != 0.0:
+        raise ValueError("Use --state-strength or legacy --alpha, not both.")
+    state_strength = args.state_strength if args.alpha is None else args.alpha
+    if not state_strength >= 0.0:
+        raise ValueError("--state-strength must be non-negative.")
+    if not args.agent_strength >= 0.0:
+        raise ValueError("--agent-strength must be non-negative.")
     if not args.max_abs_delta > 0.0:
         raise ValueError("--max-abs-delta must be greater than zero.")
+    if not args.ordinal_temperature > 0.0:
+        raise ValueError("--ordinal-temperature must be greater than zero.")
 
 
 def _summary(result: Any, *, provider: str, model: str) -> dict[str, Any]:
@@ -97,9 +107,11 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         output_dir=output_dir,
         cache_dir=cache_dir,
         config=AuthorityStateDeltaStudyConfig(
-            delta_fusion=DeltaFusionConfig(
-                alpha=args.alpha,
-                max_abs_delta=args.max_abs_delta,
+            joint_fusion=AuthorityJointFusionConfig(
+                state_strength=(args.state_strength if args.alpha is None else args.alpha),
+                agent_strength=args.agent_strength,
+                max_abs_state_delta=args.max_abs_delta,
+                ordinal_temperature=args.ordinal_temperature,
             ),
             max_cases=args.max_cases,
             selection_order=args.selection_order,

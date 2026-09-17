@@ -18,7 +18,10 @@ def _args(tmp_path: Path, **overrides: object) -> object:
         "model": "gpt-test",
         "max_cases": 2,
         "selection_order": "longest_first",
-        "alpha": 0.25,
+        "state_strength": 0.0,
+        "agent_strength": 1.0,
+        "ordinal_temperature": 1.0,
+        "alpha": None,
         "max_abs_delta": 0.75,
         "skill_path": None,
     }
@@ -86,7 +89,8 @@ def test_run_passes_all_controls_without_provider_fallback(tmp_path: Path, monke
     study_kwargs = calls["study"][2]  # type: ignore[index]
     assert study_kwargs["cache_dir"] == (tmp_path / "cache").resolve()  # type: ignore[index]
     assert study_kwargs["config"].selection_order == "longest_first"  # type: ignore[index]
-    assert study_kwargs["config"].delta_fusion.alpha == 0.25  # type: ignore[index]
+    assert study_kwargs["config"].joint_fusion.state_strength == 0.0  # type: ignore[index]
+    assert study_kwargs["config"].joint_fusion.agent_strength == 1.0  # type: ignore[index]
 
 
 def test_failed_cases_return_nonzero_and_keep_json_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

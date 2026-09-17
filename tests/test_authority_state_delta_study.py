@@ -14,8 +14,8 @@ from advoice.authority_state_delta_study import (
     _packet_bound_hash,
     run_authority_state_delta_cohort,
 )
+from advoice.authority_joint_fusion import AuthorityJointFusionConfig
 from advoice.authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
-from advoice.condition_c_delta import DeltaFusionConfig
 from advoice.module_a import ExplanationPacket
 
 
@@ -128,6 +128,11 @@ class _Runtime:
             reconciliation_request_hash="b" * 64,
             cache_key="c" * 64,
             error=None if self.status == "available" else "provider response invalid",
+            blind_assessment=(
+                SimpleNamespace(ordinal_scores={"HC": 1, "AD": 1})
+                if self.status == "available"
+                else None
+            ),
         )
 
 
@@ -223,7 +228,12 @@ def test_atomic_transaction_replays_once_and_applies_predeclared_delta(
         runtime,
         output_dir=tmp_path,
         config=AuthorityStateDeltaStudyConfig(
-            delta_fusion=DeltaFusionConfig(alpha=0.25, max_abs_delta=0.75)
+            joint_fusion=AuthorityJointFusionConfig(
+                state_strength=0.25,
+                agent_strength=0.0,
+                max_abs_state_delta=0.75,
+                ordinal_temperature=1.0,
+            )
         ),
     )
 
@@ -232,7 +242,10 @@ def test_atomic_transaction_replays_once_and_applies_predeclared_delta(
     assert result.failed_case_ids == ()
     audit = __import__("json").loads(result.audit_json_path.read_text(encoding="utf-8"))
     assert all(item["transaction"]["transaction_hash"] == transaction.transaction_hash for item in audit["cases"])
-    assert all(item["fusion"]["revision_action"] == "multi_state_evidence_review" for item in audit["cases"])
+    assert all(
+        item["fusion"]["provenance"]["revision_action"] == "multi_state_evidence_review"
+        for item in audit["cases"]
+    )
     assert any(item["fusion"]["correction_applied"] for item in audit["cases"])
 
 

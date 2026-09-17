@@ -26,6 +26,19 @@ different from the experimental fully Agent-led tool loop.
 8. Lock the prediction and its trace. Report generation is downstream and cannot
    alter classes, probabilities, evidence selection or release permissions.
 
+## Evidence-governance boundary
+
+The active registry contains the governed runtime evidence set rather than every
+historical feature name. Correlation-family budgets prevent formula-related or
+same-source metrics from voting repeatedly inside a state. Task-specific metrics
+remain task-scoped, and unavailable states remain masked.
+
+Candidate additions such as pause-duration variability, MTLD and immediate
+repetition rates are extracted for development-partition audits but quarantined
+by `metric_governance.py`. They cannot enter B1, Condition C, `MetricEvidence`,
+`StateCards` or Agent prediction until their declared stability, redundancy,
+language and task-validity gates pass and the active registry is versioned.
+
 ## Calibration contract
 
 `agent_correction_calibration.json` must have

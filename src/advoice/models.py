@@ -15,6 +15,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, label_binarize
 
+from .metric_governance import model_feature_allowed
 from .states import build_fold_calibrated_state_frame
 from .utils import json_dump
 
@@ -204,6 +205,7 @@ def _feature_columns(frame: pd.DataFrame) -> list[str]:
         column
         for column in frame.select_dtypes(include=[np.number]).columns
         if column not in IDENTITY_COLUMNS
+        and model_feature_allowed(column)
     ]
 
 

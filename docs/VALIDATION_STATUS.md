@@ -5,7 +5,7 @@ protocol; the corrected implementation is under review on a separate Git branch.
 
 ## Current review
 
-- 253 automated tests passed locally with plugin autoload disabled.
+- 323 automated tests passed locally with plugin autoload disabled.
 - Four public synthetic examples executed successfully, without clinical diagnosis.
 - Four processed-input task pilots retrain condition C, with frozen historical
   preprocessing/B1/B2 and no live Agent: ADReSS2020 internal holdout, ADReSSo
@@ -18,8 +18,16 @@ protocol; the corrected implementation is under review on a separate Git branch.
   validation. These are implementation repairs, not evidence of clinical benefit.
 - New real-time Agent prediction is not validated. Ordinary evidence workspaces
   lack an assessed case-level confound record, so predictive correction is closed.
-- Generic calibration still has upstream model-selection dependence, and state
-  edits do not yet rerun the state scorer. These remain release blockers.
+- Eligible datasets now reserve independent Agent calibration participants before
+  supervised model selection. Historical selection-dependent calibration files
+  fail closed. Calibration and inference share state aggregation; expected missing
+  evidence remains in coverage denominators, and coverage is batch-independent.
+- Validated state edits create a reviewed snapshot and withhold clinical risk
+  until scorer replay is implemented. API report writing cannot bypass this.
+  State scorer replay and validated confound assessment remain release blockers.
+- An independent reviewer reproduced two additional faults: relocated training
+  inputs lost the audio-manifest path, and non-finite measurements became clipped
+  abnormal state scores. Regression tests now cover both fixes.
 
 Local runtime: Python 3.11, Torch 2.2 on macOS; not the declared Torch >=2.4
 dependency floor. Pandas optional-dependency and SciPy deprecation warnings were

@@ -69,7 +69,9 @@ def recalibrate_metric_evidence_frame(
                     reference_rows["language"].fillna("unknown").astype(str).eq(language)
                 ]
                 reference_scope = f"outer_fit_hc_reference_language:{language}"
-            values = pd.to_numeric(scoped_reference["value"], errors="coerce")
+            values = pd.to_numeric(scoped_reference["value"], errors="coerce").replace(
+                [np.inf, -np.inf], np.nan
+            )
             median, scale, variable = _robust_reference(values)
             enough = (
                 int(values.notna().sum()) >= MIN_LANGUAGE_REFERENCE_SUBJECTS
@@ -78,7 +80,8 @@ def recalibrate_metric_evidence_frame(
             )
             available = bool(variable and enough)
             value = pd.to_numeric(pd.Series([row.get("value")]), errors="coerce").iloc[0]
-            missing = bool(pd.isna(value) or not available)
+            value_missing = bool(pd.isna(value) or not np.isfinite(value))
+            missing = value_missing or not available
             robust_z = float((float(value) - median) / scale) if not missing else np.nan
             direction = int(row.get("direction", 0))
             target.at[index, "reference_scope"] = reference_scope
@@ -91,6 +94,11 @@ def recalibrate_metric_evidence_frame(
                 float(direction * robust_z) if direction and not missing else 0.0
             )
             target.at[index, "missing"] = missing
+            target.at[index, "value_missing"] = value_missing
+            target.at[index, "reference_available"] = available
+            target.at[index, "evidence_status"] = (
+                "missing" if value_missing else "unavailable" if not available else "available"
+            )
             if not available:
                 target.at[index, "reliability"] = 0.0
     return target.reset_index(drop=True)
@@ -124,20 +132,18 @@ def build_metric_evidence(
     use_task_specific_evidence = len(task_scopes) > 1
     for definition in metric_defs:
         metric = definition["id"]
-        metric_instances = [("overall", metric)] if metric in subjects.columns else []
+        # The channel-filtered config defines expected evidence, not the columns
+        # that happened to survive extraction. Applicability is checked per subject.
+        metric_instances = [("overall", metric)]
         if use_task_specific_evidence:
             metric_instances.extend(
                 (task_scope, f"task_{task_scope}__{metric}")
                 for task_scope in task_scopes
-                if f"task_{task_scope}__{metric}" in subjects.columns
             )
-        if not metric_instances:
-            references[metric] = {"median": 0.0, "scale": 1.0, "available": False}
-            continue
         for task_scope, metric_instance in metric_instances:
-            finite_reference = controls[metric_instance].replace([np.inf, -np.inf], np.nan).dropna()
+            reference_values = controls.get(metric_instance, pd.Series(dtype=float))
             median, scale, reference_available = _robust_reference(
-                controls[metric_instance]
+                reference_values
             )
             references[metric_instance] = {
                 "metric_id": metric,
@@ -151,7 +157,7 @@ def build_metric_evidence(
                 for language_value in subjects["language"].fillna("unknown").astype(str).unique():
                     language_controls = controls[
                         controls["language"].fillna("unknown").astype(str).eq(language_value)
-                    ][metric_instance]
+                    ].get(metric_instance, pd.Series(dtype=float))
                     language_finite = language_controls.replace([np.inf, -np.inf], np.nan).dropna()
                     language_median, language_scale, language_variable = (
                         _robust_reference(language_controls)
@@ -187,7 +193,8 @@ def build_metric_evidence(
                     subject_scale = float(language_reference.get("scale", 1.0))
                     reference_available = bool(language_reference.get("available", False))
                     reference_scope = f"training_reference_language:{subject_language}"
-                missing = value is None or not np.isfinite(value) or not reference_available
+                value_missing = value is None or not np.isfinite(value)
+                missing = value_missing or not reference_available
                 z = float((value - subject_median) / subject_scale) if not missing else np.nan
                 direction = int(definition["direction"])
                 directional_z = float(direction * z) if direction and not missing else 0.0
@@ -244,6 +251,13 @@ def build_metric_evidence(
                         "evidence_role": definition["role"],
                         "reliability": reliability,
                         "missing": bool(missing),
+                        "value_missing": bool(value_missing),
+                        "reference_available": bool(reference_available),
+                        "evidence_status": (
+                            "missing" if value_missing
+                            else "unavailable" if not reference_available
+                            else "available"
+                        ),
                         "confound_tags": json.dumps(definition.get("confounds", []), ensure_ascii=False),
                         "report_permission": bool(definition["report_permission"]),
                     }

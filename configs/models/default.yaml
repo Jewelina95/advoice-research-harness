@@ -38,6 +38,11 @@ condition_c:
   selection_tiebreaker: macro_auroc
   risk_gate: evidence_coverage_x_reliability_x_one_minus_confound
   fallback: base_probability_when_alpha_or_gate_is_zero
+  dedicated_calibration:
+    enabled: true
+    fraction: 0.20
+    minimum_training_subjects: 120
+    seed: 20260917
   small_sample_correction_guard:
     enabled: true
     maximum_training_subjects: 80

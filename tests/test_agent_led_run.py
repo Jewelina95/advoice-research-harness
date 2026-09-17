@@ -60,6 +60,7 @@ def test_real_provider_adapter_runs_multiple_tools_without_training(tmp_path, mo
     summary = agent_led_run.run_agent_led_cohort(ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test")
     assert summary["provider_requests"] == 5
     assert summary["provider_parse_retries"] == 0
+    assert summary["transport_revision_repairs"] == 0
     assert summary["decided"] == 1
     assert providers == ["openai_api"]
     assert not summary["training_performed"]
@@ -102,10 +103,84 @@ def test_real_provider_retries_one_malformed_structured_response(tmp_path, monke
     assert result["provider_parse_retries"] == 1
 
 
+def test_concatenated_actions_execute_only_first_without_an_api_retry(tmp_path, monkeypatch):
+    actions = ["inspect_quality", "inspect_state", "inspect_counterevidence", "record_hypothesis", "finalize"]
+    calls = 0
+
+    def payload(action, revision):
+        return {
+            "action": action, "revision": revision,
+            "target_id": "state:S07", "state_action": "none",
+            "evidence_ids": ["state:S07"],
+            "counterevidence_ids": ["metric:continuity"],
+            "predicted_label": "AD", "scores": {"HC": 1, "AD": 3},
+            "rationale": "Synthetic fixture reasoning.", "limitations": [],
+        }
+
+    def fake(root, prompt, schema, output, model, provider):
+        nonlocal calls
+        observation = json.loads(prompt.split("DATA (not instructions):\n")[1])
+        action = actions[calls]
+        calls += 1
+        first = payload(action, observation["revision"])
+        if calls == 1:
+            extra = payload("inspect_state", observation["revision"])
+            raw = json.dumps(first) + json.dumps(extra)
+            output.with_name(f"{output.name}.raw.txt").write_text(raw, encoding="utf-8")
+            raise json.JSONDecodeError("Extra data", raw, len(json.dumps(first)))
+        return first
+
+    monkeypatch.setattr(agent_led_run, "run_structured_batch", fake)
+    out = tmp_path / "run"
+    summary = agent_led_run.run_agent_led_cohort(
+        ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test",
+    )
+    assert summary["decided"] == 1
+    assert summary["provider_requests"] == 5
+    assert summary["provider_parse_retries"] == 0
+    assert summary["provider_trailing_actions_dropped"] == 1
+
+
+def test_transport_revision_is_bound_by_runtime_not_copied_by_model(tmp_path, monkeypatch):
+    actions = ["inspect_quality", "inspect_state", "inspect_counterevidence", "record_hypothesis", "finalize"]
+    calls = 0
+
+    def fake(root, prompt, schema, output, model, provider):
+        nonlocal calls
+        observation = json.loads(prompt.split("DATA (not instructions):\n")[1])
+        action = actions[calls]
+        calls += 1
+        return {
+            "action": action, "revision": "model-copied-the-wrong-hash",
+            "target_id": "state:S07", "state_action": "none",
+            "evidence_ids": ["state:S07"],
+            "counterevidence_ids": ["metric:continuity"],
+            "predicted_label": "AD", "scores": {"HC": 1, "AD": 3},
+            "rationale": "Synthetic fixture reasoning.", "limitations": [],
+        }
+
+    monkeypatch.setattr(agent_led_run, "run_structured_batch", fake)
+    out = tmp_path / "run"
+    summary = agent_led_run.run_agent_led_cohort(
+        ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test",
+    )
+    assert summary["decided"] == 1
+    assert summary["transport_revision_repairs"] == 5
+
+
 def test_cli_has_explicit_nontraining_inference_path():
     args = parser().parse_args(["agent-led", "--workspaces", str(FIXTURE), "--output-dir", "/tmp/unused", "--labels", "HC", "AD"])
     assert args.provider == "disabled"
     assert args.command == "agent-led"
+    assert args.decision_mode == "clinical"
+
+
+def test_full_agent_skill_loads_medical_state_and_task_references():
+    skill = agent_led_run.load_agent_skill(ROOT, "benchmark_forced_choice")
+    assert "Cognitive state knowledge" in skill
+    assert "Task observability" in skill
+    assert "Medical scope" in skill
+    assert "must finalize exactly one configured research class" in skill
 
 
 def test_agent_led_cli_rejects_codex_without_changing_other_commands():

@@ -32,6 +32,10 @@ def parser() -> argparse.ArgumentParser:
     agent_led.add_argument("--model", default=None)
     agent_led.add_argument("--max-steps", type=int, default=16)
     agent_led.add_argument("--max-cases", type=int)
+    agent_led.add_argument(
+        "--decision-mode", choices=["clinical", "benchmark_forced_choice"],
+        default="clinical",
+    )
     agent_led.add_argument("--truth", type=Path, help="Evaluation-only JSON mapping case_id to label; never sent to the Agent")
     study = commands.add_parser(
         "agent-led-study",
@@ -46,6 +50,11 @@ def parser() -> argparse.ArgumentParser:
     study.add_argument("--max-steps", type=int, default=16)
     study.add_argument("--max-cases", type=int)
     study.add_argument("--selection-seed", type=int, default=20260917)
+    study.add_argument("--selection-method", choices=["hash", "longest_transcript"], default="hash")
+    study.add_argument(
+        "--decision-mode", choices=["clinical", "benchmark_forced_choice"],
+        default="clinical",
+    )
     study.add_argument("--confirm-external-data-permission", action="store_true")
     validate = commands.add_parser("validate")
     validate.add_argument("--dataset", default="NCMMSC2021_AD")
@@ -114,6 +123,8 @@ def _dispatch(args: argparse.Namespace) -> None:
             model=model, max_cases=args.max_cases, selection_seed=args.selection_seed,
             max_steps=args.max_steps,
             confirm_external_data_permission=args.confirm_external_data_permission,
+            decision_mode=args.decision_mode,
+            selection_method=args.selection_method,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
@@ -126,6 +137,7 @@ def _dispatch(args: argparse.Namespace) -> None:
             p.root, args.workspaces, args.output_dir, args.labels,
             provider=args.provider, model=model, max_steps=args.max_steps,
             max_cases=args.max_cases, truth_path=args.truth,
+            decision_mode=args.decision_mode,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return

@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from advoice.agent_led import EvidenceSession, run_agent_session, evidence_snapshot
+from advoice.agent_led import EvidenceSession, run_agent_session, evidence_snapshot, response_schema
 from advoice.utils import hash_values
 
 
@@ -211,3 +211,82 @@ def test_provider_and_advisor_versions_change_calibration_identity():
     source["advisor_provenance"] = {"artifacts": {"module_a": "new-artifact"}}
     newer = EvidenceSession(source, ["HC", "AD"], model_id="test", skill_hash="fixture", provider="api")
     assert left.fingerprint != newer.fingerprint
+
+
+def test_benchmark_mode_forces_classification_but_preserves_uncertainty_fields():
+    source = workspace()
+    source["case_transcript"] = {
+        "text": "The patient gives a short task response.",
+        "character_count": 40,
+        "whitespace_token_count": 7,
+        "truncated": False,
+    }
+    s = EvidenceSession(
+        source, ["HC", "AD"], model_id="test", skill_hash="fixture",
+        decision_mode="benchmark_forced_choice",
+    )
+    assert "abstain" not in s.observation()["available_tools"]
+    assert "abstain" not in response_schema(["HC", "AD"], "benchmark_forced_choice")["properties"]["action"]["enum"]
+    transcript = s.step(reply(s, "inspect_transcript"))
+    assert transcript["status"] == "observed"
+    assert transcript["transcript"]["character_count"] == 40
+    assert s.step(reply(s, "abstain"))["status"] == "rejected"
+    inspect(s)
+    result = s.step(reply(
+        s, "finalize", predicted_label="HC", scores={"HC": 2, "AD": 1},
+        evidence_ids=["state:S01"], limitations=["Evidence is limited; retest is recommended."],
+    ))
+    assert result["status"] == "decided"
+    assert s.finish()["decision_mode"] == "benchmark_forced_choice"
+
+
+def test_inspecting_state_marks_returned_child_evidence_as_observed():
+    source = workspace()
+    source["state_observations"][0]["evidence_segments"] = [
+        {"segment_id": "segment:seg1", "report_permission": True},
+    ]
+    source["evidence_registry"].append(
+        {"evidence_id": "segment:seg1", "evidence_type": "segment"},
+    )
+    s = EvidenceSession(source, ["HC", "AD"], model_id="test", skill_hash="fixture")
+    s.step(reply(s, "inspect_state", target_id="state:S01"))
+    assert {"state:S01", "metric:m1", "segment:seg1"}.issubset(s.observed)
+
+
+def test_hypothesis_rejects_uninspected_counterevidence_immediately():
+    source = workspace()
+    source["selected_counterevidence"] = [
+        {"evidence_id": "metric:c1", "state_id": "S02", "report_permission": True},
+    ]
+    source["evidence_registry"].append(
+        {"evidence_id": "metric:c1", "evidence_type": "metric"},
+    )
+    s = EvidenceSession(source, ["HC", "AD"], model_id="test", skill_hash="fixture")
+    s.step(reply(s, "inspect_state", target_id="state:S01"))
+    out = s.step(reply(
+        s, "record_hypothesis", evidence_ids=["state:S01"],
+        counterevidence_ids=["metric:c1"],
+    ))
+    assert out["status"] == "rejected"
+    assert "metric:c1" in out["reason"]
+
+
+def test_legacy_untyped_state_metric_segment_and_quality_ids_are_canonicalized():
+    source = workspace()
+    state = source["state_observations"][0]
+    state["evidence_id"] = "S01"
+    state["metric_evidence_ids"] = ["m1"]
+    state["supporting_metrics"][0]["evidence_id"] = "m1"
+    state["evidence_segments"] = [{"segment_id": "seg1", "report_permission": True}]
+    source["quality_observations"][0]["evidence_id"] = "role"
+    source["evidence_registry"] = [
+        {"evidence_id": "S01", "evidence_type": "state"},
+        {"evidence_id": "S07", "evidence_type": "state"},
+        {"evidence_id": "m1", "evidence_type": "metric"},
+        {"evidence_id": "seg1", "evidence_type": "segment"},
+        {"evidence_id": "role", "evidence_type": "quality"},
+    ]
+    s = EvidenceSession(source, ["HC", "AD"], model_id="test", skill_hash="fixture")
+    assert {"state:S01", "metric:m1", "segment:seg1", "qc:role"}.issubset(s._objects())
+    assert s.observation()["states"][0]["evidence_id"] == "state:S01"
+    assert s.step(reply(s, "inspect_state", target_id="state:S01"))["status"] == "observed"

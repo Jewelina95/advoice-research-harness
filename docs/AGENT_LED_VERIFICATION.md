@@ -20,7 +20,7 @@ with an auditable trace.
 
 ## Software checks
 
-On 2026-09-17, the full Python test suite passed: **445 tests**. Dependencies emitted
+On 2026-09-17, the full Python test suite passed: **453 tests**. Dependencies emitted
 existing pandas/scipy/pkg_resources/OpenBLAS warnings; these were not hidden.
 `git diff --check` passed.
 
@@ -33,6 +33,15 @@ An independent Agent review found six issues, addressed with regression tests:
 4. Parent report permission does not authorize prohibited child measurements.
 5. Provider and frozen-advisor identities must participate in calibration identity.
 6. Abstention cannot cite uninspected findings or publish them as clinical findings.
+7. The Agent-led entry point must load the complete existing AD knowledge package,
+   not only its execution overlay.
+8. A supplied patient transcript is an inspectable evidence context and must be
+   inspected before finalization; it never replaces typed evidence citations.
+9. Legacy untyped evidence IDs are canonicalized before tool access.
+10. State inspection marks the returned child metrics and segments as inspected;
+    hypothesis validation checks both support and counterevidence immediately.
+11. A provider response containing several concatenated actions executes only the
+    first action, preserves the raw response and records discarded future actions.
 
 Other checks cover final decisions that disagree with supervised advisors,
 source-hash sensitivity to changed values, dependent-state invalidation,
@@ -52,6 +61,13 @@ and abstained, with no supervised fallback or rejected tool action.
 This demonstrates actual provider/tool execution, not diagnostic accuracy or
 superiority over SpeechCARE. Synthetic labels must not be used to estimate
 clinical performance, and abstention must not be counted as a correct class.
+
+An authorized single-case IAEAV integration check then exercised the complete
+knowledge package, a 469-token Spanish transcript and forced-choice benchmark
+mode. It inspected quality, six state views, counterevidence and the transcript,
+then produced the correct held-out `AD` class in 11 provider requests. This is an
+interface/integration result only. A selected single case is not an estimate of
+accuracy, generalization, clinical validity or superiority over SpeechCARE.
 
 ## Remaining validation
 

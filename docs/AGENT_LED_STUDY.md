@@ -10,10 +10,15 @@ The command:
 2. freezes cases by hashing the selection seed and pseudonymous case ID;
 3. binds the evidence snapshot and records any available frozen supervised
    advisor components without requiring the Agent to consult them;
-4. runs the Agent on the MetricEvidence/StateCard/segment evidence graph without
-   exposing labels;
-5. attaches truth only after inference; and
-6. recomputes B1, B2, historical Ours and Agent-led results on identical cases.
+4. loads the existing AD evidence-governance package (medical scope, task
+   observability, state knowledge, confounds, evidence hierarchy, rollback and
+   report permissions) from the same `SKILL_FILES` manifest used by the legacy
+   cognitive Agent;
+5. runs the Agent on the MetricEvidence/StateCard/segment evidence graph and,
+   when present, makes the patient transcript an explicitly inspectable but
+   untrusted case object without exposing labels;
+6. attaches truth only after inference; and
+7. recomputes B1, B2, historical Ours and Agent-led results on identical cases.
 
 Legacy non-finite values are converted to JSON null and counted in the study
 manifest. Null means unobserved and cannot be interpreted as zero evidence.
@@ -34,6 +39,16 @@ Real Agent inference requires `--provider openai_api` and the explicit
 privacy risk: evidence packages can contain transcript excerpts and derived
 health information. Do not use the flag unless transfer to the configured API
 has been authorized for that cohort.
+
+Use `--decision-mode benchmark_forced_choice` for label-complete accuracy/F1
+evaluation. It requires one configured class while preserving uncertainty and
+retest recommendations in the limitations. The default `clinical` mode permits
+abstention. These modes must not be mixed in one reported endpoint.
+
+`--selection-method longest_transcript` is only a label-blind functional stress
+test. It changes the case distribution and cannot support a dataset-level or
+SpeechCARE superiority claim. Formal comparisons use the complete prespecified
+cohort or the hash-based frozen selection.
 
 The output directory is immutable and includes:
 

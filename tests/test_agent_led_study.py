@@ -59,6 +59,11 @@ def _artifact_dir(tmp_path: Path) -> Path:
         "labels": LABELS, "base_architecture": "fixture", "base_selected_c": 1.0,
         "correction_selected_c": 0.5, "alpha_cv": {"alpha": 0.25},
     }), encoding="utf-8")
+    pd.DataFrame([
+        {"subject_id": "s1", "transcript": "short response", "recording_count": 1, "asr_model": "fixture"},
+        {"subject_id": "s2", "transcript": "a much longer patient response with several task details", "recording_count": 1, "asr_model": "fixture"},
+        {"subject_id": "s3", "transcript": "medium patient response with details", "recording_count": 1, "asr_model": "fixture"},
+    ]).to_csv(artifact / "subject_transcripts.csv", index=False)
     return artifact
 
 
@@ -173,3 +178,18 @@ def test_frozen_model_label_order_must_match_study(tmp_path):
             artifact, tmp_path / "study", dataset_id="fixture", labels=LABELS,
             max_cases=None, selection_seed=17,
         )
+
+
+def test_long_transcript_selection_is_label_blind_and_attaches_transcript(tmp_path):
+    artifact = _artifact_dir(tmp_path)
+    prepared = prepare_agent_led_study(
+        artifact, tmp_path / "study", dataset_id="fixture", labels=LABELS,
+        max_cases=1, selection_seed=17, selection_method="longest_transcript",
+    )
+    selected = [json.loads(line) for line in prepared["workspaces_path"].read_text().splitlines()]
+    assert selected[0]["case_id"] == case_pseudonym("s2")
+    assert selected[0]["case_transcript"]["character_count"] > 40
+    manifest = json.loads((tmp_path / "study" / "study_manifest.json").read_text())
+    assert manifest["selection"]["uses_labels"] is False
+    assert manifest["selection"]["selection_method"] == "longest_transcript"
+    assert manifest["selection"]["selected_with_transcript"] == 1

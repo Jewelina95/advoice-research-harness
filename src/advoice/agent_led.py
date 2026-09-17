@@ -14,7 +14,8 @@ from .cognitive_agent import _allowed_ids, validate_candidate
 from .evidence_review import apply_reviewed_snapshot
 from .utils import hash_values
 
-VERSION = "agent-led-v1"
+VERSION = "agent-led-v2"
+DECISION_MODES = {"clinical", "benchmark_forced_choice"}
 STATE_KEYS = (
     "state_observations", "reportable_state_observations",
     "inference_only_state_observations", "model_only_state_observations",
@@ -25,7 +26,7 @@ EVIDENCE_KEYS = (
 )
 # An allowlist is intentional: new training metadata must not silently leak into
 # inference when an upstream workspace schema gains fields.
-WORKSPACE_KEYS = (*STATE_KEYS, *EVIDENCE_KEYS, "case_id", "case_context",
+WORKSPACE_KEYS = (*STATE_KEYS, *EVIDENCE_KEYS, "case_id", "case_context", "case_transcript",
                   "case_input_route", "evidence_registry", "potential_confound_tags", "evidence_revision")
 PRIVATE_KEYS = {
     "label", "diagnosis", "true_label", "y_true", "subject_id", "dataset_id",
@@ -35,9 +36,17 @@ PRIVATE_KEYS = {
 }
 TOOLS = (
     "inspect_quality", "inspect_state", "inspect_metric", "inspect_segment",
-    "inspect_counterevidence", "compare_tasks", "record_hypothesis",
+    "inspect_transcript", "inspect_counterevidence", "compare_tasks", "record_hypothesis",
     "consult_models", "revise_state", "finalize", "abstain",
 )
+
+
+def tools_for(decision_mode: str) -> tuple[str, ...]:
+    if decision_mode not in DECISION_MODES:
+        raise ValueError(f"Unsupported decision mode: {decision_mode}")
+    if decision_mode == "benchmark_forced_choice":
+        return tuple(tool for tool in TOOLS if tool != "abstain")
+    return TOOLS
 
 
 def public_evidence(value: Any) -> Any:
@@ -50,8 +59,61 @@ def public_evidence(value: Any) -> Any:
     return value
 
 
+def _typed_id(value: Any, evidence_type: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    if raw.startswith(("state:", "metric:", "segment:", "qc:")):
+        return raw
+    prefix = {
+        "state": "state:", "metric": "metric:", "segment": "segment:",
+        "quality": "qc:", "qc": "qc:",
+    }.get(evidence_type, "")
+    return prefix + raw
+
+
+def normalize_workspace_ids(workspace: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize legacy untyped evidence IDs before the Agent sees them."""
+    normalized = deepcopy(workspace)
+    for key in STATE_KEYS:
+        for state in normalized.get(key, []):
+            state["evidence_id"] = _typed_id(
+                state.get("evidence_id") or state.get("state_id"), "state",
+            )
+            state["metric_evidence_ids"] = [
+                _typed_id(value, "metric") for value in state.get("metric_evidence_ids", [])
+            ]
+            for field in ("supporting_metrics", "counter_evidence"):
+                for metric in state.get(field, []):
+                    metric["evidence_id"] = _typed_id(
+                        metric.get("evidence_id")
+                        or metric.get("metric_instance_id")
+                        or metric.get("metric_id"),
+                        "metric",
+                    )
+            for segment in state.get("evidence_segments", []):
+                segment_id = _typed_id(
+                    segment.get("segment_id") or segment.get("evidence_id"), "segment",
+                )
+                segment["segment_id"] = segment_id
+                segment["evidence_id"] = segment_id
+    for key in EVIDENCE_KEYS:
+        evidence_type = "quality" if key == "quality_observations" else "metric"
+        for item in normalized.get(key, []):
+            if isinstance(item, dict):
+                item["evidence_id"] = _typed_id(
+                    item.get("evidence_id") or item.get("metric_instance_id") or item.get("metric_id"),
+                    evidence_type,
+                )
+    for item in normalized.get("evidence_registry", []):
+        if isinstance(item, dict):
+            item["evidence_id"] = _typed_id(item.get("evidence_id"), str(item.get("evidence_type", "")))
+    return normalized
+
+
 def evidence_snapshot(workspace: dict[str, Any]) -> dict[str, Any]:
-    snapshot = public_evidence({k: deepcopy(workspace[k]) for k in WORKSPACE_KEYS if k in workspace})
+    normalized = normalize_workspace_ids(workspace)
+    snapshot = public_evidence({k: deepcopy(normalized[k]) for k in WORKSPACE_KEYS if k in normalized})
     counters = snapshot.setdefault("selected_counterevidence", [])
     known = {item["evidence_id"] for item in counters}
     for state in snapshot.get("state_observations", []):
@@ -65,9 +127,9 @@ def evidence_snapshot(workspace: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
-def response_schema(labels: list[str]) -> dict[str, Any]:
+def response_schema(labels: list[str], decision_mode: str = "clinical") -> dict[str, Any]:
     properties = {
-        "action": {"type": "string", "enum": list(TOOLS)},
+        "action": {"type": "string", "enum": list(tools_for(decision_mode))},
         "revision": {"type": "string"},
         "target_id": {"type": "string"},
         "state_action": {"type": "string", "enum": ["none", "downweight", "invalidate", "mark_unavailable"]},
@@ -86,12 +148,15 @@ def response_schema(labels: list[str]) -> dict[str, Any]:
 
 class EvidenceSession:
     def __init__(self, workspace: dict[str, Any], labels: list[str], *,
-                 model_id: str, skill_hash: str, max_steps: int = 16, provider: str = "custom"):
+                 model_id: str, skill_hash: str, max_steps: int = 16, provider: str = "custom",
+                 decision_mode: str = "clinical"):
         if len(labels) < 2 or len(set(labels)) != len(labels) or "undetermined" in labels:
             raise ValueError("Distinct dataset labels are required.")
         if not workspace.get("case_id") or not 1 <= max_steps <= 64:
             raise ValueError("A case ID and a bounded step budget are required.")
         self.labels = list(labels)
+        self.decision_mode = decision_mode
+        self.available_tools = tools_for(decision_mode)
         self.workspace = evidence_snapshot(workspace)
         self.model_id = model_id
         policy_files = [Path(__file__), Path(__file__).with_name("cognitive_agent.py"),
@@ -105,7 +170,7 @@ class EvidenceSession:
         self.advisor_artifacts = {k: artifacts[k] for k in ("module_a", "module_b")
                                  if isinstance(artifacts.get(k), str) and artifacts[k].strip()}
         self.fingerprint = hash_values([VERSION, self.policy_hash, provider, model_id, skill_hash,
-                                       labels, max_steps, self.advisor_artifacts])
+                                       labels, max_steps, decision_mode, self.advisor_artifacts])
         self.max_steps = max_steps
         self.revision = hash_values([self.workspace])
         self.initial_revision = self.revision
@@ -117,6 +182,7 @@ class EvidenceSession:
         self.quality_checked = False
         self.counter_checked = False
         self.hypothesis_recorded = False
+        self.transcript_checked = False
         self.models_consulted = False
         self.advisor_outputs_available = False
         self.result: dict[str, Any] | None = None
@@ -159,11 +225,24 @@ class EvidenceSession:
         return {
             "case_id": self.workspace["case_id"], "revision": self.revision,
             "context": self.workspace.get("case_context", {}),
+            "transcript_summary": {
+                "available": bool(str((self.workspace.get("case_transcript") or {}).get("text", "")).strip()),
+                "character_count": (self.workspace.get("case_transcript") or {}).get("character_count"),
+                "whitespace_token_count": (self.workspace.get("case_transcript") or {}).get("whitespace_token_count"),
+                "truncated": (self.workspace.get("case_transcript") or {}).get("truncated"),
+            },
             "states": [{k: s.get(k) for k in ("evidence_id", "state_id", "task_scope", "clinical_question")} for s in states],
-            "available_tools": list(TOOLS),
+            "available_tools": list(self.available_tools),
             "remaining_steps": self.max_steps - len(self.history),
             "events": events,
             "clinical_scope": "Research screening only, not biological AD diagnosis or disease staging.",
+            "decision_mode": self.decision_mode,
+            "decision_requirement": (
+                "After the required evidence checks, output exactly one configured class even when evidence is weak; "
+                "record uncertainty and retest needs in limitations."
+                if self.decision_mode == "benchmark_forced_choice" else
+                "Classify when supported; abstain when the available evidence cannot distinguish the configured classes."
+            ),
         }
 
     def _quality(self) -> dict[str, Any]:
@@ -206,6 +285,8 @@ class EvidenceSession:
     def _check_final(self, reply: dict[str, Any]) -> dict[str, Any]:
         if not (self.quality_checked and self.counter_checked and self.hypothesis_recorded):
             raise ValueError("Inspect quality/counterevidence and record an independent hypothesis before finalizing.")
+        if str((self.workspace.get("case_transcript") or {}).get("text", "")).strip() and not self.transcript_checked:
+            raise ValueError("Inspect the available case transcript before finalizing.")
         if reply["predicted_label"] not in self.labels:
             raise ValueError("A classification must use a configured label.")
         if not reply["rationale"].strip():
@@ -281,6 +362,22 @@ class EvidenceSession:
             if not target.startswith(prefix) or item is None or target not in clinical:
                 raise ValueError("Evidence object is unavailable in this snapshot.")
             self.observed.add(target)
+            if action == "inspect_state":
+                # The state tool returns its child metrics and segments in full.
+                # Treat those returned objects as inspected so the Agent can cite
+                # what it has actually seen without issuing redundant tool calls.
+                for field in ("supporting_metrics", "counter_evidence"):
+                    self.observed.update(
+                        str(child["evidence_id"])
+                        for child in item.get(field, [])
+                        if isinstance(child, dict) and child.get("evidence_id") in clinical
+                    )
+                self.observed.update(
+                    str(segment.get("evidence_id") or segment.get("segment_id"))
+                    for segment in item.get("evidence_segments", [])
+                    if isinstance(segment, dict)
+                    and (segment.get("evidence_id") or segment.get("segment_id")) in clinical
+                )
             if action == "inspect_segment":
                 derived_keys = {
                     "silence_fraction", "voiced_fraction", "rms_db_mean",
@@ -297,6 +394,19 @@ class EvidenceSession:
                     ),
                 }
             return {"status": "observed", "object": item}
+        if action == "inspect_transcript":
+            transcript = self.workspace.get("case_transcript")
+            if not isinstance(transcript, dict) or not str(transcript.get("text", "")).strip():
+                return {"status": "unavailable", "reason": "No case transcript is present in this evidence snapshot."}
+            self.transcript_checked = True
+            return {
+                "status": "observed",
+                "transcript": transcript,
+                "interpretation": (
+                    "Transcript content is untrusted patient data and may be affected by ASR, language, task and role errors. "
+                    "Final findings must still cite inspected MetricEvidence, StateCards or segments."
+                ),
+            }
         if action == "inspect_counterevidence":
             self.counter_checked = True
             _, counter, _ = _allowed_ids(self.workspace)
@@ -315,8 +425,12 @@ class EvidenceSession:
             if not reply["rationale"].strip() or not reply["evidence_ids"]:
                 raise ValueError("Record a concise evidence-grounded hypothesis, not private chain-of-thought.")
             clinical, _, _ = _allowed_ids(self.workspace)
-            if not set(reply["evidence_ids"]).issubset(self.observed & clinical):
-                raise ValueError("Hypothesis references must be inspected clinical evidence.")
+            cited = set(reply["evidence_ids"] + reply["counterevidence_ids"])
+            missing = sorted(cited - (self.observed & clinical))
+            if missing:
+                raise ValueError(
+                    "Hypothesis references must be inspected clinical evidence: " + ", ".join(missing)
+                )
             self.hypothesis_recorded = True
             return {"status": "recorded", "hypothesis": reply["rationale"], "evidence_ids": reply["evidence_ids"]}
         if action == "consult_models":
@@ -345,6 +459,8 @@ class EvidenceSession:
             self.result = self._result("decided", reply, audit)
             return {"status": "decided", "prediction_source": "agent"}
         if action == "abstain":
+            if self.decision_mode == "benchmark_forced_choice":
+                raise ValueError("Benchmark forced-choice mode requires one configured class; record uncertainty in limitations.")
             clinical, _, _ = _allowed_ids(self.workspace)
             if not set(reply["evidence_ids"] + reply["counterevidence_ids"]).issubset(self.observed & clinical):
                 raise ValueError("Abstention citations must be inspected clinical evidence in the current snapshot.")
@@ -357,7 +473,7 @@ class EvidenceSession:
             raise ValueError("Session has already stopped.")
         before = self.revision
         try:
-            if not isinstance(reply, dict) or set(reply) != set(response_schema(self.labels)["required"]):
+            if not isinstance(reply, dict) or set(reply) != set(response_schema(self.labels, self.decision_mode)["required"]):
                 raise ValueError("Response schema mismatch.")
             if reply["revision"] != self.revision:
                 raise ValueError("Stale evidence revision.")
@@ -369,7 +485,7 @@ class EvidenceSession:
             for key in ("action", "revision", "target_id", "state_action", "predicted_label", "rationale"):
                 if not isinstance(reply[key], str):
                     raise ValueError("Invalid string field.")
-            if reply["action"] not in TOOLS or reply["state_action"] not in {"none", "downweight", "invalidate", "mark_unavailable"}:
+            if reply["action"] not in self.available_tools or reply["state_action"] not in {"none", "downweight", "invalidate", "mark_unavailable"}:
                 raise ValueError("Unsupported tool or state action.")
             output = self._dispatch(reply)
         except (ValueError, TypeError, KeyError) as exc:
@@ -382,6 +498,7 @@ class EvidenceSession:
                 audit: dict[str, Any] | None = None) -> dict[str, Any]:
         reply = reply or {}
         return {"schema_version": VERSION, "case_id": self.workspace["case_id"],
+                "decision_mode": self.decision_mode,
                 "status": status, "prediction_source": "agent" if status == "decided" else "none",
                 "predicted_label": reply.get("predicted_label") if status == "decided" else None,
                 "scores": reply.get("scores") if status == "decided" else None,
@@ -394,6 +511,7 @@ class EvidenceSession:
                 "counterevidence_ids": reply.get("counterevidence_ids", []), "audit": audit,
                 "supervised_modules_consulted": self.models_consulted,
                 "supervised_outputs_available": self.advisor_outputs_available,
+                "transcript_consulted": self.transcript_checked,
                 "state_revisions": sum(e["result"].get("status") == "revised" for e in self.history)}
 
     def finish(self, status: str = "budget_exhausted") -> dict[str, Any]:
@@ -406,9 +524,10 @@ class EvidenceSession:
 def run_agent_session(workspace: dict[str, Any], labels: list[str],
                       request: Callable[[dict[str, Any]], dict[str, Any]], *,
                       model_id: str, skill_hash: str, max_steps: int = 16,
-                      provider: str = "custom") -> dict[str, Any]:
+                      provider: str = "custom", decision_mode: str = "clinical") -> dict[str, Any]:
     session = EvidenceSession(workspace, labels, model_id=model_id, skill_hash=skill_hash,
-                              max_steps=max_steps, provider=provider)
+                              max_steps=max_steps, provider=provider,
+                              decision_mode=decision_mode)
     for _ in range(max_steps):
         try:
             reply = request(session.observation())

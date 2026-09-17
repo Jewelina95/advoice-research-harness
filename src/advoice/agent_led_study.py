@@ -21,6 +21,7 @@ PREDICTION_FILES = {
     "b2": "b2_predictions.csv",
     "ours": "ours_predictions.csv",
 }
+TRANSCRIPT_CHAR_LIMIT = 12_000
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -74,6 +75,34 @@ def _prediction_frame(path: Path, labels: list[str]) -> pd.DataFrame:
     return frame
 
 
+def _case_transcripts(artifact_dir: Path) -> tuple[dict[str, dict[str, Any]], Path | None]:
+    path = artifact_dir / "subject_transcripts.csv"
+    if not path.is_file():
+        return {}, None
+    frame = pd.read_csv(path, dtype={"subject_id": str}).fillna("")
+    required = {"subject_id", "transcript"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Transcript file is missing columns: {missing}")
+    if frame["subject_id"].astype(str).duplicated().any():
+        raise ValueError("Transcript file contains duplicate subject IDs.")
+    output: dict[str, dict[str, Any]] = {}
+    for row in frame.to_dict("records"):
+        text = str(row["transcript"]).strip()
+        if not text:
+            continue
+        case_id = case_pseudonym(str(row["subject_id"]))
+        output[case_id] = {
+            "text": text[:TRANSCRIPT_CHAR_LIMIT],
+            "character_count": len(text),
+            "whitespace_token_count": len(text.split()),
+            "truncated": len(text) > TRANSCRIPT_CHAR_LIMIT,
+            "recording_count": int(row.get("recording_count", 0) or 0),
+            "asr_model": str(row.get("asr_model", "")),
+        }
+    return output, path
+
+
 def _advisor_artifacts(artifact_dir: Path, labels: list[str]) -> dict[str, str]:
     model_path = artifact_dir / "ours_model.joblib"
     metadata_path = artifact_dir / "ours_model.json"
@@ -112,6 +141,7 @@ def prepare_agent_led_study(
     labels: list[str],
     max_cases: int | None,
     selection_seed: int,
+    selection_method: str = "hash",
 ) -> dict[str, Path]:
     """Freeze a label-blind cohort and keep truth outside the Agent input."""
     if study_dir.exists():
@@ -120,6 +150,8 @@ def prepare_agent_led_study(
         raise ValueError("max_cases must be positive.")
     if len(labels) < 2 or len(set(labels)) != len(labels):
         raise ValueError("At least two distinct labels are required.")
+    if selection_method not in {"hash", "longest_transcript"}:
+        raise ValueError("selection_method must be hash or longest_transcript.")
 
     workspace_source = artifact_dir / "diagnostic_agent_workspaces.jsonl"
     rows = _workspaces(workspace_source)
@@ -139,7 +171,19 @@ def prepare_agent_led_study(
             f"missing_workspace={missing_workspace}, missing_prediction={missing_prediction}"
         )
 
-    ranked = sorted(workspace_case_ids, key=lambda case_id: hash_values([selection_seed, case_id]))
+    transcripts, transcript_path = _case_transcripts(artifact_dir)
+    if selection_method == "longest_transcript" and not transcripts:
+        raise ValueError("longest_transcript selection requires subject_transcripts.csv.")
+    if selection_method == "longest_transcript":
+        ranked = sorted(
+            workspace_case_ids,
+            key=lambda case_id: (
+                -int(transcripts.get(case_id, {}).get("character_count", 0)),
+                hash_values([selection_seed, case_id]),
+            ),
+        )
+    else:
+        ranked = sorted(workspace_case_ids, key=lambda case_id: hash_values([selection_seed, case_id]))
     selected_ids = ranked[:max_cases] if max_cases is not None else ranked
     selected_set = set(selected_ids)
     by_case = {str(row["case_id"]): row for row in rows}
@@ -149,6 +193,8 @@ def prepare_agent_led_study(
     for case_id in selected_ids:
         workspace, replacements = _json_safe(dict(by_case[case_id]))
         nonfinite_replacements += replacements
+        if case_id in transcripts:
+            workspace["case_transcript"] = transcripts[case_id]
         snapshot_hash = hash_values([evidence_snapshot(workspace)])
         workspace["advisor_provenance"] = {
             "evidence_hash": snapshot_hash,
@@ -179,6 +225,8 @@ def prepare_agent_led_study(
     }
     for name in PREDICTION_FILES.values():
         source_hashes[name] = sha256_file(artifact_dir / name)
+    if transcript_path is not None:
+        source_hashes[transcript_path.name] = sha256_file(transcript_path)
     json_dump({
         "study_version": "agent-led-study-v1",
         "dataset_id": dataset_id,
@@ -187,12 +235,18 @@ def prepare_agent_led_study(
         "source_hashes": source_hashes,
         "advisor_artifacts": artifacts,
         "selection": {
-            "method": "sha256(seed, pseudonymous_case_id)",
+            "method": (
+                "longest transcript, ties by sha256(seed, pseudonymous_case_id)"
+                if selection_method == "longest_transcript" else
+                "sha256(seed, pseudonymous_case_id)"
+            ),
+            "selection_method": selection_method,
             "seed": selection_seed,
             "uses_labels": False,
             "requested_max_cases": max_cases,
             "available_cases": len(rows),
             "selected_cases": len(selected),
+            "selected_with_transcript": sum("case_transcript" in row for row in selected),
         },
         "input_normalization": {
             "nonfinite_values_replaced_with_null": nonfinite_replacements,
@@ -341,18 +395,22 @@ def run_agent_led_study(
     selection_seed: int = 20260917,
     max_steps: int = 16,
     confirm_external_data_permission: bool = False,
+    decision_mode: str = "clinical",
+    selection_method: str = "hash",
 ) -> dict[str, Any]:
     if provider == "openai_api" and not confirm_external_data_permission:
         raise ValueError("openai_api requires explicit external-data permission for selected evidence.")
     prepared = prepare_agent_led_study(
         artifact_dir, study_dir, dataset_id=dataset_id, labels=labels,
         max_cases=max_cases, selection_seed=selection_seed,
+        selection_method=selection_method,
     )
     inference_dir = study_dir / "inference"
     run_agent_led_cohort(
         root, prepared["workspaces_path"], inference_dir, labels,
         provider=provider, model=model, max_steps=max_steps,
         truth_path=prepared["truth_path"],
+        decision_mode=decision_mode,
     )
     manifest = _load_json(study_dir / "study_manifest.json")
     selected_ids = manifest["selected_case_ids"]
@@ -377,6 +435,8 @@ def run_agent_led_study(
         "cases": len(selected_ids),
         "provider": provider,
         "model": model,
+        "decision_mode": decision_mode,
+        "selection_method": selection_method,
         "agent_led_accuracy": comparison["agent_led"]["accuracy"],
         "agent_led_coverage": comparison["agent_led"]["coverage"],
         "speechcare_direct_comparison_valid": comparison["speechcare"]["direct_comparison_valid"],

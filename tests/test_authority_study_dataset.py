@@ -238,6 +238,36 @@ def test_preparation_does_not_read_truth_after_dataset_construction(
     assert _FakeExecutor.latest.calls[0]["case_metadata"]["case_id"] == "test-long"
 
 
+@pytest.mark.parametrize(
+    ("manifest_column", "manifest_value", "label_value", "match"),
+    [
+        ("target_route", "progression", None, "manifest column 'target_route'"),
+        (None, None, "decline", "labels declare progression semantics"),
+    ],
+)
+def test_rejects_explicit_non_diagnosis_targets_before_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_column: str | None,
+    manifest_value: str | None,
+    label_value: str | None,
+    match: str,
+) -> None:
+    frozen = _frozen()
+    if manifest_column is not None:
+        frozen.manifest[manifest_column] = manifest_value
+    if label_value is not None:
+        frozen.manifest.loc[:, "label"] = label_value
+        frozen.subject_labels = {
+            subject_id: label_value for subject_id in frozen.subject_labels
+        }
+    _write_transcripts(tmp_path)
+    _install(monkeypatch, frozen)
+
+    with pytest.raises(AuthorityStudyDatasetError, match=match):
+        AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
+
+
 def test_process_task_absolute_columns_are_excluded_but_replayable_residuals_are_retained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

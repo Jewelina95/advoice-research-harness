@@ -407,6 +407,27 @@ def _policy_documents(root: Path, skill_path: Path | None) -> Mapping[str, str]:
     return _freeze_mapping(documents)
 
 
+def _request_runtime_fingerprint(
+    *,
+    provider: str,
+    model: str,
+    policy_documents: Mapping[str, str],
+) -> Mapping[str, str]:
+    """Return the configuration identity that makes a provider response reusable.
+
+    ``run_structured_batch`` treats an existing output path as a cache hit.  The
+    path therefore has to change whenever a request could be answered under a
+    different provider contract, model, runtime schema, or clinical policy.
+    """
+
+    return _freeze_mapping({
+        "provider": str(provider),
+        "model": str(model),
+        "runtime_schema_version": SCHEMA_VERSION,
+        "policy_content_hash": hash_artifact(dict(policy_documents)),
+    })
+
+
 def _verify_prepared(prepared: PreparedAuthorityCase) -> tuple[str, tuple[str, ...], set[str]]:
     if not isinstance(prepared, PreparedAuthorityCase):
         raise TypeError("AuthorityReviewRuntime requires PreparedAuthorityCase.")
@@ -718,6 +739,11 @@ class AuthorityReviewRuntime:
             return AuthorityReviewResult(REVIEW_UNAVAILABLE, pseudo, unavailable_hash, None, error="provider_disabled")
 
         policy = _policy_documents(self.root, self.skill_path)
+        runtime_fingerprint = _request_runtime_fingerprint(
+            provider=str(self.provider),
+            model=self.model,
+            policy_documents=policy,
+        )
         blind_payload = build_blind_payload(prepared, policy_documents=policy, transcript=transcript)
         _, state_ids, _ = _verify_prepared(prepared)
         evidence_ids_by_state = {
@@ -727,7 +753,12 @@ class AuthorityReviewRuntime:
             for state_id in state_ids
         }
         blind_schema = _blind_schema(prepared.route.target_route.labels, evidence_ids_by_state)
-        blind_hash = hash_artifact({"pass": 1, "payload": blind_payload, "schema": blind_schema})
+        blind_hash = hash_artifact({
+            "pass": 1,
+            "runtime": runtime_fingerprint,
+            "payload": blind_payload,
+            "schema": blind_schema,
+        })
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             blind_response = run_structured_batch(
@@ -741,7 +772,12 @@ class AuthorityReviewRuntime:
             blind = _parse_blind(blind_response, prepared)
             advisor_payload = build_advisor_payload(prepared, blind, policy_documents=policy)
             reconciliation_schema = _reconciliation_schema(evidence_ids_by_state)
-            advisor_hash = hash_artifact({"pass": 2, "payload": advisor_payload, "schema": reconciliation_schema})
+            advisor_hash = hash_artifact({
+                "pass": 2,
+                "runtime": runtime_fingerprint,
+                "payload": advisor_payload,
+                "schema": reconciliation_schema,
+            })
             advisor_response = run_structured_batch(
                 self.root,
                 "Return only the requested advisor reconciliation JSON.\n" + canonical_json(advisor_payload),

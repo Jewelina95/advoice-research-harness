@@ -373,3 +373,36 @@ def test_request_hashes_are_deterministic_and_disabled_never_calls_provider(monk
     assert first.reconciliation_request_hash == second.reconciliation_request_hash
     assert disabled.status == "provider_unavailable"
     assert disabled.blind_assessment is None
+
+
+def test_request_hashes_change_when_provider_contract_or_policy_changes(monkeypatch, tmp_path: Path) -> None:
+    prepared = _prepared()
+    output_paths: list[Path] = []
+    calls = 0
+
+    def provider(root, prompt, schema_path, output_path, model, provider_name):
+        nonlocal calls
+        calls += 1
+        output_paths.append(Path(output_path))
+        return _blind(prepared) if calls % 2 else _advisor(prepared)
+
+    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    skill = _skill(tmp_path)
+
+    def review(**kwargs):
+        return AuthorityReviewRuntime(root=tmp_path, skill_path=skill, **kwargs).review(prepared)
+
+    baseline = review(provider="openai_api", model="model-a")
+    changed_provider = review(provider="other_provider", model="model-a")
+    changed_model = review(provider="openai_api", model="model-b")
+    skill.write_text("Use revised typed evidence only.", encoding="utf-8")
+    changed_skill = review(provider="openai_api", model="model-a")
+    (skill.parent / "POLICY.md").write_text("Require verified measurements.", encoding="utf-8")
+    changed_policy = review(provider="openai_api", model="model-a")
+    monkeypatch.setattr("advoice.authority_review_runtime.SCHEMA_VERSION", "test.runtime.v2")
+    changed_schema = review(provider="openai_api", model="model-a")
+
+    results = (baseline, changed_provider, changed_model, changed_skill, changed_policy, changed_schema)
+    assert len({result.blind_request_hash for result in results}) == len(results)
+    assert len({result.reconciliation_request_hash for result in results}) == len(results)
+    assert len(set(output_paths)) == len(output_paths)

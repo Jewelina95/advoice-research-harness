@@ -29,6 +29,13 @@ class AuthorityStudyDatasetError(ValueError):
     """Raised when a frozen artifact cannot safely prepare a review cohort."""
 
 
+_DIAGNOSIS_TARGET_VALUES = frozenset({"diagnosis", "cross_sectional_diagnosis"})
+_TARGET_ROUTE_COLUMNS = ("target_route", "target", "target_type", "endpoint")
+_PROGRESSION_LABEL_VALUES = frozenset({
+    "progression", "progressor", "nonprogressor", "decline", "no_decline", "stable",
+})
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedAuthorityStudyCase:
     """One provider-ready case plus its transcript, kept outside metadata.
@@ -64,6 +71,7 @@ class AuthorityStudyDataset:
 
         root = Path(artifact_dir).expanduser().resolve()
         frozen = load_frozen_authority_dataset(root)
+        _require_diagnosis_target(frozen)
         advisor = FrozenConditionCAdvisor.from_artifact_dir(
             root,
             expected_dataset_id=_dataset_id_from_frozen(frozen),
@@ -239,6 +247,49 @@ def _dataset_id_from_frozen(frozen: FrozenAuthorityDataset) -> str:
             f"manifest.csv must declare one non-empty dataset_id; received {sorted(values)}."
         )
     return next(iter(values))
+
+
+def _normalize_target_value(value: Any) -> str:
+    return "_".join(str(value).strip().lower().replace("-", " ").split())
+
+
+def _explicit_manifest_values(manifest: pd.DataFrame, column: str) -> tuple[str, ...]:
+    if column not in manifest.columns:
+        return ()
+    return tuple(
+        value
+        for value in (_normalize_target_value(item) for item in manifest[column].tolist())
+        if value and value not in {"nan", "none", "null"}
+    )
+
+
+def _require_diagnosis_target(frozen: FrozenAuthorityDataset) -> None:
+    """Reject an artifact that declares an endpoint this study cannot evaluate.
+
+    Historical artifacts without target metadata predate explicit routing and
+    remain diagnosis artifacts for backward compatibility.  Once an artifact
+    declares a route, silently mapping it to ``diagnosis`` would turn a
+    longitudinal endpoint into a false cross-sectional label.
+    """
+
+    manifest = frozen.manifest
+    for column in _TARGET_ROUTE_COLUMNS:
+        values = set(_explicit_manifest_values(manifest, column))
+        unsupported = sorted(values - _DIAGNOSIS_TARGET_VALUES)
+        if unsupported:
+            raise AuthorityStudyDatasetError(
+                "AuthorityStudyDataset only supports diagnosis targets; "
+                f"manifest column {column!r} declares {unsupported}."
+            )
+
+    label_values = set(_explicit_manifest_values(manifest, "label"))
+    label_values.update(_normalize_target_value(value) for value in frozen.subject_labels.values())
+    progression = sorted(label_values & _PROGRESSION_LABEL_VALUES)
+    if progression:
+        raise AuthorityStudyDatasetError(
+            "AuthorityStudyDataset only supports diagnosis targets; "
+            f"labels declare progression semantics: {progression}."
+        )
 
 
 def _validate_advisor_contract(

@@ -10,6 +10,11 @@ import pytest
 
 import advoice.authority_study_dataset as study_module
 from advoice.authority_study_dataset import AuthorityStudyDataset, AuthorityStudyDatasetError
+from advoice.evidence import MetricEvidenceV2, ReferenceMetadata
+from advoice.evidence_replay import build_state_graph_v2
+
+
+BASIC_STATES = {"states": [{"id": "S01", "metrics": ["pause"], "weights": [1.0]}]}
 
 
 @dataclass
@@ -64,7 +69,24 @@ def _frozen(*, include_train: bool = True, advisor_subjects: tuple[str, ...] | N
     ])
     labels = {subject: label for subject, label, _ in rows}
     splits = {subject: split for subject, _, split in rows}
-    evidence = {subject: (f"evidence:{subject}",) for subject, _, _ in rows}
+    reference = ReferenceMetadata(median=0.0, scale=1.0, sample_size=20)
+    evidence = {
+        subject: (
+            MetricEvidenceV2(
+                evidence_id=f"evidence:{subject}",
+                metric_id="pause",
+                metric_instance_id="pause:cookie",
+                subject_id=subject,
+                state_id="S01",
+                task_id="cookie",
+                value=-1.0 if label == "HC" else 1.0,
+                direction=1,
+                reference=reference,
+                consumed_by_supervised=True,
+            ),
+        )
+        for subject, label, _ in rows
+    }
     return SimpleNamespace(
         manifest=manifest,
         state_wide=wide,
@@ -96,7 +118,75 @@ def _install(monkeypatch: pytest.MonkeyPatch, frozen: Any, advisor: _FakeAdvisor
         "from_artifact_dir",
         lambda path, **kwargs: chosen,
     )
+    monkeypatch.setattr(
+        study_module,
+        "build_state_graph_v2",
+        lambda evidence, states_config, **kwargs: SimpleNamespace(
+            wide=frozen.state_wide.drop(columns=["label", "split"]).copy()
+        ),
+    )
     monkeypatch.setattr(study_module, "ConditionalAuthorityExecutor", _FakeExecutor)
+
+
+def _process_like_frozen(states_config: dict[str, Any]) -> Any:
+    subjects = (
+        ("process-train-hc-1", "HC", "train", -2.0, -1.0),
+        ("process-train-hc-2", "HC", "train", -1.5, -0.5),
+        ("process-train-ad-1", "AD", "train", 1.0, 2.0),
+        ("process-train-ad-2", "AD", "train", 1.5, 2.5),
+        ("process-test", "AD", "test", 1.2, 2.2),
+    )
+    reference = ReferenceMetadata(median=0.0, scale=1.0, sample_size=20)
+    evidence: dict[str, tuple[MetricEvidenceV2, ...]] = {}
+    manifest_rows: list[dict[str, str]] = []
+    all_evidence: list[MetricEvidenceV2] = []
+    for subject_id, label, split, ctd_value, vf_value in subjects:
+        subject_evidence = tuple(
+            MetricEvidenceV2(
+                evidence_id=f"metric:{subject_id}:{task_id}",
+                metric_id="pause",
+                metric_instance_id=f"pause:{task_id}",
+                subject_id=subject_id,
+                state_id="S01",
+                task_id=task_id,
+                value=value,
+                direction=1,
+                reference=reference,
+                consumed_by_supervised=True,
+            )
+            for task_id, value in (("ctd", ctd_value), ("vf", vf_value))
+        )
+        evidence[subject_id] = subject_evidence
+        all_evidence.extend(subject_evidence)
+        for task_id in ("ctd", "vf"):
+            manifest_rows.append({
+                "dataset_id": "fixture", "case_id": f"{subject_id}:{task_id}",
+                "subject_id": subject_id, "label": label, "split": split,
+                "channel": "structured_multitask", "task_type": task_id, "language": "en",
+            })
+
+    graph = build_state_graph_v2(
+        tuple(all_evidence),
+        states_config,
+        dataset_id="fixture",
+        label="unknown",
+        split="graph",
+    )
+    wide = graph.wide.drop(columns=["dataset_id", "label", "split"]).copy()
+    labels = {subject_id: label for subject_id, label, _, _, _ in subjects}
+    splits = {subject_id: split for subject_id, _, split, _, _ in subjects}
+    wide.insert(1, "label", wide["subject_id"].map(labels))
+    wide.insert(2, "split", wide["subject_id"].map(splits))
+    for prefix in ("state_", "rel_", "available_"):
+        residual = f"{prefix}S01__task_ctd_residual"
+        wide[f"{prefix}S01__task_ctd"] = wide[residual]
+    return SimpleNamespace(
+        manifest=pd.DataFrame(manifest_rows),
+        state_wide=wide,
+        subject_labels=labels,
+        subject_splits=splits,
+        evidence_for_subject=lambda subject: evidence.get(subject, ()),
+    )
 
 
 def test_prepares_label_blind_test_case_with_explicit_train_state_whitelist(
@@ -108,7 +198,7 @@ def test_prepares_label_blind_test_case_with_explicit_train_state_whitelist(
 
     dataset = AuthorityStudyDataset.from_artifact_dir(
         tmp_path,
-        states_config={"states": []},
+        states_config=BASIC_STATES,
     )
     selected = dataset.prepare_test_cases(order="longest-first", max_cases=1)
 
@@ -140,12 +230,54 @@ def test_preparation_does_not_read_truth_after_dataset_construction(
     frozen = _frozen()
     _write_transcripts(tmp_path)
     _install(monkeypatch, frozen)
-    dataset = AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config={"states": []})
+    dataset = AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
 
     dataset._evaluation_truth = {"unexpected": "forbidden"}
     dataset.prepare_test_cases(order="subject_id", max_cases=1)
 
     assert _FakeExecutor.latest.calls[0]["case_metadata"]["case_id"] == "test-long"
+
+
+def test_process_task_absolute_columns_are_excluded_but_replayable_residuals_are_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    states_config = {
+        "states": [{"id": "S01", "metrics": ["pause"], "weights": [1.0]}]
+    }
+    frozen = _process_like_frozen(states_config)
+    pd.DataFrame([
+        {"subject_id": subject_id, "transcript": f"transcript for {subject_id}"}
+        for subject_id in frozen.subject_splits
+    ]).to_csv(tmp_path / "subject_transcripts.csv", index=False)
+    monkeypatch.setattr(study_module, "load_frozen_authority_dataset", lambda path: frozen)
+    monkeypatch.setattr(
+        study_module.FrozenConditionCAdvisor,
+        "from_artifact_dir",
+        lambda path, **kwargs: _FakeAdvisor(subject_ids=("process-test",)),
+    )
+    rebuilt_subjects: list[tuple[str, ...]] = []
+
+    def _recording_graph_builder(evidence: tuple[MetricEvidenceV2, ...], *args: Any, **kwargs: Any) -> Any:
+        rebuilt_subjects.append(tuple(sorted({item.subject_id for item in evidence})))
+        return build_state_graph_v2(evidence, *args, **kwargs)
+
+    monkeypatch.setattr(study_module, "build_state_graph_v2", _recording_graph_builder)
+
+    dataset = AuthorityStudyDataset.from_artifact_dir(
+        tmp_path,
+        states_config=states_config,
+    )
+    whitelist = dataset.executor.module_a_state_feature_whitelist
+
+    assert "state_S01__task_ctd" not in whitelist
+    assert "rel_S01__task_ctd" not in whitelist
+    assert "available_S01__task_ctd" not in whitelist
+    assert "state_S01__task_ctd_residual" in whitelist
+    assert "rel_S01__task_ctd_residual" in whitelist
+    assert "available_S01__task_ctd_residual" in whitelist
+    assert rebuilt_subjects == [("process-train-ad-1",)]
+    prepared = dataset.prepare_test_cases(order="subject_id", max_cases=1)
+    assert prepared[0].prepared_case.case_id == "process-test"
 
 
 @pytest.mark.parametrize(
@@ -174,7 +306,7 @@ def test_rejects_invalid_preparation_contracts(
     _install(monkeypatch, _frozen(**frozen_kwargs), advisor)
 
     with pytest.raises(AuthorityStudyDatasetError, match=match):
-        AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config={"states": []})
+        AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
 
 
 def test_rejects_advisor_subject_mismatch_and_unknown_truth_request(
@@ -187,9 +319,9 @@ def test_rejects_advisor_subject_mismatch_and_unknown_truth_request(
         _FakeAdvisor(subject_ids=("test-short",)),
     )
     with pytest.raises(AuthorityStudyDatasetError, match="subjects do not match"):
-        AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config={"states": []})
+        AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
 
     _install(monkeypatch, _frozen())
-    dataset = AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config={"states": []})
+    dataset = AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
     with pytest.raises(AuthorityStudyDatasetError, match="Unknown subjects"):
         dataset.evaluation_truth(["unknown"])

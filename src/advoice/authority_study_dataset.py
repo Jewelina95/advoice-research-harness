@@ -19,6 +19,8 @@ from .condition_c_advisor import FrozenConditionCAdvisor
 from .conditional_authority import ConditionalAuthorityExecutor, PreparedAuthorityCase
 from .conditional_authority_pilot import FrozenAuthorityDataset, load_frozen_authority_dataset
 from .config import load_yaml, paths
+from .evidence import MetricEvidenceV2
+from .evidence_replay import build_state_graph_v2
 from .module_a import TaskConditionedStatisticalExpert
 from .module_b import ConditionalArbitrator
 
@@ -71,12 +73,21 @@ class AuthorityStudyDataset:
         routing = _subject_routing(frozen.manifest)
         _validate_test_transcript_coverage(frozen, transcripts)
 
-        whitelist = _state_feature_whitelist(frozen.state_wide)
+        state_config = (
+            dict(states_config)
+            if states_config is not None
+            else load_yaml(paths().configs / "states" / "audio_states.yaml")
+        )
         train_frame = frozen.state_wide.loc[
             frozen.state_wide["split"].astype(str).eq("train")
         ].copy()
         if train_frame.empty:
             raise AuthorityStudyDatasetError("state_wide.csv has no split=train rows.")
+        whitelist = _replayable_state_feature_whitelist(
+            frozen,
+            train_frame=train_frame,
+            states_config=state_config,
+        )
         train_labels = tuple(train_frame["label"].astype(str))
         if set(train_labels) != set(advisor.class_order):
             raise AuthorityStudyDatasetError(
@@ -101,11 +112,6 @@ class AuthorityStudyDataset:
                 "training_subject_ids": sorted(train_frame["subject_id"].astype(str).tolist()),
                 "state_feature_whitelist": list(whitelist),
             },
-        )
-        state_config = (
-            dict(states_config)
-            if states_config is not None
-            else load_yaml(paths().configs / "states" / "audio_states.yaml")
         )
         executor = ConditionalAuthorityExecutor(
             states_config=state_config,
@@ -258,19 +264,111 @@ def _validate_advisor_contract(
         )
 
 
-def _state_feature_whitelist(frame: pd.DataFrame) -> tuple[str, ...]:
-    whitelist = tuple(
-        sorted(
-            str(column)
-            for column in frame.columns
-            if str(column).startswith(("state_", "rel_", "available_"))
-        )
+def _replayable_state_feature_whitelist(
+    frozen: FrozenAuthorityDataset,
+    *,
+    train_frame: pd.DataFrame,
+    states_config: Mapping[str, Any],
+) -> tuple[str, ...]:
+    train_subjects = tuple(train_frame["subject_id"].astype(str))
+    training_evidence = _representative_training_evidence(
+        frozen,
+        train_subjects=train_subjects,
+        states_config=states_config,
     )
+    graph = build_state_graph_v2(
+        training_evidence,
+        states_config,
+        dataset_id=_dataset_id_from_frozen(frozen),
+        label="unknown",
+        split="train_graph_contract",
+    )
+    allowed_prefixes = ("state_", "rel_", "available_")
+    stored_features = {
+        str(column) for column in train_frame.columns if str(column).startswith(allowed_prefixes)
+    }
+    replayable_features = {
+        str(column) for column in graph.wide.columns if str(column).startswith(allowed_prefixes)
+    }
+    whitelist = tuple(sorted(stored_features & replayable_features))
     if not whitelist:
         raise AuthorityStudyDatasetError(
-            "state_wide.csv must contain an explicit state_/rel_/available_ feature whitelist."
+            "state_wide.csv and replayed training StateGraphV2 have no common "
+            "state_/rel_/available_ features."
         )
     return whitelist
+
+
+def _representative_training_evidence(
+    frozen: FrozenAuthorityDataset,
+    *,
+    train_subjects: Sequence[str],
+    states_config: Mapping[str, Any],
+) -> tuple[MetricEvidenceV2, ...]:
+    """Select a deterministic minimum cover of replayable state/task scopes.
+
+    StateGraphV2 feature names depend on configured state definitions and the
+    task scopes present in typed evidence, not on cohort size or labels.  A
+    greedy set cover therefore discovers the same feature-name contract while
+    avoiding a full graph rebuild over every training subject.
+    """
+
+    metric_states: dict[str, set[str]] = {}
+    for definition in states_config.get("states", ()):
+        state_id = str(definition.get("id", "")).strip()
+        if not state_id:
+            continue
+        for metric_id in definition.get("metrics", ()):
+            metric_states.setdefault(str(metric_id), set()).add(state_id)
+    if not metric_states:
+        raise AuthorityStudyDatasetError(
+            "states_config has no state metrics from which StateGraphV2 features can be rebuilt."
+        )
+
+    evidence_by_subject: dict[str, tuple[MetricEvidenceV2, ...]] = {}
+    signatures_by_subject: dict[str, frozenset[tuple[str, str]]] = {}
+    missing_evidence: list[str] = []
+    for subject_id in sorted(set(str(value) for value in train_subjects)):
+        evidence = tuple(
+            item
+            for item in frozen.evidence_for_subject(subject_id)
+            if item.consumed_by_supervised
+        )
+        signatures = frozenset(
+            (state_id, str(item.task_id or "overall"))
+            for item in evidence
+            for state_id in metric_states.get(str(item.metric_id), ())
+        )
+        if not evidence or not signatures:
+            missing_evidence.append(subject_id)
+            continue
+        evidence_by_subject[subject_id] = evidence
+        signatures_by_subject[subject_id] = signatures
+    if missing_evidence:
+        raise AuthorityStudyDatasetError(
+            "Training subjects have no supervised evidence supported by states_config: "
+            + ", ".join(missing_evidence)
+        )
+
+    uncovered = set().union(*signatures_by_subject.values())
+    selected: list[str] = []
+    while uncovered:
+        ranked = sorted(
+            signatures_by_subject,
+            key=lambda subject_id: (
+                -len(signatures_by_subject[subject_id] & uncovered),
+                subject_id,
+            ),
+        )
+        subject_id = ranked[0]
+        covered = signatures_by_subject[subject_id] & uncovered
+        if not covered:
+            raise AuthorityStudyDatasetError(
+                "Could not cover all replayable state/task signatures from training evidence."
+            )
+        selected.append(subject_id)
+        uncovered -= covered
+    return tuple(item for subject_id in selected for item in evidence_by_subject[subject_id])
 
 
 def _load_transcripts(path: Path) -> dict[str, str]:

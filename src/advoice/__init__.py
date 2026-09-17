@@ -11,6 +11,7 @@ from .evidence import (
     serialize_metric_evidence_v2,
 )
 from .routing import ObservationRoute, RouteDecision, TargetRoute, route_case
+from .evidence_replay import EvidenceRevision, EvidenceRevisionError, replay_evidence
 
 __version__ = "0.2.0"
 
@@ -18,5 +19,6 @@ __all__ = [
     "ConfoundSets", "EvidencePermissions", "EvidenceProvenance", "MetricEvidenceV2",
     "ObservationRoute", "ReferenceMetadata", "ReliabilityComponents", "RouteDecision",
     "TargetRoute", "deserialize_metric_evidence_v2", "route_case",
-    "serialize_metric_evidence_v2",
+    "serialize_metric_evidence_v2", "EvidenceRevision", "EvidenceRevisionError",
+    "replay_evidence",
 ]

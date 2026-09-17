@@ -77,7 +77,7 @@ def test_blinding_recursive_and_advisor_requires_hypothesis():
     assert not s.hypothesis_recorded
 
 
-def test_revision_invalidates_advisors_and_requires_fresh_judgment():
+def test_revision_invalidates_advisors_and_requires_replay_before_judgment():
     s = session()
     inspect(s)
     before = s.revision
@@ -92,7 +92,9 @@ def test_revision_invalidates_advisors_and_requires_fresh_judgment():
     inspect(s, "state:S07")
     assert s.step(reply(s, "consult_models"))["status"] == "unavailable"
     final = reply(s, "finalize", evidence_ids=["state:S07"], predicted_label="HC", scores={"HC": 3, "AD": 0})
-    assert s.step(final)["status"] == "decided"
+    blocked = s.step(final)
+    assert blocked["status"] == "rejected"
+    assert "replay" in blocked["reason"].lower()
     assert s.finish()["state_revisions"] == 1
 
 
@@ -181,6 +183,20 @@ def test_unbound_advisors_are_not_presented_as_current():
     s = EvidenceSession(workspace(), ["HC", "AD"], model_id="test", skill_hash="fixture")
     inspect(s)
     assert s.step(reply(s, "consult_models"))["status"] == "unavailable"
+
+
+def test_finalization_rejects_stale_bound_advisors():
+    source = workspace()
+    source["advisor_provenance"] = {
+        "evidence_hash": "stale-hash", "artifacts": {"module_a": "fixture-a-v1"},
+    }
+    s = EvidenceSession(source, ["HC", "AD"], model_id="test", skill_hash="fixture")
+    inspect(s)
+    result = s.step(reply(
+        s, "finalize", predicted_label="AD", scores={"HC": 0, "AD": 3}, evidence_ids=["state:S01"],
+    ))
+    assert result["status"] == "rejected"
+    assert "stale" in result["reason"].lower()
 
 
 def test_nested_counterevidence_is_inspected_and_required():

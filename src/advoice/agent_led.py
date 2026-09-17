@@ -162,6 +162,7 @@ class EvidenceSession:
         self.model_id = model_id
         policy_files = [Path(__file__), Path(__file__).with_name("cognitive_agent.py"),
                         Path(__file__).with_name("evidence_review.py"),
+                        Path(__file__).with_name("evidence_replay.py"),
                         Path(__file__).with_name("agent_runtime.py")]
         self.policy_hash = hash_values([p.read_text(encoding="utf-8") for p in policy_files])
         provenance = workspace.get("advisor_provenance", {})
@@ -286,6 +287,10 @@ class EvidenceSession:
 
     def _check_final(self, reply: dict[str, Any]) -> dict[str, Any]:
         self._require_review_sequence()
+        if self.workspace.get("evidence_revision", {}).get("state_replay_required", False):
+            raise ValueError("A reviewed evidence revision requires deterministic replay before finalization.")
+        if self.advisor_artifacts and not self._bound_advisors_current():
+            raise ValueError("Bound supervised advisors are stale; replay and bind current advisor outputs before finalization.")
         if (
             self.decision_mode == "benchmark_forced_choice"
             and self._bound_advisors_current()

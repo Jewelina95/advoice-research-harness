@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -22,9 +23,40 @@ from .states import (
     _segment_evidence,
     _state_category,
 )
+from .utils import hash_values
 
 
 IDENTITY_COLUMNS = ["dataset_id", "subject_id", "label", "split"]
+
+
+@dataclass(frozen=True, slots=True)
+class StateGraphV2:
+    """Immutable handle for a rebuilt, family-aware state graph.
+
+    The existing dataframe API remains the compatibility path.  This small
+    wrapper gives replay consumers an explicit evidence/state binding without
+    making pandas frames part of their public identity.
+    """
+
+    evidence_hash: str
+    state_hash: str
+    cards: pd.DataFrame
+    wide: pd.DataFrame
+
+    @classmethod
+    def from_evidence_frame(
+        cls,
+        evidence: pd.DataFrame,
+        states_config: dict[str, Any],
+        correlation_config: dict[str, Any] | None = None,
+    ) -> "StateGraphV2":
+        cards, wide = build_state_graph_frame(evidence, states_config, correlation_config)
+        evidence_hash = state_graph_evidence_hash(evidence)
+        state_hash = hash_values([{
+            "cards": _json_safe(cards.sort_index(axis=1).to_dict("records")),
+            "wide": _json_safe(wide.sort_index(axis=1).to_dict("records")),
+        }])
+        return cls(evidence_hash=evidence_hash, state_hash=state_hash, cards=cards, wide=wide)
 
 
 def _as_bool(series: pd.Series, default: bool = False) -> pd.Series:
@@ -68,6 +100,16 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return value
+
+
+def state_graph_evidence_hash(evidence: pd.DataFrame) -> str:
+    """Canonical identity for dataframe evidence passed to StateGraphV2."""
+
+    records = _json_safe(evidence.sort_index(axis=1).to_dict("records"))
+    return hash_values([sorted(
+        records,
+        key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )])
 
 
 def _json_dump(value: Any) -> str:

@@ -16,7 +16,7 @@ from advoice.decision_lock import hash_artifact
 from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2, ReferenceMetadata
 from advoice.evidence_replay import EvidenceRevision, replay_evidence
 from advoice.module_a import TaskConditionedStatisticalExpert
-from advoice.module_b import ConditionalArbitrator
+from advoice.module_b import ConditionalArbitrator, compute_fit_subject_hash
 
 
 LABELS = ("HC", "MCI", "AD")
@@ -46,6 +46,8 @@ def _module_b() -> ConditionalArbitrator:
     rows = []
     probabilities = ((.7, .2, .1), (.2, .65, .15), (.1, .2, .7))
     for index in range(18):
+        fold = index % 3
+        fit_subject_ids = [f"module-b-fold-{fold}-train-{offset}" for offset in range(6)]
         post = dict(zip(LABELS, probabilities[index % 3], strict=True))
         scores = {
             "HC": 4 if index % 3 == 0 else 0,
@@ -73,7 +75,16 @@ def _module_b() -> ConditionalArbitrator:
             "consumed_evidence_ids": [],
             "route_supported": True,
             "replay_performed": False,
-            "cross_fit_fold": index % 3,
+            "subject_id": f"module-b-target-{index}",
+            "fold": fold,
+            "cross_fit_fold": fold,
+            "fit_subject_ids": fit_subject_ids,
+            "fit_subject_hash": compute_fit_subject_hash(fit_subject_ids),
+            "reference_hash": f"reference-fold-{fold}",
+            "module_a_hash": f"module-a-fold-{fold}",
+            "agent_version": "agent-v1",
+            "validator_version": "validator-v1",
+            "selection_independent": True,
             "true_label": LABELS[index % 3],
         })
     return ConditionalArbitrator(LABELS, ridge_alpha=.5, max_logit_correction=.15).fit(rows)
@@ -227,6 +238,8 @@ def test_dataset_specific_binary_target_route_is_supported() -> None:
     )
     rows = []
     for index in range(8):
+        fold = index % 2
+        fit_subject_ids = [f"binary-fold-{fold}-train-{offset}" for offset in range(4)]
         probability = {"HC": .8, "AD": .2} if index % 2 == 0 else {"HC": .2, "AD": .8}
         rows.append({
             "module_a_pre_replay": probability,
@@ -249,7 +262,16 @@ def test_dataset_specific_binary_target_route_is_supported() -> None:
             "consumed_evidence_ids": [],
             "route_supported": True,
             "replay_performed": False,
-            "cross_fit_fold": index % 2,
+            "subject_id": f"binary-target-{index}",
+            "fold": fold,
+            "cross_fit_fold": fold,
+            "fit_subject_ids": fit_subject_ids,
+            "fit_subject_hash": compute_fit_subject_hash(fit_subject_ids),
+            "reference_hash": f"binary-reference-fold-{fold}",
+            "module_a_hash": f"binary-module-a-fold-{fold}",
+            "agent_version": "agent-v1",
+            "validator_version": "validator-v1",
+            "selection_independent": True,
             "true_label": labels[index % 2],
         })
     module_b = ConditionalArbitrator(labels).fit(rows)

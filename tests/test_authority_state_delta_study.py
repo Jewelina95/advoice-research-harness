@@ -98,8 +98,15 @@ class _Dataset(AuthorityStudyDataset):
         self.review_calls = 0
         self.truth_calls = 0
 
-    def prepare_test_cases(self, *, max_cases: int | None = None, order: str = "longest_first"):
-        assert order in {"longest_first", "subject_id"}
+    def prepare_test_cases(
+        self,
+        *,
+        max_cases: int | None = None,
+        order: str = "longest_first",
+        selection_salt: str = "authority-pilot-v1",
+    ):
+        assert order in {"longest_first", "subject_id", "stable_hash"}
+        assert selection_salt
         return self._cases if max_cases is None else self._cases[:max_cases]
 
     def evaluation_truth(self, subject_ids=None):

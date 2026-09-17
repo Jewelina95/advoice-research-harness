@@ -9,6 +9,7 @@ separate evaluation accessor and are never read by ``prepare_test_cases``.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -155,17 +156,22 @@ class AuthorityStudyDataset:
         *,
         max_cases: int | None = None,
         order: str = "longest_first",
+        selection_salt: str = "authority-pilot-v1",
     ) -> tuple[PreparedAuthorityStudyCase, ...]:
         """Prepare deterministic test cases without consulting their labels.
 
-        ``order`` is ``longest_first`` (descending transcript character count,
-        then subject ID) or ``subject_id`` (ascending subject ID).  Test truth
-        remains inaccessible from this method by design.
+        ``order`` is ``longest_first`` (descending transcript character count),
+        ``subject_id`` (ascending subject ID), or ``stable_hash``. The hash
+        order binds dataset, channel, case ID, and an explicit salt; it never
+        consults test truth.
         """
 
         if max_cases is not None and max_cases < 1:
             raise AuthorityStudyDatasetError("max_cases must be positive when supplied.")
         normalized_order = _normalize_order(order)
+        normalized_salt = str(selection_salt).strip()
+        if not normalized_salt:
+            raise AuthorityStudyDatasetError("selection_salt must be non-empty.")
         subject_ids = [
             str(subject_id)
             for subject_id, split in self.frozen.subject_splits.items()
@@ -190,6 +196,20 @@ class AuthorityStudyDataset:
 
         if normalized_order == "longest_first":
             subject_ids.sort(key=lambda subject_id: (-len(self._transcripts[subject_id]), subject_id))
+        elif normalized_order == "stable_hash":
+            subject_ids.sort(
+                key=lambda subject_id: (
+                    hashlib.sha256(
+                        "|".join((
+                            self.advisor.dataset_id,
+                            self._subject_routing[subject_id]["channel"],
+                            subject_id,
+                            normalized_salt,
+                        )).encode("utf-8")
+                    ).hexdigest(),
+                    subject_id,
+                )
+            )
         else:
             subject_ids.sort()
         if max_cases is not None:
@@ -522,8 +542,8 @@ def _validate_test_transcript_coverage(
 
 def _normalize_order(order: str) -> str:
     normalized = str(order).strip().lower().replace("-", "_")
-    if normalized not in {"longest_first", "subject_id"}:
+    if normalized not in {"longest_first", "subject_id", "stable_hash"}:
         raise AuthorityStudyDatasetError(
-            "order must be 'longest_first' or 'subject_id'."
+            "order must be 'longest_first', 'subject_id', or 'stable_hash'."
         )
     return normalized

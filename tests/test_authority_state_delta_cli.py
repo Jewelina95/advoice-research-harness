@@ -18,6 +18,7 @@ def _args(tmp_path: Path, **overrides: object) -> object:
         "model": "gpt-test",
         "max_cases": 2,
         "selection_order": "longest_first",
+        "selection_salt": "fixture-pilot-v1",
         "state_strength": 0.0,
         "agent_strength": 1.0,
         "ordinal_temperature": 1.0,
@@ -89,6 +90,7 @@ def test_run_passes_all_controls_without_provider_fallback(tmp_path: Path, monke
     study_kwargs = calls["study"][2]  # type: ignore[index]
     assert study_kwargs["cache_dir"] == (tmp_path / "cache").resolve()  # type: ignore[index]
     assert study_kwargs["config"].selection_order == "longest_first"  # type: ignore[index]
+    assert study_kwargs["config"].selection_salt == "fixture-pilot-v1"  # type: ignore[index]
     assert study_kwargs["config"].joint_fusion.state_strength == 0.0  # type: ignore[index]
     assert study_kwargs["config"].joint_fusion.agent_strength == 1.0  # type: ignore[index]
 

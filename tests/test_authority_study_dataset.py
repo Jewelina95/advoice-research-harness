@@ -224,6 +224,33 @@ def test_prepares_label_blind_test_case_with_explicit_train_state_whitelist(
     assert dataset.evaluation_truth(["test-long"]) == {"test-long": "AD"}
 
 
+def test_stable_hash_selection_is_reproducible_and_label_blind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen = _frozen()
+    _write_transcripts(tmp_path)
+    _install(monkeypatch, frozen)
+    dataset = AuthorityStudyDataset.from_artifact_dir(tmp_path, states_config=BASIC_STATES)
+
+    first = dataset.prepare_test_cases(
+        order="stable-hash",
+        max_cases=1,
+        selection_salt="registered-pilot-v1",
+    )
+    frozen.subject_labels["test-short"] = "AD"
+    frozen.subject_labels["test-long"] = "HC"
+    second = dataset.prepare_test_cases(
+        order="stable_hash",
+        max_cases=1,
+        selection_salt="registered-pilot-v1",
+    )
+
+    assert [item.prepared_case.case_id for item in first] == [
+        item.prepared_case.case_id for item in second
+    ]
+
+
 def test_preparation_does_not_read_truth_after_dataset_construction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

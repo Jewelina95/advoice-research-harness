@@ -18,7 +18,7 @@ from .config import paths
 
 
 SUPPORTED_PROVIDERS = ("codex_cli", "openai_api", "disabled")
-SUPPORTED_SELECTION_ORDERS = ("longest_first", "subject_id")
+SUPPORTED_SELECTION_ORDERS = ("longest_first", "subject_id", "stable_hash")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_SELECTION_ORDERS,
         default="longest_first",
     )
+    parser.add_argument("--selection-salt", default="authority-pilot-v1")
     parser.add_argument("--state-strength", type=float, default=0.0)
     parser.add_argument("--agent-strength", type=float, default=1.0)
     parser.add_argument("--ordinal-temperature", type=float, default=1.0)
@@ -51,6 +52,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--model must be a non-empty explicit model identifier.")
     if args.max_cases is not None and args.max_cases < 1:
         raise ValueError("--max-cases must be positive when supplied.")
+    if not str(args.selection_salt).strip():
+        raise ValueError("--selection-salt must be non-empty.")
     if args.alpha is not None and args.state_strength != 0.0:
         raise ValueError("Use --state-strength or legacy --alpha, not both.")
     state_strength = args.state_strength if args.alpha is None else args.alpha
@@ -115,6 +118,7 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             ),
             max_cases=args.max_cases,
             selection_order=args.selection_order,
+            selection_salt=args.selection_salt,
         ),
     )
     summary = _summary(result, provider=args.provider, model=args.model)

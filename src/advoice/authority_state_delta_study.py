@@ -72,6 +72,7 @@ class AuthorityStateDeltaStudyConfig:
     )
     evaluation_bins: int = 10
     selection_order: str = "longest_first"
+    selection_salt: str = "authority-pilot-v1"
     max_cases: int | None = None
 
     def __post_init__(self) -> None:
@@ -79,8 +80,12 @@ class AuthorityStateDeltaStudyConfig:
             raise TypeError("joint_fusion must be an AuthorityJointFusionConfig.")
         if self.evaluation_bins < 2:
             raise ValueError("evaluation_bins must be at least 2.")
-        if self.selection_order not in {"longest_first", "subject_id"}:
-            raise ValueError("selection_order must be 'longest_first' or 'subject_id'.")
+        if self.selection_order not in {"longest_first", "subject_id", "stable_hash"}:
+            raise ValueError(
+                "selection_order must be 'longest_first', 'subject_id', or 'stable_hash'."
+            )
+        if not str(self.selection_salt).strip():
+            raise ValueError("selection_salt must be non-empty.")
         if self.max_cases is not None and self.max_cases < 1:
             raise ValueError("max_cases must be positive when supplied.")
 
@@ -90,6 +95,7 @@ class AuthorityStateDeltaStudyConfig:
             "joint_fusion": self.joint_fusion.to_dict(),
             "evaluation_bins": self.evaluation_bins,
             "selection_order": self.selection_order,
+            "selection_salt": self.selection_salt,
             "max_cases": self.max_cases,
         }
 
@@ -162,6 +168,7 @@ def run_authority_state_delta_cohort(
     prepared_cases = dataset.prepare_test_cases(
         max_cases=selected_config.max_cases,
         order=selected_config.selection_order,
+        selection_salt=selected_config.selection_salt,
     )
     if not prepared_cases:
         raise AuthorityStateDeltaStudyError("The selected cohort has no prepared test cases.")

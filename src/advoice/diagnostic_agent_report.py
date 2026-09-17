@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from .agent_runtime import case_pseudonym, run_structured_batch, select_agent_cohort
+from .transcript_sanitization import sanitize_workspace_transcripts
 from .utils import json_dump, now_utc
 
 
@@ -65,7 +66,9 @@ def _segment_alias(value: str) -> str:
 
 
 def _sanitize_workspace(workspace: dict[str, Any], case_id: str) -> dict[str, Any]:
-    cleaned = json.loads(json.dumps(workspace, ensure_ascii=False))
+    cleaned = sanitize_workspace_transcripts(
+        json.loads(json.dumps(workspace, ensure_ascii=False))
+    )
     cleaned["case_id"] = case_id
     cleaned.pop("subject_id", None)
     model_only_count = len(cleaned.pop("model_only_state_observations", []))
@@ -160,6 +163,15 @@ def _sanitize_workspace(workspace: dict[str, Any], case_id: str) -> dict[str, An
 
 
 def _fallback_report(workspace: dict[str, Any], labels: list[str]) -> dict[str, Any]:
+    if workspace.get("prediction_released") is False:
+        return {
+            "case_id": workspace["case_id"],
+            "predicted_label": "withheld",
+            "used_evidence_ids": [], "counterevidence_ids": [], "quality_evidence_ids": [],
+            "report_zh": "本次筛查暂不发布风险概率。证据审查发现部分状态需要修正，原预测尚未通过修正后的完整重算与验证。请复核对应录音和转录，必要时重复标准化任务采集，再进行认知评估。",
+            "patient_summary_zh": "这次录音的证据需要复核，暂时不能据此判断认知风险。请先复核录音或重新采集。",
+            "uncertainty_zh": "修正后的证据尚不足以支持发布筛查判断。",
+        }
     final = workspace["final_probabilities"]
     predicted = max(labels, key=lambda label: float(final[label]))
     ordered = sorted(final.items(), key=lambda item: float(item[1]), reverse=True)
@@ -255,6 +267,14 @@ def _report_validation_errors(
     item: dict[str, Any], workspace: dict[str, Any], source_identifier: str
 ) -> list[str]:
     errors: list[str] = []
+    if workspace.get("prediction_released") is False:
+        # Evaluation priors and unreviewed claims must never become a report.
+        expected = _fallback_report(workspace, [])
+        if item.get("predicted_label") != expected["predicted_label"]:
+            errors.append("prediction_changed")
+        if any(item.get(key) != value for key, value in expected.items()):
+            errors.append("withheld_report_violation")
+        return sorted(set(errors))
     if str(item.get("predicted_label")) != str(workspace["final_prediction"]):
         errors.append("prediction_changed")
     diagnostic_ids = {
@@ -345,7 +365,9 @@ def run_diagnostic_agent_reports(
         reverse[case_id] = subject_id
         cases.append(_sanitize_workspace(workspace, case_id))
 
-    if provider == "disabled":
+    withheld_cases = [case for case in cases if case.get("prediction_released") is False]
+    provider_cases = [case for case in cases if case.get("prediction_released") is not False]
+    if provider == "disabled" or not provider_cases:
         response = {"cases": [_fallback_report(case, labels) for case in cases]}
         provider_status = "completed_policy_fallback"
     else:
@@ -363,7 +385,7 @@ def run_diagnostic_agent_reports(
             + "模型概率或确诊式措辞，只说明筛查发现、限制与下一步。"
             + f"本任务类别为 {labels}，研究目标为：{agents_config.get('target_description', '认知筛查')}。"
             + "只返回结构化结果。病例工作区如下：\n"
-            + json.dumps(cases, ensure_ascii=False)
+            + json.dumps(provider_cases, ensure_ascii=False)
         )
         response = run_structured_batch(
             root,
@@ -373,6 +395,14 @@ def run_diagnostic_agent_reports(
             agents_config["model"],
             provider,
         )
+        # A provider response cannot supply or override a withheld-case report.
+        provider_case_ids = {case["case_id"] for case in provider_cases}
+        response = {
+            "cases": [
+                item for item in response.get("cases", [])
+                if str(item.get("case_id")) in provider_case_ids
+            ] + [_fallback_report(case, labels) for case in withheld_cases]
+        }
         provider_status = "completed"
 
     rows: list[dict[str, Any]] = []
@@ -387,7 +417,8 @@ def run_diagnostic_agent_reports(
         if subject_id is None:
             continue
         workspace = by_case[str(item["case_id"])]
-        expected = str(workspace["final_prediction"])
+        withheld = workspace.get("prediction_released") is False
+        expected = "withheld" if withheld else str(workspace["final_prediction"])
         validation_errors = _report_validation_errors(item, workspace, subject_id)
         if "prediction_changed" in validation_errors:
             numeric_violations += 1
@@ -427,7 +458,7 @@ def run_diagnostic_agent_reports(
                 ),
                 "model": (
                     "deterministic_policy_fallback"
-                    if provider == "disabled"
+                    if provider == "disabled" or withheld
                     else agents_config.get("model", "policy_runtime")
                 ),
                 "validation_status": "fallback_replaced" if validation_errors else "validated",

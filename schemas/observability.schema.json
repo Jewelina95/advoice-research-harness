@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice task-state observability configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "state_ids", "observation_families", "task_state_matrix"],
+  "properties": {
+    "version": {"type": "string"},
+    "state_ids": {"type": "array", "items": {"type": "string"}},
+    "observation_families": {"type": "object"},
+    "task_state_matrix": {"type": "object"}
+  }
+}

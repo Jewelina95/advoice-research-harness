@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice evidence provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_asset_id", "source_segment_ids", "transcript_id", "method_version", "measurement_version", "generated_by"],
+  "properties": {
+    "source_asset_id": {"type": "string"},
+    "source_segment_ids": {"type": "array", "items": {"type": "string"}},
+    "transcript_id": {"type": ["string", "null"]},
+    "method_version": {"type": "string"},
+    "measurement_version": {"type": "string"},
+    "generated_by": {"type": "string"}
+  }
+}

@@ -222,7 +222,11 @@ def test_task_alias_invalidation_rejects_its_segment_but_not_another_task() -> N
     workspace = _workspace()
     state = workspace["state_observations"][0]
     state.update(state_id="S1__task_reading", task_scope="reading")
-    state["evidence_segments"] = [{"segment_id": "segment:reading"}]
+    state["evidence_segments"] = [{
+        "segment_id": "segment:reading",
+        "diagnostic_disclosure": "none",
+        "prediction_eligible": True,
+    }]
     workspace["evidence_registry"].append({
         "evidence_id": "segment:reading", "evidence_type": "segment",
     })
@@ -278,6 +282,8 @@ def test_development_routes_use_calibrated_oof_evidence(
          "predicted_label": "HC", "prob_HC": 0.9, "prob_MCI": 0.05, "prob_AD": 0.05}
         for index in range(15)
     ])
+    prior["selection_independent"] = True
+    prior["dedicated_calibration_holdout"] = True
     workspaces = []
     for subject_id in prior["subject_id"]:
         workspace = _workspace(confound_assessment={
@@ -285,9 +291,14 @@ def test_development_routes_use_calibrated_oof_evidence(
         })
         workspace["case_id"] = case_pseudonym(subject_id)
         workspace["correction_gate"] = 1.0
+        workspace["oof_provenance"] = {"selection_independent": True, "dedicated_calibration_holdout": True}
         workspaces.append(workspace)
     prior_path = tmp_path / "prior.csv"
     prior.to_csv(prior_path, index=False)
+    test_prior_path = tmp_path / "test_prior.csv"
+    test_prior = prior.copy()
+    test_prior["subject_id"] = "test-" + test_prior["subject_id"]
+    test_prior.to_csv(test_prior_path, index=False)
     workspace_path = tmp_path / "workspaces.jsonl"
     workspace_path.write_text("\n".join(json.dumps(item) for item in workspaces))
     monkeypatch.setattr(cognitive_agent, "_skill_text", lambda root: "")
@@ -323,7 +334,7 @@ def test_development_routes_use_calibrated_oof_evidence(
 
     monkeypatch.setattr(cognitive_agent, "fit_agent_two_stage_strengths", select)
     cognitive_agent.run_cognitive_diagnostic_agent(
-        root=tmp_path, prior_predictions_path=prior_path, workspaces_path=workspace_path,
+        root=tmp_path, prior_predictions_path=test_prior_path, workspaces_path=workspace_path,
         agents_config={"labels": labels, "model": "mock", "diagnostic_agent_min_calibration_cases": 15},
         provider="openai_api", predictions_path=tmp_path / "predictions.csv",
         decisions_path=tmp_path / "decisions.jsonl", audit_path=tmp_path / "audit.jsonl",

@@ -39,7 +39,7 @@ from .models import (
     _predict_ordered,
     _prediction_frame,
 )
-from .states import build_fold_calibrated_state_frame
+from .states import build_fold_calibrated_state_frame, build_state_cards_frame
 from .sequence_expert import fit_segment_attention_expert
 from .utils import json_dump
 
@@ -114,6 +114,22 @@ def _replace_card_metric_summaries(
             ensure_ascii=False,
         )
     return result
+
+
+def _rebuild_cards(evidence: pd.DataFrame, states_config: dict[str, Any],
+                   stored_cards: pd.DataFrame) -> pd.DataFrame:
+    """Use identical aggregation for calibration and inference; preserve source spans."""
+    cards, _ = build_state_cards_frame(evidence, states_config)
+    keys = ["subject_id", "state_id", "task_scope"]
+    if "task_scope" not in stored_cards:
+        stored_cards = stored_cards.assign(task_scope="overall")
+    trace_columns = [c for c in ("evidence_segments", "trace_resolution") if c in stored_cards]
+    if trace_columns:
+        traces = stored_cards[keys + trace_columns].drop_duplicates(keys)
+        cards = cards.drop(columns=trace_columns, errors="ignore").merge(traces, on=keys, how="left", validate="one_to_one")
+        if "evidence_segments" in cards:
+            cards["evidence_segments"] = cards.evidence_segments.fillna("[]")
+    return cards
 
 
 def _prototype_inputs(
@@ -468,22 +484,22 @@ def _evidence_quality_by_subject(evidence: pd.DataFrame) -> dict[str, dict[str, 
         evidence["evidence_role"].astype(str).isin(
             ["clinical", "clinical_support", "model_and_report"]
         )
-        & evidence["report_permission"].fillna(False).astype(bool)
-        & ~evidence["missing"].fillna(True).astype(bool)
+        & _boolean_series(evidence["report_permission"], default=False)
     ].copy()
     result: dict[str, dict[str, float]] = {}
     for subject_id, group in clinical.groupby(clinical["subject_id"].astype(str)):
-        confounds = group["confound_tags"].map(
+        observed = group[~_boolean_series(group["missing"], default=True)]
+        confounds = observed["confound_tags"].map(
             lambda value: len(json.loads(value))
             if isinstance(value, str) and value.startswith("[")
             else 0
         )
         result[str(subject_id)] = {
-            "metric_coverage": float(len(group)),
+            "metric_coverage": float(len(observed) / len(group)),
             "metric_reliability": float(
-                pd.to_numeric(group["reliability"], errors="coerce").fillna(0.0).mean()
-            ),
-            "confound_burden": float(np.clip((confounds / 3.0).mean(), 0.0, 1.0)),
+                pd.to_numeric(observed["reliability"], errors="coerce").fillna(0.0).mean()
+            ) if len(observed) else 0.0,
+            "confound_burden": float(np.clip((confounds / 3.0).mean(), 0.0, 1.0)) if len(observed) else 1.0,
         }
     return result
 
@@ -536,10 +552,9 @@ def _agent_feature_frame(
             )
         )
     quality = pd.DataFrame(quality_rows, index=frame.index)
-    max_metric_count = max(float(quality["metric_coverage"].max()), 1.0)
     coverage = np.sqrt(
         np.clip(state_coverage.to_numpy(dtype=float), 0.0, 1.0)
-        * np.clip(quality["metric_coverage"].to_numpy(dtype=float) / max_metric_count, 0.0, 1.0)
+        * np.clip(quality["metric_coverage"].to_numpy(dtype=float), 0.0, 1.0)
     )
     reliability = np.sqrt(
         np.clip(state_reliability.to_numpy(dtype=float), 0.0, 1.0)
@@ -1252,8 +1267,14 @@ def train_condition_c(
     metadata_path: Path,
     agent_calibration_predictions_path: Path | None = None,
     agent_calibration_workspaces_path: Path | None = None,
+    analysis_manifest_path: Path | None = None,
 ) -> None:
     """Train the 8.21 evidence diagnostic Agent without using held-out labels."""
+
+    if models_config.get("condition_c", {}).get("dedicated_calibration", {}).get("enabled", False):
+        arguments = dict(locals())
+        from .calibration_training import train_with_dedicated_calibration
+        return train_with_dedicated_calibration(train_condition_c, arguments)
 
     labels = _labels(models_config)
     config = models_config.get("condition_c", {})
@@ -1278,6 +1299,14 @@ def train_condition_c(
     train_subject_ids = set(
         features.loc[features["split"].eq("train"), "subject_id"].astype(str)
     )
+    reference_ids = set(features.loc[
+        features.subject_id.astype(str).isin(train_subject_ids) & features.label.eq(labels[0]), "subject_id"
+    ].astype(str))
+    evidence = recalibrate_metric_evidence_frame(
+        evidence, reference_subject_ids=reference_ids,
+        target_subject_ids=set(features.subject_id.astype(str)),
+    )
+    cards = _rebuild_cards(evidence, states_config, cards)
     calibrated_states = build_fold_calibrated_state_frame(
         evidence, states_config, train_subject_ids, labels[0]
     )
@@ -1546,7 +1575,7 @@ def train_condition_c(
 
     deep_audio_metadata: dict[str, Any] = {"enabled": False}
     deep_audio_config = config.get("deep_audio", {})
-    analysis_manifest_path = subject_features_path.parent / "analysis_manifest.csv"
+    analysis_manifest_path = analysis_manifest_path or subject_features_path.parent / "analysis_manifest.csv"
     if (
         bool(deep_audio_config.get("enabled", False))
         and not bool(qc_guard_metadata["triggered"])
@@ -2035,40 +2064,7 @@ def train_condition_c(
             reference_subject_ids=outer_fit_reference_ids,
             target_subject_ids=calibration_ids,
         )
-        state_lookup = fold_frame.set_index("subject_id")
-        for row_index, card in calibration_cards.iterrows():
-            subject_id = str(card["subject_id"])
-            state_id = str(card["state_id"])
-            state_column = f"state_{state_id}"
-            reliability_column = f"rel_{state_id}"
-            if subject_id not in state_lookup.index or state_column not in state_lookup:
-                continue
-            state_z = float(state_lookup.at[subject_id, state_column])
-            reliability = float(state_lookup.at[subject_id, reliability_column])
-            calibration_cards.at[row_index, "state_z"] = state_z
-            calibration_cards.at[row_index, "raw_state_z"] = state_z
-            calibration_cards.at[row_index, "report_state_z"] = state_z
-            calibration_cards.at[row_index, "confidence"] = reliability
-            calibration_cards.at[row_index, "report_confidence"] = min(
-                reliability,
-                float(card.get("report_confidence", reliability)),
-            )
-            calibration_cards.at[row_index, "severity"] = float(
-                1.0 / (1.0 + np.exp(-state_z))
-            )
-            calibration_cards.at[row_index, "category"] = (
-                "unreliable"
-                if reliability < 0.45
-                else "impaired"
-                if state_z >= 2.0
-                else "borderline"
-                if state_z >= 1.0
-                else "normal"
-            )
-        calibration_cards = _replace_card_metric_summaries(
-            calibration_cards,
-            calibration_evidence,
-        )
+        calibration_cards = _rebuild_cards(calibration_evidence, states_config, calibration_cards)
 
         calibration_workspaces: list[dict[str, Any]] = []
         for local_index, subject in calibration_frame.iterrows():

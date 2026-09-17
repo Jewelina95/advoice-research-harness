@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice MetricEvidenceV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_id", "metric_id", "subject_id", "session_id", "metric_instance_id",
+    "state_id", "value", "reference", "reliability_components", "provenance",
+    "confounds", "permissions", "consumed_by_supervised", "incremental_for_agent"
+  ],
+  "properties": {
+    "evidence_id": {"type": "string", "minLength": 1},
+    "metric_id": {"type": "string", "minLength": 1},
+    "subject_id": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string"},
+    "metric_instance_id": {"type": "string", "minLength": 1},
+    "state_id": {"type": "string"},
+    "task_id": {"type": ["string", "null"]},
+    "value": {},
+    "unit": {"type": "string"},
+    "source_modality": {"type": "string"},
+    "direction": {"type": "integer"},
+    "direction_provenance": {"type": "string"},
+    "observable": {"type": "boolean"},
+    "unavailable_reason": {"type": ["string", "null"]},
+    "reference": {"type": "object"},
+    "reliability_components": {"type": "object"},
+    "provenance": {"type": "object"},
+    "confounds": {"type": "object"},
+    "permissions": {"type": "object"},
+    "inference_permission": {"type": "boolean"},
+    "report_permission": {"type": "boolean"},
+    "consumed_by_supervised": {"type": "boolean"},
+    "incremental_for_agent": {"type": "boolean"},
+    "reliability_migration": {"type": "string"}
+  }
+}

@@ -2,9 +2,11 @@
 
 Version: `report-permission-1.0`
 
-`report_permission` is computed before the diagnostic Agent runs. The Agent may
-inspect blocked evidence for quality review or rollback, but it may not promote
-that evidence into a clinical finding.
+`report_permission` is computed before the diagnostic Agent runs and is
+independent of `inference_permission`. Evidence with
+`inference_permission=true` may affect the Agent's hidden ordinal class scores
+even when report permission is false. The Agent may not promote such evidence
+into a clinician-facing finding, citation or `report_trace`.
 
 ## Deterministic conversion
 

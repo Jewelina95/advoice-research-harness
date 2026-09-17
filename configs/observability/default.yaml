@@ -1,0 +1,16 @@
+version: "1"
+state_ids: [S01, S02, S03, S04, S05, S06, S07, S08, S09, S10, S11, S12, S13, S14]
+observation_families:
+  structured_clinical_interview:
+    required_roles: [patient, interviewer]
+  picture_description:
+    required_roles: []
+  structured_cognitive_multitask:
+    required_roles: []
+  spontaneous_speech:
+    required_roles: []
+  public_speech:
+    required_roles: []
+  audio_only:
+    required_roles: []
+task_state_matrix: {}

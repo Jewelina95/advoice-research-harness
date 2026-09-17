@@ -8,7 +8,8 @@ This protocol operationalizes a Cognition-of-Thought-inspired monitor over clini
 - `V02_QC_AS_DISEASE`: quality/model-only evidence used as disease support.
 - `V03_UNOBSERVABLE_STATE`: task-inapplicable state used.
 - `V04_INVALID_REFERENCE`: cited evidence/segment is absent or belongs to another case.
-- `V05_PERMISSION_VIOLATION`: non-reportable evidence cited clinically.
+- `V05_PERMISSION_VIOLATION`: inference-forbidden evidence used in a decision,
+  or non-reportable evidence exposed in a clinician-facing claim.
 - `V06_COUNTEREVIDENCE_OMITTED`: material available counterevidence not inspected.
 - `V07_UNSUPPORTED_DIAGNOSIS_OR_STAGE`: biological diagnosis/stage asserted.
 - `V08_CLASS_SCORE_MISMATCH`: evidence class does not match the highest ordinal evidence score.

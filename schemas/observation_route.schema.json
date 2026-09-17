@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ADvoice observation route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "family"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "family": {"type": "string", "minLength": 1},
+    "task_id": {"type": ["string", "null"]},
+    "language": {"type": ["string", "null"]},
+    "required_roles": {"type": "array", "items": {"type": "string"}},
+    "allowed_states": {"type": "array", "items": {"type": "string"}}
+  }
+}

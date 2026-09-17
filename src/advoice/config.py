@@ -57,6 +57,21 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return value or {}
 
 
+def load_routing_config(path: Path | None = None) -> dict[str, Any]:
+    """Load additive Stage 1 route contracts without changing legacy configs."""
+    p = paths()
+    return load_yaml(path or p.configs / "routes" / "default.yaml")
+
+
+load_route_config = load_routing_config
+
+
+def load_observability_config(path: Path | None = None) -> dict[str, Any]:
+    """Load the task-by-state observability registry."""
+    p = paths()
+    return load_yaml(path or p.configs / "observability" / "default.yaml")
+
+
 def load_all(dataset_id: str) -> dict[str, Any]:
     p = paths()
     dataset = load_yaml(p.configs / "datasets" / f"{dataset_id}.yaml")
@@ -68,6 +83,9 @@ def load_all(dataset_id: str) -> dict[str, Any]:
         dataset["raw_path"] = str((Path(raw_root).expanduser() / relative_raw).resolve())
     metrics = load_yaml(p.configs / "metrics" / "audio_metrics.yaml")
     states = load_yaml(p.configs / "states" / "audio_states.yaml")
+    correlation_families = load_yaml(
+        p.configs / "states" / "correlation_families.yaml"
+    )
     profile_name = dataset.get("channel_profile", "audio_only")
     profile = load_yaml(p.configs / "channels" / f"{profile_name}.yaml")
     enabled_states = set(profile.get("enabled_states", []))
@@ -98,13 +116,31 @@ def load_all(dataset_id: str) -> dict[str, Any]:
         if definition["id"] not in enabled_states
     ]
 
+    routing = load_routing_config()
+    observability = load_observability_config()
     return {
         "project": load_yaml(p.configs / "project.yaml"),
         "dataset": dataset,
         "channel_profile": {"id": profile_name, **profile},
         "metrics": {"metrics": selected_metrics},
         "states": {"states": selected_states, "unavailable_states": unavailable_states},
+        "correlation_families": {
+            **{
+                key: value
+                for key, value in correlation_families.items()
+                if key != "states"
+            },
+            "states": {
+                state_id: definition
+                for state_id, definition in correlation_families.get("states", {}).items()
+                if state_id in enabled_states
+            },
+        },
         "models": load_yaml(p.model_config),
         "agents": load_yaml(p.configs / "agents" / "default.yaml"),
         "evaluation": load_yaml(p.configs / "evaluation" / "default.yaml"),
+        "routing": routing,
+        "routes": routing,
+        "observability": observability,
+        "observability_config": observability,
     }

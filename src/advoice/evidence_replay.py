@@ -19,6 +19,7 @@ from .utils import hash_values
 
 if TYPE_CHECKING:
     from .evidence_revision_batch import EvidenceRevisionBatch
+    from .evidence_revision_transaction import EvidenceRevisionTransaction
 
 
 REVISION_SCHEMA_VERSION = "advoice.evidence_revision.v1"
@@ -55,7 +56,7 @@ def atomic_revision_batch_hash(revisions: Sequence["EvidenceRevision"]) -> str:
 
 
 def replay_revision_hash(
-    revision: "EvidenceRevision | EvidenceRevisionBatch | None",
+    revision: "EvidenceRevision | EvidenceRevisionBatch | EvidenceRevisionTransaction | None",
 ) -> str:
     """Return the explicit revision identity used by replay StateCards."""
 
@@ -63,10 +64,15 @@ def replay_revision_hash(
         return revision.revision_hash
     if revision is not None:
         from .evidence_revision_batch import EvidenceRevisionBatch
+        from .evidence_revision_transaction import EvidenceRevisionTransaction
 
-        if not isinstance(revision, EvidenceRevisionBatch):
-            raise EvidenceRevisionError("Replay accepts an EvidenceRevision, EvidenceRevisionBatch, or None.")
-        return revision.batch_hash
+        if isinstance(revision, EvidenceRevisionBatch):
+            return revision.batch_hash
+        if isinstance(revision, EvidenceRevisionTransaction):
+            return revision.transaction_hash
+        raise EvidenceRevisionError(
+            "Replay accepts an EvidenceRevision, EvidenceRevisionBatch, EvidenceRevisionTransaction, or None."
+        )
     return hash_values([{
         "schema_version": REVISION_SCHEMA_VERSION,
         "action": "no_revision",
@@ -258,6 +264,52 @@ def apply_evidence_revision_batch(
         snapshot, revisions, expected_batch_hash=expected_batch_hash,
     )
     by_id = {item.evidence_id: item for item in atomic}
+    changed = tuple(
+        _apply_validated_revision(item, by_id[item.evidence_id])
+        if item.evidence_id in by_id else item
+        for item in original
+    )
+    return changed, evidence_snapshot_hash(changed)
+
+
+def apply_evidence_revision_transaction(
+    snapshot: Sequence[MetricEvidenceV2],
+    transaction: "EvidenceRevisionTransaction",
+) -> tuple[tuple[MetricEvidenceV2, ...], str]:
+    """Atomically apply validated state batches to one original case snapshot.
+
+    Validation is deliberately completed for the whole transaction before the
+    first evidence object is replaced.  Batches may use different permitted
+    actions because they refer to different clinical states.
+    """
+
+    from .evidence_revision_transaction import (
+        EvidenceRevisionTransaction,
+        EvidenceRevisionTransactionError,
+    )
+
+    if not isinstance(transaction, EvidenceRevisionTransaction):
+        raise EvidenceRevisionError(
+            "Transaction replay requires an EvidenceRevisionTransaction."
+        )
+    try:
+        transaction.validate_against_snapshot(snapshot)
+    except EvidenceRevisionTransactionError as exc:
+        raise EvidenceRevisionError(f"Invalid revision transaction: {exc}") from exc
+
+    original = tuple(snapshot)
+    revisions = tuple(
+        revision
+        for batch in transaction.batches
+        for revision in batch.revisions
+    )
+    if not revisions:
+        return original, evidence_snapshot_hash(original)
+    # The transaction and every enclosed batch have already checked IDs,
+    # actions, and snapshot hashes.  Build the replacement map only after all
+    # checks above have succeeded, so a later invalid batch cannot leak a
+    # partial revision into the result.
+    by_id = {revision.evidence_id: revision for revision in revisions}
     changed = tuple(
         _apply_validated_revision(item, by_id[item.evidence_id])
         if item.evidence_id in by_id else item
@@ -483,7 +535,7 @@ def _module_a_consumed_evidence_ids(
 
 def replay_evidence(
     snapshot: Sequence[MetricEvidenceV2],
-    revision: "EvidenceRevision | EvidenceRevisionBatch | None",
+    revision: "EvidenceRevision | EvidenceRevisionBatch | EvidenceRevisionTransaction | None",
     *,
     states_config: Mapping[str, Any],
     module_a: TaskConditionedStatisticalExpert,
@@ -501,10 +553,16 @@ def replay_evidence(
         revised, revised_hash = apply_evidence_revision(original, revision)
     else:
         from .evidence_revision_batch import EvidenceRevisionBatch
+        from .evidence_revision_transaction import EvidenceRevisionTransaction
 
-        if not isinstance(revision, EvidenceRevisionBatch):
-            raise EvidenceRevisionError("Replay accepts an EvidenceRevision, EvidenceRevisionBatch, or None.")
-        revised, revised_hash = apply_evidence_revision_batch(original, revision)
+        if isinstance(revision, EvidenceRevisionBatch):
+            revised, revised_hash = apply_evidence_revision_batch(original, revision)
+        elif isinstance(revision, EvidenceRevisionTransaction):
+            revised, revised_hash = apply_evidence_revision_transaction(original, revision)
+        else:
+            raise EvidenceRevisionError(
+                "Replay accepts an EvidenceRevision, EvidenceRevisionBatch, EvidenceRevisionTransaction, or None."
+            )
     revision_hash = replay_revision_hash(revision)
     graph = build_state_graph_v2(
         revised, states_config, correlation_config=correlation_config,

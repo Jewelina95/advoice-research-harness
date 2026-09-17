@@ -14,8 +14,9 @@ from advoice.conditional_authority import (
 )
 from advoice.decision_lock import hash_artifact
 from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2, ReferenceMetadata
-from advoice.evidence_replay import EvidenceRevision, replay_evidence
+from advoice.evidence_replay import EvidenceRevision, evidence_snapshot_hash, replay_evidence
 from advoice.evidence_revision_batch import EvidenceRevisionBatch
+from advoice.evidence_revision_transaction import EvidenceRevisionTransaction
 from advoice.module_a import TaskConditionedStatisticalExpert
 from advoice.module_b import ConditionalArbitrator, compute_fit_subject_hash
 
@@ -140,7 +141,9 @@ def _evidence(*, incremental: bool = False) -> tuple[MetricEvidenceV2, ...]:
 def _require_bound_state_cards(executor: ConditionalAuthorityExecutor, evidence: tuple[MetricEvidenceV2, ...]) -> None:
     """Do not emulate missing bottom-layer contracts in this orchestrator test."""
 
-    replay = replay_evidence(evidence[:2], None, states_config=STATES, module_a=executor.module_a)
+    replay = replay_evidence(
+        evidence[:2], None, states_config=executor.states_config, module_a=executor.module_a
+    )
     required = {"supporting_evidence_ids"}
     revision_columns = {"revision_hash", "state_revision_hash"}
     if not required.issubset(set(replay.state_graph.cards.columns)) or not revision_columns.intersection(replay.state_graph.cards.columns):
@@ -153,27 +156,39 @@ def _prepared_decision(
     *,
     revision: EvidenceRevision | None = None,
     revision_batch: EvidenceRevisionBatch | None = None,
+    revision_transaction: EvidenceRevisionTransaction | None = None,
     incremental_ids: tuple[str, ...] = (),
     stale_packet: bool = False,
     trace_post_revision: bool = True,
+    case_metadata: dict[str, object] | None = None,
 ) -> AgentAuthorityDecision:
     _require_bound_state_cards(executor, evidence)
+    case = CASE if case_metadata is None else case_metadata
+    case_id = str(case["case_id"])
     supervised = tuple(item for item in evidence if item.consumed_by_supervised)
     replay_kwargs = {
-        "dataset_id": CASE["dataset_id"], "label": "unknown", "split": "inference",
+        "dataset_id": str(case["dataset_id"]), "label": "unknown", "split": "inference",
     }
-    pre = replay_evidence(supervised, None, states_config=STATES, module_a=executor.module_a, **replay_kwargs)
-    pre_evidence_hash = hash_artifact(executor._evidence_artifact("case-1", pre.revised_evidence))
-    pre_cards = executor._state_cards(case_id="case-1", replay=pre, revision_hash=pre.audit.revision_hash)
-    pre_state_hash = hash_artifact(executor._state_artifact("case-1", pre, pre_cards))
+    pre = replay_evidence(
+        supervised, None, states_config=executor.states_config, module_a=executor.module_a, **replay_kwargs
+    )
+    pre_evidence_hash = hash_artifact(executor._evidence_artifact(case_id, pre.revised_evidence))
+    pre_cards = executor._state_cards(case_id=case_id, replay=pre, revision_hash=pre.audit.revision_hash)
+    pre_state_hash = hash_artifact(executor._state_artifact(case_id, pre, pre_cards))
     pre_packet_hash = hash_artifact(
-        executor._packet_artifact("case-1", pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
+        executor._packet_artifact(case_id, pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
     )
-    proposed_revision = revision if revision is not None else revision_batch
+    proposed_revision = (
+        revision
+        if revision is not None
+        else revision_batch
+        if revision_batch is not None
+        else revision_transaction
+    )
     post = pre if proposed_revision is None or not trace_post_revision else replay_evidence(
-        supervised, proposed_revision, states_config=STATES, module_a=executor.module_a, **replay_kwargs
+        supervised, proposed_revision, states_config=executor.states_config, module_a=executor.module_a, **replay_kwargs
     )
-    cards = executor._state_cards(case_id="case-1", replay=post, revision_hash=post.audit.revision_hash)
+    cards = executor._state_cards(case_id=case_id, replay=post, revision_hash=post.audit.revision_hash)
     card = next(item for item in cards if item["available"] and item["report_permission"])
     evidence_id = card["supporting_evidence_ids"][0]
     trace = ({
@@ -187,7 +202,7 @@ def _prepared_decision(
         "source_asset_id": "audio-1",
     },)
     return AgentAuthorityDecision(
-        case_id="case-1",
+        case_id=case_id,
         reviewed_packet_hash="0" * 64 if stale_packet else pre_packet_hash,
         reviewed_evidence_hash=pre.audit.evidence_hash,
         reviewed_state_graph_hash=pre_state_hash,
@@ -196,6 +211,7 @@ def _prepared_decision(
         ordinal_scores={"HC": 0, "MCI": 2, "AD": 4},
         revision=revision,
         revision_batch=revision_batch,
+        revision_transaction=revision_transaction,
         action_type="review",
         incremental_evidence_ids=incremental_ids,
         report_trace=trace,
@@ -244,6 +260,98 @@ def _revision_batch(evidence: tuple[MetricEvidenceV2, ...]) -> EvidenceRevisionB
         action="downweight",
         expected_evidence_hash=expected_hash,
         revisions=revisions,
+    )
+
+
+MULTI_STATES = {
+    "states": [
+        {"id": "S01", "metrics": ["pause_a"], "weights": [1.0]},
+        {"id": "S02", "metrics": ["semantic_a"], "weights": [1.0]},
+    ]
+}
+MULTI_CASE = {**CASE, "allowed_states": ["S01", "S02"]}
+
+
+def _multi_expert() -> TaskConditionedStatisticalExpert:
+    frame = pd.DataFrame({
+        "state_S01": [-3.0, -2.0, -1.0, 0.8, 1.8, 2.8, 4.0, 5.0, 6.0],
+        "state_S02": [-2.0, -1.5, -1.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+    })
+    return TaskConditionedStatisticalExpert(LABELS, c=0.6).fit(
+        frame,
+        ["HC", "HC", "HC", "MCI", "MCI", "MCI", "AD", "AD", "AD"],
+        feature_columns=["state_S01", "state_S02"],
+        artifact_snapshot={"fold": "synthetic-multi-state"},
+    )
+
+
+def _multi_executor() -> ConditionalAuthorityExecutor:
+    return ConditionalAuthorityExecutor(
+        states_config=MULTI_STATES,
+        module_a=_multi_expert(),
+        module_b=_module_b(),
+        module_a_state_feature_whitelist=("state_S01", "state_S02"),
+        model_versions={"module_a": "synthetic-a", "module_b": "synthetic-b"},
+        skill_versions={"ad_evidence_skill": "synthetic-skill"},
+        tool_versions={"conditional_authority": "synthetic-tool"},
+    )
+
+
+def _multi_evidence() -> tuple[MetricEvidenceV2, ...]:
+    reference = ReferenceMetadata(median=0.0, scale=1.0, sample_size=40)
+    common = {
+        "subject_id": "case-1",
+        "case_id": "case-1",
+        "session_id": "session-1",
+        "task_id": "cookie",
+        "direction": 1,
+        "reference": reference,
+        "permissions": EvidencePermissions(inference=True, report=True),
+        "provenance": EvidenceProvenance(
+            source_asset_id="audio-1", source_segment_ids=("segment-1",), method_version="synthetic"
+        ),
+        "consumed_by_supervised": True,
+    }
+    return (
+        MetricEvidenceV2(
+            evidence_id="metric:pause-a", metric_id="pause_a", value=1.0, state_id="S01", **common
+        ),
+        MetricEvidenceV2(
+            evidence_id="metric:semantic-a", metric_id="semantic_a", value=4.0, state_id="S02", **common
+        ),
+    )
+
+
+def _revision_transaction(evidence: tuple[MetricEvidenceV2, ...]) -> EvidenceRevisionTransaction:
+    expected_hash = evidence_snapshot_hash(evidence)
+    batches = (
+        EvidenceRevisionBatch(
+            case_id="case-1",
+            state_id="S02",
+            action="downweight",
+            expected_evidence_hash=expected_hash,
+            revisions=(EvidenceRevision(
+                evidence_id="metric:semantic-a",
+                action="downweight",
+                expected_evidence_hash=expected_hash,
+                reliability_multiplier=.5,
+            ),),
+        ),
+        EvidenceRevisionBatch(
+            case_id="case-1",
+            state_id="S01",
+            action="downweight",
+            expected_evidence_hash=expected_hash,
+            revisions=(EvidenceRevision(
+                evidence_id="metric:pause-a",
+                action="downweight",
+                expected_evidence_hash=expected_hash,
+                reliability_multiplier=.5,
+            ),),
+        ),
+    )
+    return EvidenceRevisionTransaction(
+        case_id="case-1", expected_evidence_hash=expected_hash, batches=batches
     )
 
 
@@ -386,6 +494,47 @@ def test_consumed_revision_batch_replays_all_metrics_through_module_a_once(monke
     assert not result.module_b.additive_correction_applied
 
 
+def test_multi_state_transaction_replays_once_and_round_trips_through_agent_decision(monkeypatch) -> None:
+    executor = _multi_executor()
+    evidence = _multi_evidence()
+    transaction = _revision_transaction(evidence)
+    decision = _prepared_decision(
+        executor,
+        evidence,
+        revision_transaction=transaction,
+        case_metadata=MULTI_CASE,
+    )
+    restored = AgentAuthorityDecision.from_mapping(decision.to_dict())
+    assert restored.revision_transaction == transaction
+    assert restored.revision is None
+    assert restored.revision_batch is None
+
+    prepared = executor.prepare_case(case_metadata=MULTI_CASE, evidence=evidence)
+    calls = 0
+    explain_case = executor.module_a.explain_case
+
+    def counted_explain_case(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return explain_case(*args, **kwargs)
+
+    monkeypatch.setattr(executor.module_a, "explain_case", counted_explain_case)
+    result = executor.finalize_case(
+        prepared=prepared,
+        agent_decision=decision,
+        validator=_validation(decision),
+        segments=_segments(),
+        lock_id="lock-revision-transaction",
+    )
+
+    assert calls == 1
+    assert result.post_replay.audit.revision_hash == transaction.transaction_hash
+    assert [
+        item.reliability_components.measurement_stability
+        for item in result.post_replay.revised_evidence
+    ] == [.5, .5]
+
+
 def test_agent_decision_batch_mapping_round_trip_and_legacy_revision_unchanged() -> None:
     executor = _executor()
     evidence = _evidence()
@@ -424,6 +573,37 @@ def test_agent_decision_rejects_both_revision_forms_and_unknown_batch_fields() -
     mapping["revision_batch"] = {**batch.to_dict(), "protected": "forbidden"}
     with pytest.raises(ConditionalAuthorityError, match="unknown"):
         AgentAuthorityDecision.from_mapping(mapping)
+
+
+def test_agent_decision_keeps_legacy_positional_layout_and_rejects_mixed_transaction_forms() -> None:
+    executor = _executor()
+    evidence = _evidence()
+    batch = _revision_batch(evidence)
+    template = _prepared_decision(executor, evidence)
+    legacy = AgentAuthorityDecision(
+        template.case_id,
+        template.reviewed_packet_hash,
+        template.reviewed_evidence_hash,
+        template.reviewed_state_graph_hash,
+        template.advisor_packet_hash,
+        template.advisor_current,
+        template.ordinal_scores,
+        batch.revisions[0],
+        "review",
+        (),
+        (),
+    )
+    assert legacy.revision == batch.revisions[0]
+    assert legacy.revision_batch is None
+    assert legacy.revision_transaction is None
+
+    transaction = EvidenceRevisionTransaction(
+        case_id="case-1",
+        expected_evidence_hash=batch.expected_evidence_hash,
+        batches=(batch,),
+    )
+    with pytest.raises(ConditionalAuthorityError, match="never both"):
+        replace(template, revision_batch=batch, revision_transaction=transaction)
 
 
 def test_rejected_validation_never_replays_revision_batch(monkeypatch) -> None:

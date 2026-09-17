@@ -504,21 +504,34 @@ def build_advisor_payload(
 def _action_schema(
     state_ids: Sequence[str], *, allow_retain: bool = True,
 ) -> dict[str, Any]:
-    actions = STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"}
-    return {
-        "type": "object", "additionalProperties": False,
-        "properties": {
-            "state_id": {"type": "string", "enum": list(state_ids)},
-            "action": {"type": "string", "enum": sorted(actions)},
-            "cited_metric_evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-            "reliability_multiplier": {
-                "type": "number",
-                "enum": [0.0, *DOWNWEIGHT_MULTIPLIERS, 1.0],
-            },
-            "rationale": {"type": "string"},
-        },
-        "required": ["state_id", "action", "cited_metric_evidence_ids", "reliability_multiplier", "rationale"],
+    actions = sorted(STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"})
+    multiplier_values = {
+        "retain": [1.0],
+        "downweight": list(DOWNWEIGHT_MULTIPLIERS),
+        "invalidate": [0.0],
+        "mark_unavailable": [0.0],
     }
+    variants = []
+    for action in actions:
+        variants.append({
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "state_id": {"type": "string", "enum": list(state_ids)},
+                "action": {"type": "string", "enum": [action]},
+                "cited_metric_evidence_ids": {
+                    "type": "array", "items": {"type": "string"}, "minItems": 1,
+                },
+                "reliability_multiplier": {
+                    "type": "number", "enum": multiplier_values[action],
+                },
+                "rationale": {"type": "string"},
+            },
+            "required": [
+                "state_id", "action", "cited_metric_evidence_ids",
+                "reliability_multiplier", "rationale",
+            ],
+        })
+    return {"anyOf": variants}
 
 
 def _blind_schema(class_order: Sequence[str], state_ids: Sequence[str]) -> dict[str, Any]:

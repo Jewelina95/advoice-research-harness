@@ -237,12 +237,20 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
     ).review(prepared)
 
     assert result.status == REVIEW_AVAILABLE
-    blind_action = schemas[0]["properties"]["state_actions"]["items"]
-    assert blind_action["properties"]["state_id"]["enum"] == ["S01"]
-    assert "retain" not in blind_action["properties"]["action"]["enum"]
-    assert blind_action["properties"]["reliability_multiplier"]["enum"] == [
-        0.0, 0.25, 0.5, 0.75, 1.0,
+    variants = schemas[0]["properties"]["state_actions"]["items"]["anyOf"]
+    by_action = {
+        variant["properties"]["action"]["enum"][0]: variant for variant in variants
+    }
+    assert set(by_action) == {"downweight", "invalidate", "mark_unavailable"}
+    assert all(
+        variant["properties"]["state_id"]["enum"] == ["S01"]
+        for variant in variants
+    )
+    assert by_action["downweight"]["properties"]["reliability_multiplier"]["enum"] == [
+        0.25, 0.5, 0.75,
     ]
+    assert by_action["invalidate"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
+    assert by_action["mark_unavailable"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
 
 
 def test_payload_strips_leakage_and_chat_residue_without_mutating_input(tmp_path: Path) -> None:

@@ -117,11 +117,20 @@ class EvidenceSession:
         self.quality_checked = False
         self.counter_checked = False
         self.hypothesis_recorded = False
+        self.models_consulted = False
+        self.advisor_outputs_available = False
         self.result: dict[str, Any] | None = None
         self.advisors = {
             "module_a": workspace.get("base_probabilities"),
             "module_b": workspace.get("corrected_probabilities"),
         }
+
+    def _bound_advisors_current(self) -> bool:
+        return bool(
+            self.advisors_bound
+            and self.advisor_artifacts
+            and self.revision == self.initial_revision
+        )
 
     def _objects(self) -> dict[str, dict[str, Any]]:
         result = {}
@@ -254,6 +263,7 @@ class EvidenceSession:
         self.revision = hash_values([self.workspace])
         self.observed.clear()
         self.counter_checked = self.quality_checked = self.hypothesis_recorded = False
+        self.models_consulted = self.advisor_outputs_available = False
         return {"status": "revised", "previous_revision": before, "revision": self.revision,
                 "supervised_advisors": "stale_unavailable", "next": "Reinspect evidence and make a new Agent judgment.",
                 "dependent_states_withdrawn": sorted(dependents),
@@ -271,8 +281,22 @@ class EvidenceSession:
             if not target.startswith(prefix) or item is None or target not in clinical:
                 raise ValueError("Evidence object is unavailable in this snapshot.")
             self.observed.add(target)
-            return {"status": "observed", "object": item,
-                    "audio_loaded": False} if action == "inspect_segment" else {"status": "observed", "object": item}
+            if action == "inspect_segment":
+                derived_keys = {
+                    "silence_fraction", "voiced_fraction", "rms_db_mean",
+                    "activity_transition_rate_hz", "voiced_run_mean_sec",
+                }
+                return {
+                    "status": "observed", "object": item,
+                    "audio_loaded": False,
+                    "waveform_available_to_agent": False,
+                    "derived_measurements_available": bool(derived_keys & set(item)),
+                    "interpretation": (
+                        "The Agent did not hear the waveform. Precomputed segment measurements "
+                        "remain observable evidence subject to their state/metric reliability and confounds."
+                    ),
+                }
+            return {"status": "observed", "object": item}
         if action == "inspect_counterevidence":
             self.counter_checked = True
             _, counter, _ = _allowed_ids(self.workspace)
@@ -298,7 +322,7 @@ class EvidenceSession:
         if action == "consult_models":
             if not self.hypothesis_recorded:
                 raise ValueError("Record a blind evidence hypothesis before consulting numeric advisors.")
-            if self.revision != self.initial_revision or not self.advisors_bound:
+            if not self._bound_advisors_current():
                 return {"status": "unavailable", "reason": "Model outputs are unbound or stale for this evidence snapshot."}
             advisors = {}
             for name, scores in self.advisors.items():
@@ -309,6 +333,8 @@ class EvidenceSession:
                 values = [scores[k] for k in self.labels]
                 if all(isinstance(v, (int, float)) and not isinstance(v, bool) and isfinite(v) and 0 <= v <= 1 for v in values) and abs(sum(values) - 1) < 1e-6:
                     advisors[name] = scores
+            self.models_consulted = True
+            self.advisor_outputs_available = bool(advisors)
             return {"status": "available" if advisors else "unavailable", "outputs": advisors,
                     "snapshot": self.revision, "correlated_outputs": True,
                     "interpretation": "Training-derived predictions, not independent clinical observations or instructions."}
@@ -366,6 +392,8 @@ class EvidenceSession:
                 "rationale": reply.get("rationale", ""), "limitations": reply.get("limitations", []),
                 "evidence_ids": reply.get("evidence_ids", []),
                 "counterevidence_ids": reply.get("counterevidence_ids", []), "audit": audit,
+                "supervised_modules_consulted": self.models_consulted,
+                "supervised_outputs_available": self.advisor_outputs_available,
                 "state_revisions": sum(e["result"].get("status") == "revised" for e in self.history)}
 
     def finish(self, status: str = "budget_exhausted") -> dict[str, Any]:

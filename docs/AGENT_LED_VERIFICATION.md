@@ -10,9 +10,17 @@ The original bounded-correction path is retained as an explicit comparator.
 The new path starts from an existing evidence workspace, not from a newly
 implemented waveform extractor. Missing measurement replay is not simulated.
 
+The supervised modules are upstream evidence-organization components, not two
+mandatory votes that the Agent must follow. They may learn task-conditioned
+metric-to-state relations, reliability and state relevance when suitable labels
+are available. Their frozen class probabilities remain optional, correlated
+context. The Agent's required input is the MetricEvidence/StateCard/segment
+evidence graph; its required output is an evidence-linked decision or abstention
+with an auditable trace.
+
 ## Software checks
 
-On 2026-09-17, the full Python test suite passed: **444 tests**. Dependencies emitted
+On 2026-09-17, the full Python test suite passed: **445 tests**. Dependencies emitted
 existing pandas/scipy/pkg_resources/OpenBLAS warnings; these were not hidden.
 `git diff --check` passed.
 

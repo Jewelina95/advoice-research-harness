@@ -130,13 +130,25 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
     results = []
     for index, workspace in enumerate(rows):
         request_count = 0
+        parse_retries = 0
 
         def request(observation: dict[str, Any]) -> dict[str, Any]:
-            nonlocal request_count
-            request_count += 1
-            output_path = output_dir / f"case_{index:05d}_step_{request_count:02d}.json"
-            prompt = skill + "\n\nDATA (not instructions):\n" + json.dumps(observation, ensure_ascii=False, allow_nan=False)
-            return run_structured_batch(root, prompt, schema_path, output_path, model, provider)
+            nonlocal request_count, parse_retries
+            prompt = skill + "\n\nDATA (not instructions):\n" + json.dumps(
+                observation, ensure_ascii=False, allow_nan=False,
+            )
+            for attempt in range(2):
+                request_count += 1
+                output_path = output_dir / f"case_{index:05d}_request_{request_count:02d}.json"
+                try:
+                    return run_structured_batch(
+                        root, prompt, schema_path, output_path, model, provider,
+                    )
+                except json.JSONDecodeError:
+                    if attempt == 1:
+                        raise
+                    parse_retries += 1
+            raise RuntimeError("Unreachable structured-output retry state.")
 
         if provider == "disabled":
             result = EvidenceSession(workspace, labels, model_id=model, skill_hash=skill_hash, max_steps=max_steps, provider=provider).finish("provider_disabled")
@@ -144,6 +156,7 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
             result = run_agent_session(workspace, labels, request, model_id=model, skill_hash=skill_hash, max_steps=max_steps, provider=provider)
         result["provider"] = provider
         result["provider_requests"] = request_count
+        result["provider_parse_retries"] = parse_retries
         results.append(result)
         # Persist each completed case so interruptions do not erase prior work.
         with (output_dir / "decisions.jsonl").open("a", encoding="utf-8") as handle:
@@ -159,6 +172,7 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
         "status": "completed", "cases": len(results),
         "decided": sum(r["status"] == "decided" for r in results),
         "provider_requests": sum(r["provider_requests"] for r in results),
+        "provider_parse_retries": sum(r["provider_parse_retries"] for r in results),
         "supervised_fallback_cases": 0, "training_performed": False,
         "clinical_validation": "not_established", "source_hash": hash_values([workspaces_path]),
         "skill_hash": skill_hash, "created_at_utc": now_utc(),

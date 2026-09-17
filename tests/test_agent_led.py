@@ -64,6 +64,8 @@ def test_agent_final_not_prior_or_scalar_correction():
     assert r["predicted_label"] == "AD"
     assert r["prediction_source"] == "agent"
     assert r["probabilities"] is None
+    assert r["supervised_modules_consulted"] is True
+    assert r["supervised_outputs_available"] is True
     assert not r["clinical_release"]
 
 

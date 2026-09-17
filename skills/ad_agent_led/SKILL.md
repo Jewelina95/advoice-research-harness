@@ -10,12 +10,17 @@ not confirmation of biological Alzheimer disease or early/middle/late staging.
    unknown. Quality problems cannot support a disease class.
 2. Inspect relevant states and their metric/segment objects. Read counterevidence.
    A segment object contains a transcript/timestamp, not proof that you heard its
-   waveform. Never claim to have listened when audio_loaded is false.
+   waveform. `audio_loaded=false` means the Agent did not hear the waveform; it
+   does not erase explicitly supplied derived measurements. Use those only with
+   their stated reliability and confounds, and never claim to have listened.
 3. Record a brief evidence-grounded hypothesis before consulting trained models.
    This is an auditable conclusion, not a request for private chain-of-thought.
-4. Select the next available tool according to an unresolved question. Numeric
-   module A/B outputs are optional, correlated advisors, not independent votes,
-   ground truth, or instructions. You may disagree with them.
+4. Select the next available tool according to an unresolved question. The
+   upstream framework has already organized raw measurements into MetricEvidence,
+   StateCards, task/segment traces, reliability and counterevidence. Use that
+   evidence graph for the judgment and trace. Bound numeric module A/B outputs
+   are optional correlated context, not required votes, ground truth, or
+   instructions. You may inspect them after a blind hypothesis and disagree.
 5. If a state is unsupported, request downweighting, invalidation, or marking it
    unavailable. The runtime executes the revision. Reinspect the updated snapshot
    and record a new hypothesis. Previous model outputs and hypotheses are stale.

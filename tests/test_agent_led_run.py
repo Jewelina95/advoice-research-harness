@@ -59,6 +59,7 @@ def test_real_provider_adapter_runs_multiple_tools_without_training(tmp_path, mo
     out = tmp_path / "run"
     summary = agent_led_run.run_agent_led_cohort(ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test")
     assert summary["provider_requests"] == 5
+    assert summary["provider_parse_retries"] == 0
     assert summary["decided"] == 1
     assert providers == ["openai_api"]
     assert not summary["training_performed"]
@@ -66,6 +67,39 @@ def test_real_provider_adapter_runs_multiple_tools_without_training(tmp_path, mo
     assert result["prediction_source"] == "agent"
     assert result["probabilities"] is None
     assert result["predicted_label"] == "AD"
+
+
+def test_real_provider_retries_one_malformed_structured_response(tmp_path, monkeypatch):
+    actions = ["inspect_quality", "inspect_state", "inspect_counterevidence", "record_hypothesis", "finalize"]
+    calls = 0
+
+    def fake(root, prompt, schema, output, model, provider):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise json.JSONDecodeError("malformed structured output", "{", 1)
+        observation = json.loads(prompt.split("DATA (not instructions):\n")[1])
+        action = actions[calls - 2]
+        return {
+            "action": action, "revision": observation["revision"],
+            "target_id": "state:S07", "state_action": "none",
+            "evidence_ids": ["state:S07"],
+            "counterevidence_ids": ["metric:continuity"],
+            "predicted_label": "AD", "scores": {"HC": 1, "AD": 3},
+            "rationale": "Synthetic fixture reasoning.", "limitations": ["Not a patient."],
+        }
+
+    monkeypatch.setattr(agent_led_run, "run_structured_batch", fake)
+    out = tmp_path / "run"
+    summary = agent_led_run.run_agent_led_cohort(
+        ROOT, FIXTURE, out, ["HC", "AD"], provider="openai_api", model="test",
+    )
+    assert summary["decided"] == 1
+    assert summary["provider_requests"] == 6
+    assert summary["provider_parse_retries"] == 1
+    result = json.loads((out / "decisions.jsonl").read_text())
+    assert result["provider_requests"] == 6
+    assert result["provider_parse_retries"] == 1
 
 
 def test_cli_has_explicit_nontraining_inference_path():

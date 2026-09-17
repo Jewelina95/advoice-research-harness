@@ -8,8 +8,10 @@ The command:
 1. verifies an exact mapping between pseudonymous evidence workspaces and the
    held-out prediction cohort;
 2. freezes cases by hashing the selection seed and pseudonymous case ID;
-3. binds the evidence snapshot and both frozen supervised advisor components;
-4. runs the Agent without exposing labels;
+3. binds the evidence snapshot and records any available frozen supervised
+   advisor components without requiring the Agent to consult them;
+4. runs the Agent on the MetricEvidence/StateCard/segment evidence graph without
+   exposing labels;
 5. attaches truth only after inference; and
 6. recomputes B1, B2, historical Ours and Agent-led results on identical cases.
 
@@ -45,3 +47,8 @@ The output directory is immutable and includes:
 A SpeechCARE claim is enabled only for the complete 412-case PREPARE official
 test cohort. Subsets and other datasets are marked non-comparable. Agent ranking
 scores are not presented as calibrated probability AUROC.
+
+Whether the Agent inspected the optional supervised outputs is recorded per
+case. A class decision does not require that consultation: forcing it would turn
+the Agent path back into post-processing for another classifier and would not
+test evidence-grounded Agent judgment.

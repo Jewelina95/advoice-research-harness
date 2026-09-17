@@ -179,6 +179,8 @@ def run_openai_batch(
         raise RuntimeError(
             f"OpenAI agent failed with status={response.status}: {response.error}"
         )
+    raw_path = output_path.with_name(f"{output_path.name}.raw.txt")
+    raw_path.write_text(response.output_text, encoding="utf-8")
     payload = json.loads(response.output_text)
     json_dump(payload, output_path)
     return payload

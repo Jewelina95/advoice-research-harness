@@ -1,0 +1,81 @@
+schema_version: 1
+metric_contribution_clip_z: 5.0
+defaults:
+  robust_huber_delta: 1.5
+  task_residual_prior_precision: 1.0
+  min_tasks_for_residual: 2
+states:
+  S01:
+    families:
+      - id: pause_burden
+        metrics: [silence_fraction, long_pause_rate_min, pause_mean_sec, pause_p90_sec]
+        budget: 1.0
+  S02:
+    families:
+      - id: voiced_output
+        metrics: [voiced_fraction, speech_run_mean_sec, speech_run_rate_min]
+        budget: 0.6
+      - id: transcript_pace
+        metrics: [speech_rate_wpm]
+        budget: 0.4
+  S03:
+    families:
+      - id: speech_fragmentation
+        metrics: [speech_run_cv, long_pause_rate_min, voiced_fraction]
+        budget: 1.0
+  S04:
+    families:
+      - id: intensity_distribution
+        metrics: [rms_db_mean, rms_db_std]
+        budget: 1.0
+  S05:
+    families:
+      - id: pitch_distribution
+        metrics: [f0_median_hz, f0_iqr_hz]
+        budget: 1.0
+  S06:
+    families:
+      - id: spectral_shape
+        metrics: [zcr_mean, spectral_centroid_mean, spectral_bandwidth_mean, spectral_rolloff_mean, spectral_flatness_mean]
+        budget: 1.0
+  S07:
+    families:
+      - id: lexical_specificity
+        metrics: [pronoun_ratio, content_word_ratio]
+        budget: 0.7
+      - id: picture_uncertainty
+        metrics: [picture_uncertainty_rate_100w]
+        budget: 0.3
+  S08:
+    families:
+      - id: lexical_diversity
+        metrics: [lexical_mattr50, lexical_ttr]
+        budget: 1.0
+  S10:
+    families:
+      - id: picture_information
+        metrics: [picture_information_density]
+        budget: 1.0
+  S11:
+    families:
+      - id: utterance_complexity
+        metrics: [mean_utterance_words]
+        budget: 1.0
+  S12:
+    families:
+      - id: disfluency_repair
+        metrics: [filler_rate_100w, repair_rate_100w]
+        budget: 0.7
+      - id: content_redundancy
+        metrics: [picture_content_redundancy]
+        budget: 0.3
+  S13:
+    families:
+      - id: interaction_share
+        metrics: [patient_turn_share]
+        budget: 1.0
+  S14:
+    families:
+      - id: task_content_completion
+        metrics: [picture_content_unit_coverage]
+        budget: 1.0

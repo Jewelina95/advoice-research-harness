@@ -256,24 +256,14 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
 
     assert result.status == REVIEW_AVAILABLE
     variants = schemas[0]["properties"]["state_actions"]["items"]["anyOf"]
-    by_action = {
-        variant["properties"]["action"]["enum"][0]: variant for variant in variants
-    }
-    assert set(by_action) == {"downweight", "invalidate", "mark_unavailable"}
-    assert all(
-        variant["properties"]["state_id"]["enum"] == ["S01"]
-        for variant in variants
-    )
-    assert by_action["downweight"]["properties"]["reliability_multiplier"]["enum"] == [
-        0.25, 0.5, 0.75,
+    assert len(variants) == 1
+    properties = variants[0]["properties"]
+    assert properties["state_id"]["enum"] == ["S01"]
+    assert properties["action"]["enum"] == [
+        "downweight", "invalidate", "mark_unavailable",
     ]
-    assert by_action["invalidate"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
-    assert by_action["mark_unavailable"]["properties"]["reliability_multiplier"]["enum"] == [0.0]
-    assert all(
-        variant["properties"]["cited_metric_evidence_ids"]["items"]["enum"]
-        == ["metric:pause"]
-        for variant in variants
-    )
+    assert properties["reliability_multiplier"]["enum"] == [0.0, 0.25, 0.5, 0.75]
+    assert properties["cited_metric_evidence_ids"]["items"]["enum"] == ["E001"]
 
 
 def test_runtime_schema_binds_each_action_to_same_state_evidence(
@@ -311,7 +301,35 @@ def test_runtime_schema_binds_each_action_to_same_state_evidence(
         for variant in variants:
             state_id = variant["properties"]["state_id"]["enum"][0]
             allowed = variant["properties"]["cited_metric_evidence_ids"]["items"]["enum"]
-            assert allowed == (["metric:pause"] if state_id == "S01" else ["metric:other"])
+            assert allowed == (["E002"] if state_id == "S01" else ["E001"])
+
+
+def test_runtime_uses_short_transport_ids_and_restores_full_audit_ids(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    prompts: list[dict[str, object]] = []
+
+    def provider(root, prompt, schema_path, output_path, model, provider):
+        prompts.append(_payload_from_prompt(prompt))
+        response = _blind(prepared) if len(prompts) == 1 else _advisor(prepared)
+        text = canonical_json(response).replace("metric:pause", "E001")
+        return json.loads(text)
+
+    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    result = AuthorityReviewRuntime(
+        root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path)
+    ).review(prepared)
+
+    assert result.status == REVIEW_AVAILABLE
+    assert prompts[0]["metric_evidence"][0]["evidence_id"] == "E001"
+    assert prompts[0]["state_cards"][0]["supporting_evidence_ids"] == ["E001"]
+    assert result.blind_assessment.state_actions["S01"].cited_metric_evidence_ids == (
+        "metric:pause",
+    )
+    assert result.reconciliation.amendments["S01"].cited_metric_evidence_ids == (
+        "metric:pause",
+    )
 
 
 def test_payload_strips_leakage_and_chat_residue_without_mutating_input(tmp_path: Path) -> None:

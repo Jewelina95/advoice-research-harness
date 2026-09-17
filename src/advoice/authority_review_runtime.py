@@ -18,12 +18,13 @@ from .decision_lock import canonical_json, hash_artifact
 from .transcript_sanitization import sanitize_transcript_payload
 
 
-SCHEMA_VERSION = "advoice.authority_review_runtime.v1"
+SCHEMA_VERSION = "advoice.authority_review_runtime.v2-compact-transport"
 STATE_ACTIONS = frozenset({"retain", "downweight", "invalidate", "mark_unavailable"})
 DOWNWEIGHT_MULTIPLIERS = (0.25, 0.5, 0.75)
 REVIEW_AVAILABLE = "available"
 REVIEW_UNAVAILABLE = "provider_unavailable"
 REVIEW_PROVIDER_ERROR = "failed_closed_provider_error"
+_DECISION_POLICY_EXCLUSIONS = frozenset({"REFERENCES.md", "REPORT_CONTRACT.md"})
 
 
 class AuthorityReviewError(ValueError):
@@ -294,11 +295,24 @@ def _reject_leakage(value: Any) -> None:
             _reject_leakage(item)
 
 
-def _safe_evidence(prepared: PreparedAuthorityCase) -> list[dict[str, Any]]:
+def _evidence_aliases(prepared: PreparedAuthorityCase) -> Mapping[str, str]:
+    """Return stable, case-local transport IDs while retaining full IDs server-side."""
+
+    evidence_ids = sorted({item.evidence_id for item in prepared.evidence})
+    return MappingProxyType({
+        evidence_id: f"E{index:03d}"
+        for index, evidence_id in enumerate(evidence_ids, start=1)
+    })
+
+
+def _safe_evidence(
+    prepared: PreparedAuthorityCase,
+    evidence_aliases: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     for item in sorted(prepared.evidence, key=lambda current: current.evidence_id):
         evidence.append({
-            "evidence_id": item.evidence_id,
+            "evidence_id": (evidence_aliases or {}).get(item.evidence_id, item.evidence_id),
             "metric_id": item.metric_id,
             "state_id": item.state_id,
             "task_id": item.task_id,
@@ -327,14 +341,18 @@ def _safe_evidence(prepared: PreparedAuthorityCase) -> list[dict[str, Any]]:
     return evidence
 
 
-def _safe_state_cards(prepared: PreparedAuthorityCase) -> list[dict[str, Any]]:
+def _safe_state_cards(
+    prepared: PreparedAuthorityCase,
+    evidence_aliases: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    aliases = evidence_aliases or {}
     return [{
         "state_card_id": str(card["state_card_id"]),
         "state_id": str(card["state_id"]),
         "task_id": str(card["task_id"]),
         "task_ids": list(card["task_ids"]),
-        "supporting_evidence_ids": list(card["supporting_evidence_ids"]),
-        "counter_evidence_ids": list(card["counter_evidence_ids"]),
+        "supporting_evidence_ids": [aliases.get(value, value) for value in card["supporting_evidence_ids"]],
+        "counter_evidence_ids": [aliases.get(value, value) for value in card["counter_evidence_ids"]],
         "available": bool(card["available"]),
         "report_permission": bool(card["report_permission"]),
     } for card in prepared.pre_state_cards]
@@ -402,7 +420,7 @@ def _policy_documents(root: Path, skill_path: Path | None) -> Mapping[str, str]:
         raise AuthorityReviewError("The AD evidence skill is required for an enabled provider.")
     documents = {"skill.md": skill.read_text(encoding="utf-8")}
     for policy in sorted(skill.parent.glob("*.md")):
-        if policy != skill:
+        if policy != skill and policy.name not in _DECISION_POLICY_EXCLUSIONS:
             documents[policy.name] = policy.read_text(encoding="utf-8")
     return _freeze_mapping(documents)
 
@@ -465,6 +483,7 @@ def build_blind_payload(
     *,
     policy_documents: Mapping[str, str],
     transcript: Mapping[str, Any] | str | None = None,
+    evidence_aliases: Mapping[str, str] | None = None,
 ) -> Mapping[str, Any]:
     """Build the first-pass, label-blind provider payload."""
 
@@ -484,12 +503,17 @@ def build_blind_payload(
             "state_id_rule": "Use state_id exactly; never use state_card_id.",
             "output_rule": "Return only states requiring a non-retain evidence action; omitted states are retained.",
             "citation_rule": "Each action may cite only MetricEvidence IDs whose state_id matches the action state_id.",
+            "action_multiplier_rule": {
+                "downweight": list(DOWNWEIGHT_MULTIPLIERS),
+                "invalidate": [0.0],
+                "mark_unavailable": [0.0],
+            },
         },
         "reviewed_packet_hash": prepared.reviewed_packet_hash,
         "reviewed_evidence_hash": prepared.reviewed_evidence_hash,
         "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
-        "metric_evidence": _safe_evidence(prepared),
-        "state_cards": _safe_state_cards(prepared),
+        "metric_evidence": _safe_evidence(prepared, evidence_aliases),
+        "state_cards": _safe_state_cards(prepared, evidence_aliases),
         "sanitized_transcript": _safe_transcript(transcript, prepared.route.observation_route.language),
         "ad_evidence_policy": dict(policy_documents),
     }
@@ -501,6 +525,7 @@ def build_advisor_payload(
     blind: BlindEvidenceAssessment,
     *,
     policy_documents: Mapping[str, str],
+    evidence_aliases: Mapping[str, str] | None = None,
 ) -> Mapping[str, Any]:
     """Build the second pass; it exposes advisor values but never outcomes."""
 
@@ -515,41 +540,73 @@ def build_advisor_payload(
         "reviewed_evidence_hash": prepared.reviewed_evidence_hash,
         "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
         "advisor_packet_hash": prepared.advisor_packet_hash,
-        "blind_assessment": blind.to_dict(),
+        "blind_assessment": _alias_response_citations(blind.to_dict(), evidence_aliases or {}),
         "advisor_packet": _safe_advisor_packet(prepared),
+        "reconciliation_contract": {
+            "citation_rule": "Cite only same-state MetricEvidence transport IDs.",
+            "action_multiplier_rule": {
+                "retain": [1.0],
+                "downweight": list(DOWNWEIGHT_MULTIPLIERS),
+                "invalidate": [0.0],
+                "mark_unavailable": [0.0],
+            },
+        },
         "ad_evidence_policy": dict(policy_documents),
     }
     return _freeze_mapping(sanitize_provider_payload(payload))
+
+
+def _alias_response_citations(value: Any, aliases: Mapping[str, str]) -> Any:
+    """Translate only typed citation fields; free text remains untouched."""
+
+    citation_fields = {
+        "evidence_id", "cited_metric_evidence_ids",
+        "supporting_evidence_ids", "counter_evidence_ids",
+    }
+    if isinstance(value, Mapping):
+        translated: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) in citation_fields:
+                if isinstance(item, (list, tuple)):
+                    translated[str(key)] = [aliases.get(str(entry), str(entry)) for entry in item]
+                else:
+                    translated[str(key)] = aliases.get(str(item), str(item))
+            else:
+                translated[str(key)] = _alias_response_citations(item, aliases)
+        return translated
+    if isinstance(value, (list, tuple)):
+        return [_alias_response_citations(item, aliases) for item in value]
+    return value
 
 
 def _action_schema(
     evidence_ids_by_state: Mapping[str, Sequence[str]], *, allow_retain: bool = True,
 ) -> dict[str, Any]:
     actions = sorted(STATE_ACTIONS if allow_retain else STATE_ACTIONS - {"retain"})
-    multiplier_values = {
-        "retain": [1.0],
-        "downweight": list(DOWNWEIGHT_MULTIPLIERS),
-        "invalidate": [0.0],
-        "mark_unavailable": [0.0],
-    }
+    multiplier_values = sorted({
+        1.0 if action == "retain" else value
+        for action in actions
+        for value in (
+            DOWNWEIGHT_MULTIPLIERS if action == "downweight" else (0.0,)
+        )
+    })
     variants = []
     for state_id in sorted(evidence_ids_by_state):
         evidence_ids = sorted(set(str(value) for value in evidence_ids_by_state[state_id]))
         if not evidence_ids:
             continue
-        for action in actions:
-            variants.append({
+        variants.append({
                 "type": "object", "additionalProperties": False,
                 "properties": {
                     "state_id": {"type": "string", "enum": [state_id]},
-                    "action": {"type": "string", "enum": [action]},
+                    "action": {"type": "string", "enum": actions},
                     "cited_metric_evidence_ids": {
                         "type": "array",
                         "items": {"type": "string", "enum": evidence_ids},
                         "minItems": 1,
                     },
                     "reliability_multiplier": {
-                        "type": "number", "enum": multiplier_values[action],
+                        "type": "number", "enum": multiplier_values,
                     },
                     "rationale": {"type": "string"},
                 },
@@ -753,11 +810,18 @@ class AuthorityReviewRuntime:
             model=self.model,
             policy_documents=policy,
         )
-        blind_payload = build_blind_payload(prepared, policy_documents=policy, transcript=transcript)
+        evidence_aliases = _evidence_aliases(prepared)
+        full_evidence_ids = {alias: evidence_id for evidence_id, alias in evidence_aliases.items()}
+        blind_payload = build_blind_payload(
+            prepared,
+            policy_documents=policy,
+            transcript=transcript,
+            evidence_aliases=evidence_aliases,
+        )
         _, state_ids, _ = _verify_prepared(prepared)
         evidence_ids_by_state = {
             state_id: tuple(sorted(
-                item.evidence_id
+                evidence_aliases[item.evidence_id]
                 for item in prepared.evidence
                 if item.state_id == state_id and item.inference_permission
             ))
@@ -780,8 +844,14 @@ class AuthorityReviewRuntime:
                 self.model,
                 self.provider,
             )
-            blind = _parse_blind(blind_response, prepared)
-            advisor_payload = build_advisor_payload(prepared, blind, policy_documents=policy)
+            blind = _parse_blind(
+                _alias_response_citations(blind_response, full_evidence_ids), prepared
+            )
+            advisor_payload = build_advisor_payload(
+                prepared, blind,
+                policy_documents=policy,
+                evidence_aliases=evidence_aliases,
+            )
             reconciliation_schema = _reconciliation_schema(evidence_ids_by_state)
             advisor_hash = hash_artifact({
                 "pass": 2,
@@ -797,7 +867,11 @@ class AuthorityReviewRuntime:
                 self.model,
                 self.provider,
             )
-            reconciliation = _parse_reconciliation(advisor_response, prepared, blind)
+            reconciliation = _parse_reconciliation(
+                _alias_response_citations(advisor_response, full_evidence_ids),
+                prepared,
+                blind,
+            )
         except AuthorityReviewValidationError:
             raise
         except Exception as error:

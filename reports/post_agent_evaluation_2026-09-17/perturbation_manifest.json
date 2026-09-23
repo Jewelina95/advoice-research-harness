@@ -1,0 +1,52 @@
+{
+  "schema_version": "advoice.post_agent_perturbation_manifest.v1",
+  "case_ids": [
+    "dffo",
+    "dvpv",
+    "juws",
+    "lvfu",
+    "pedu",
+    "pfyx",
+    "rtvy",
+    "wmek",
+    "ygom"
+  ],
+  "variants": [
+    {
+      "id": "baseline",
+      "operation": "unchanged structured evidence package"
+    },
+    {
+      "id": "paraphrase_zh",
+      "operation": "meaning-preserving Chinese paraphrase of narrative fields"
+    },
+    {
+      "id": "paraphrase_en",
+      "operation": "meaning-preserving English paraphrase of narrative fields"
+    },
+    {
+      "id": "reverse_evidence_order",
+      "operation": "reverse evidence order within every state"
+    },
+    {
+      "id": "reverse_state_order",
+      "operation": "reverse state block order without changing identifiers"
+    }
+  ],
+  "required_repeats_per_variant": 5,
+  "locked_fields": [
+    "model",
+    "model_revision",
+    "temperature",
+    "skill_version",
+    "evidence_values",
+    "evidence_permissions",
+    "state_ids"
+  ],
+  "primary_endpoints": [
+    "label_agreement",
+    "probability_js_divergence",
+    "citation_jaccard",
+    "state_revision_agreement"
+  ]
+}

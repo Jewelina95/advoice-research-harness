@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -23,6 +24,7 @@ SPECS = {
     "NCMMSC2021-AD": ([AUTH / "authority_expanded_pilot_v3/NCMMSC2021_AD/case_audit.json"], VOICE / "8.27/artifacts/NCMMSC2021_AD/condition_c_base_predictions.csv"),
 }
 ARMS = {"supervised":"仅监督", "agent_only":"仅 Agent", "supervised_state":"监督+状态", "supervised_agent":"监督+Agent", "full_joint":"完整联合"}
+PILOT_STATUS = "non_deployable_unvalidated_historical_pilot"
 
 def config(state: float, agent: float, staging: float, gated: bool = True):
     return AuthorityJointFusionConfig(state_strength=state, agent_strength=agent, staging_strength=staging, max_abs_state_delta=.75, ordinal_temperature=1.0, conflict_aware_gating=gated, min_state_uncertainty=.65, min_frozen_uncertainty=.75, min_counterevidence_margin=.75)
@@ -62,10 +64,36 @@ def evaluate(name: str, audits: list[Path], label_path: Path) -> dict:
     g=np.asarray(gates,dtype=float)
     return {"dataset":name,"n":len(y),"classes":order,"summary":summary,"changed":changed,"helped":int(helped),"harmed":int(harmed),"state_gate_rate":float(np.mean(g[:,0]>0)),"agent_gate_rate":float(np.mean(g[:,1]>0)),"staging_gate_rate":float(np.mean(g[:,2]>0)),"conflict_rate":float(np.mean(g[:,3]>0)),"cases":case_rows}
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Rebuild the historical multi-dataset pilot. This is not a calibrated evaluation."
+    )
+    parser.add_argument(
+        "--allow-unvalidated-pilot",
+        action="store_true",
+        help="Acknowledge that hard-coded authority strengths are uncalibrated and non-deployable.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    if not args.allow_unvalidated_pilot:
+        raise SystemExit(
+            "Refusing to run an uncalibrated historical pilot. "
+            "Pass --allow-unvalidated-pilot only for mechanism debugging; "
+            "use the calibrated authority study for evaluation."
+        )
     output=Path("reports/latest_evidence_agent_multidataset_2026-09-17"); output.mkdir(parents=True,exist_ok=True)
     results=[evaluate(name,*spec) for name,spec in SPECS.items()]
-    (output/"results.json").write_text(json.dumps(results,ensure_ascii=False,indent=2))
+    payload = {
+        "schema_version": "advoice.historical_multidataset_pilot.v2",
+        "deployment_status": PILOT_STATUS,
+        "publication_eligible": False,
+        "calibrated_authority": False,
+        "results": results,
+    }
+    (output/"results.json").write_text(json.dumps(payload,ensure_ascii=False,indent=2))
     rows=""; mechanisms=""; deltas=""; case_sections=""
     interpretations = {
         "PREPARE": "联合模型修正了 1 个 HC 假阳性和 1 个 AD 假阴性，未破坏原有正确病例；这是当前唯一出现净病例级增益的数据集。",
@@ -98,7 +126,7 @@ def main():
     total=sum(result["n"] for result in results)
     improved=sum(result["helped"]>result["harmed"] for result in results)
     harmed=sum(result["harmed"] for result in results)
-    html=f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Evidence Agent 多数据集完整分析</title><style>:root{{--ink:#172129;--muted:#52616b;--line:#d8e0e3;--green:#17664d;--green-bg:#e5f1eb;--amber:#9b5c0b;--amber-bg:#fff2db;--red:#a13d35;--red-bg:#fae9e7}}*{{box-sizing:border-box}}body{{margin:0;background:#f4f6f5;color:var(--ink);font-family:Arial,"PingFang SC",sans-serif}}main{{max-width:1220px;margin:auto;padding:44px 28px 80px}}h1{{font-size:36px;line-height:1.2;margin:0 0 12px}}h2{{margin-top:38px;font-size:24px}}h3{{margin:0;font-size:20px}}p,dd{{line-height:1.7;color:var(--muted)}}.lede{{max-width:980px;font-size:17px}}.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0}}.stat{{background:#fff;border:1px solid var(--line);padding:18px}}.stat b{{display:block;font-size:29px;margin-bottom:5px}}.stat span{{color:var(--muted)}}table{{width:100%;border-collapse:collapse;background:white;margin:14px 0 28px;font-variant-numeric:tabular-nums}}th,td{{padding:11px 9px;border-bottom:1px solid var(--line);text-align:right}}th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){{text-align:left}}thead{{background:#e7ecee}}.best{{background:var(--green-bg);font-weight:700}}.up{{color:var(--green);font-weight:700}}.down{{color:var(--red);font-weight:700}}.call{{padding:18px 20px;background:var(--green-bg);border-left:6px solid var(--green);font-size:16px;line-height:1.65}}.warn{{background:var(--amber-bg);border-left-color:var(--amber)}}.danger{{background:var(--red-bg);border-left-color:var(--red)}}code{{font-family:ui-monospace,monospace}}.cases{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}article{{background:#fff;border:1px solid var(--line);padding:20px}}.article-head{{display:flex;align-items:center;justify-content:space-between;gap:20px}}.article-head span{{color:var(--muted);font-weight:700}}dl{{display:grid;grid-template-columns:92px 1fr;gap:8px 12px;margin-bottom:0}}dt{{font-weight:700}}dd{{margin:0}}@media(max-width:800px){{.stats,.cases{{grid-template-columns:1fr}}main{{padding:28px 16px}}.table-wrap{{overflow:auto}}}}</style></head><body><main><h1>Evidence Agent 多数据集五组消融与病例机制审计</h1><p class="lede">结果由当前仓库的 <code>fuse_authority_joint()</code> 从真实 case audit 重建。每个数据集内部五组方法共享相同的监督概率、pre/post StateCard、盲态 Agent ordinal evidence 与类别顺序，因此组内差异来自融合机制，而不是更换输入。</p><div class="stats"><div class="stat"><b>7</b><span>数据集</span></div><div class="stat"><b>{total}</b><span>真实缓存病例</span></div><div class="stat"><b>{improved}</b><span>出现净类别改善的数据集</span></div><div class="stat"><b>{harmed}</b><span>被联合模型破坏的正确病例</span></div></div><div class="call warn"><b>范围限制：</b>这是多通道机制 pilot，不是总体性能试验。PREPARE 为 9 例、ADReSS 为 6 例，其余各 3 例。三例数据集中一个病例对应 33.3 个百分点；DementiaNet 抽样还只有 AD 标签，不能据此估计跨类别泛化。</div><h2>联合模型相对监督模型的净变化</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>n</th><th>Δ Accuracy</th><th>Δ Macro-F1</th><th>Δ Log loss ↓</th><th>病例结论</th></tr></thead><tbody>{deltas}</tbody></table></div><h2>五组性能</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>方法</th><th>Accuracy</th><th>Balanced Acc.</th><th>Macro-F1</th><th>Log loss ↓</th></tr></thead><tbody>{rows}</tbody></table></div><h2>门控是否实际工作</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>n</th><th>改变</th><th>修正</th><th>伤害</th><th>状态门控</th><th>Agent门控</th><th>分期门控</th><th>状态-Agent冲突</th></tr></thead><tbody>{mechanisms}</tbody></table></div><div class="call"><b>核心判断：</b>当前完整联合模型在 PREPARE pilot 中有净增益，并在其余新通道中没有破坏原有正确病例；但 IAEAV、PROCESS-2、DementiaNet 和 ADReSS 的错误病例也没有被修正。当前瓶颈已经从“Agent 权重过大”转为“门控召回率不足”。这还不能支持跨数据集优于监督模型的结论。</div><h2>逐数据集病例解释</h2><section class="cases">{case_sections}</section><h2>为什么 NCMMSC 看起来特别差</h2><div class="call danger">NCMMSC 的三例分别覆盖 HC、MCI、AD。监督模型只判对 HC；联合模型把一例错误从 MCI 改为 HC，但真实标签是 AD，因此属于“错误类别迁移”，不是修正。与此同时，中文通道状态-Agent 冲突率为 66.7%，Agent 门控为 0%。结果提示中文证据方向与监督先验未对齐，不能通过换数据集或提高固定 Agent 权重解决。</div><h2>下一步应验证什么</h2><p>扩大验证不应继续随机抽三例，而应按“监督正确/错误、低/高不确定性、状态-Agent一致/冲突、不同任务与语言”分层抽样。只有在锁定阈值后，联合模型的 helped 数稳定高于 harmed 数，且 log loss 与校准不恶化，才能进入全量评估。NCMMSC 必须保留为失败审计，但不应主导架构选择。</p></main></body></html>'''
+    html=f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Evidence Agent 多数据集完整分析</title><style>:root{{--ink:#172129;--muted:#52616b;--line:#d8e0e3;--green:#17664d;--green-bg:#e5f1eb;--amber:#9b5c0b;--amber-bg:#fff2db;--red:#a13d35;--red-bg:#fae9e7}}*{{box-sizing:border-box}}body{{margin:0;background:#f4f6f5;color:var(--ink);font-family:Arial,"PingFang SC",sans-serif}}main{{max-width:1220px;margin:auto;padding:44px 28px 80px}}h1{{font-size:36px;line-height:1.2;margin:0 0 12px}}h2{{margin-top:38px;font-size:24px}}h3{{margin:0;font-size:20px}}p,dd{{line-height:1.7;color:var(--muted)}}.lede{{max-width:980px;font-size:17px}}.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0}}.stat{{background:#fff;border:1px solid var(--line);padding:18px}}.stat b{{display:block;font-size:29px;margin-bottom:5px}}.stat span{{color:var(--muted)}}table{{width:100%;border-collapse:collapse;background:white;margin:14px 0 28px;font-variant-numeric:tabular-nums}}th,td{{padding:11px 9px;border-bottom:1px solid var(--line);text-align:right}}th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){{text-align:left}}thead{{background:#e7ecee}}.best{{background:var(--green-bg);font-weight:700}}.up{{color:var(--green);font-weight:700}}.down{{color:var(--red);font-weight:700}}.call{{padding:18px 20px;background:var(--green-bg);border-left:6px solid var(--green);font-size:16px;line-height:1.65}}.warn{{background:var(--amber-bg);border-left-color:var(--amber)}}.danger{{background:var(--red-bg);border-left-color:var(--red)}}code{{font-family:ui-monospace,monospace}}.cases{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}article{{background:#fff;border:1px solid var(--line);padding:20px}}.article-head{{display:flex;align-items:center;justify-content:space-between;gap:20px}}.article-head span{{color:var(--muted);font-weight:700}}dl{{display:grid;grid-template-columns:92px 1fr;gap:8px 12px;margin-bottom:0}}dt{{font-weight:700}}dd{{margin:0}}@media(max-width:800px){{.stats,.cases{{grid-template-columns:1fr}}main{{padding:28px 16px}}.table-wrap{{overflow:auto}}}}</style></head><body><main><h1>Evidence Agent 多数据集五组消融与病例机制审计</h1><div class="call danger"><b>不可部署的历史 pilot：</b>该页面使用硬编码、未校准的权限强度，仅用于机制调试；不得作为论文主结果、临床结论或模型选择依据。</div><p class="lede">结果由当前仓库的 <code>fuse_authority_joint()</code> 从真实 case audit 重建。每个数据集内部五组方法共享相同的监督概率、pre/post StateCard、盲态 Agent ordinal evidence 与类别顺序，因此组内差异来自融合机制，而不是更换输入。</p><div class="stats"><div class="stat"><b>7</b><span>数据集</span></div><div class="stat"><b>{total}</b><span>真实缓存病例</span></div><div class="stat"><b>{improved}</b><span>出现净类别改善的数据集</span></div><div class="stat"><b>{harmed}</b><span>被联合模型破坏的正确病例</span></div></div><div class="call warn"><b>范围限制：</b>这是多通道机制 pilot，不是总体性能试验。PREPARE 为 9 例、ADReSS 为 6 例，其余各 3 例。三例数据集中一个病例对应 33.3 个百分点；DementiaNet 抽样还只有 AD 标签，不能据此估计跨类别泛化。</div><h2>联合模型相对监督模型的净变化</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>n</th><th>Δ Accuracy</th><th>Δ Macro-F1</th><th>Δ Log loss ↓</th><th>病例结论</th></tr></thead><tbody>{deltas}</tbody></table></div><h2>五组性能</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>方法</th><th>Accuracy</th><th>Balanced Acc.</th><th>Macro-F1</th><th>Log loss ↓</th></tr></thead><tbody>{rows}</tbody></table></div><h2>门控是否实际工作</h2><div class="table-wrap"><table><thead><tr><th>数据集</th><th>n</th><th>改变</th><th>修正</th><th>伤害</th><th>状态门控</th><th>Agent门控</th><th>分期门控</th><th>状态-Agent冲突</th></tr></thead><tbody>{mechanisms}</tbody></table></div><div class="call"><b>核心判断：</b>当前完整联合模型在 PREPARE pilot 中有净增益，并在其余新通道中没有破坏原有正确病例；但 IAEAV、PROCESS-2、DementiaNet 和 ADReSS 的错误病例也没有被修正。当前瓶颈已经从“Agent 权重过大”转为“门控召回率不足”。这还不能支持跨数据集优于监督模型的结论。</div><h2>逐数据集病例解释</h2><section class="cases">{case_sections}</section><h2>为什么 NCMMSC 看起来特别差</h2><div class="call danger">NCMMSC 的三例分别覆盖 HC、MCI、AD。监督模型只判对 HC；联合模型发生一次错误类别迁移，仍未命中真实标签。该结果保留为中文通道失败模式，不能用提高固定 Agent 权重修复。</div><h2>下一步应验证什么</h2><p>扩大验证不应继续随机抽三例，而应按“监督正确/错误、低/高不确定性、状态-Agent一致/冲突、不同任务与语言”分层抽样。只有在锁定阈值后，联合模型的 helped 数稳定高于 harmed 数，且 log loss 与校准不恶化，才能进入全量评估。</p></main></body></html>'''
     (output/"report.html").write_text(html)
     oral = f"""# 多数据集快速验证口语稿
 

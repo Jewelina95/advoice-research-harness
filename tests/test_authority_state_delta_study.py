@@ -22,6 +22,16 @@ from advoice.module_a import ExplanationPacket
 LABELS = ("HC", "AD")
 
 
+def _bind_fusion_config(
+    payload: Mapping[str, Any],
+    fusion: AuthorityJointFusionConfig,
+) -> dict[str, Any]:
+    values = dict(payload)
+    values["joint_fusion_config"] = fusion.to_dict()
+    values["joint_fusion_config_hash"] = study_module.hash_artifact(fusion.to_dict())
+    return values
+
+
 def _packet(
     probabilities: tuple[float, float],
     *,
@@ -223,6 +233,125 @@ def test_calibration_identity_changes_study_hash() -> None:
     )
 
 
+def test_nonzero_strength_requires_matching_calibration_content() -> None:
+    with pytest.raises(ValueError, match="validated calibration artifact"):
+        AuthorityStateDeltaStudyConfig(
+            joint_fusion=AuthorityJointFusionConfig(
+                state_strength=0.0,
+                agent_strength=0.25,
+                max_abs_state_delta=0.75,
+                ordinal_temperature=1.0,
+            )
+        )
+
+
+def test_nonzero_strength_rejects_stale_deployment_context(tmp_path: Path) -> None:
+    dataset, _, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    fusion = AuthorityJointFusionConfig(
+        state_strength=0.0,
+        agent_strength=0.25,
+        max_abs_state_delta=0.75,
+        ordinal_temperature=1.0,
+    )
+    calibration = _bind_fusion_config({
+        "selection_status": "validated_joint_gain",
+        "selected_screening_strength": 0.25,
+        "selected_staging_strength": 0.0,
+        "deployment_context_hash": "0" * 64,
+    }, fusion)
+    config = AuthorityStateDeltaStudyConfig(
+        joint_fusion=fusion,
+        calibration_artifact_hash=study_module.hash_artifact(calibration),
+        calibration_artifact=calibration,
+    )
+    with pytest.raises(AuthorityStateDeltaStudyError, match="current dataset"):
+        run_authority_state_delta_cohort(dataset, runtime, output_dir=tmp_path, config=config)
+    assert runtime.calls == []
+
+
+def test_self_declared_calibration_cannot_enable_cohort_authority(tmp_path: Path) -> None:
+    dataset, _, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    fusion = AuthorityJointFusionConfig(
+        state_strength=0.0,
+        agent_strength=0.25,
+        max_abs_state_delta=0.75,
+        ordinal_temperature=1.0,
+    )
+    calibration = _bind_fusion_config({
+        "selection_status": "validated_joint_gain",
+        "selected_screening_strength": 0.25,
+        "selected_staging_strength": 0.0,
+        "deployment_context_hash": study_module._calibration_context_hash(
+            dataset, runtime, fusion,
+        ),
+    }, fusion)
+    config = AuthorityStateDeltaStudyConfig(
+        joint_fusion=fusion,
+        calibration_artifact_hash=study_module.hash_artifact(calibration),
+        calibration_artifact=calibration,
+    )
+
+    with pytest.raises(ValueError, match="calibration_run provenance"):
+        run_authority_state_delta_cohort(
+            dataset,
+            runtime,
+            output_dir=tmp_path,
+            config=config,
+        )
+    assert runtime.calls == []
+
+
+def test_calibrated_strength_cannot_run_with_different_fusion_hyperparameters() -> None:
+    calibrated = AuthorityJointFusionConfig(
+        state_strength=0.0,
+        agent_strength=0.25,
+        max_abs_state_delta=0.75,
+        ordinal_temperature=1.0,
+    )
+    calibration = _bind_fusion_config({
+        "selection_status": "validated_joint_gain",
+        "selected_screening_strength": 0.25,
+        "selected_staging_strength": 0.0,
+        "deployment_context_hash": "7" * 64,
+    }, calibrated)
+    changed = AuthorityJointFusionConfig(
+        state_strength=0.0,
+        agent_strength=0.25,
+        max_abs_state_delta=0.5,
+        ordinal_temperature=1.0,
+    )
+
+    with pytest.raises(ValueError, match="joint_fusion_config does not match"):
+        AuthorityStateDeltaStudyConfig(
+            joint_fusion=changed,
+            calibration_artifact_hash=study_module.hash_artifact(calibration),
+            calibration_artifact=calibration,
+        )
+
+
+def test_calibration_context_changes_with_model_and_dataset_artifacts() -> None:
+    dataset, _, _ = _fixture_dataset()
+    runtime = _Runtime(dataset)
+    before = study_module._calibration_context_hash(dataset, runtime)
+    dataset.advisor.artifact_hashes = {"model": "a" * 64}
+    with_model = study_module._calibration_context_hash(dataset, runtime)
+    dataset.frozen.artifact_hashes = {"manifest.csv": "b" * 64}
+    with_dataset = study_module._calibration_context_hash(dataset, runtime)
+    changed_fusion = study_module._calibration_context_hash(
+        dataset,
+        runtime,
+        AuthorityJointFusionConfig(
+            state_strength=0.0,
+            agent_strength=0.0,
+            max_abs_state_delta=0.5,
+            ordinal_temperature=1.0,
+        ),
+    )
+    assert len({before, with_model, with_dataset, changed_fusion}) == 4
+
+
 @pytest.mark.parametrize("scores, expected", [({"HC": 4, "AD": 0}, True), ({"HC": 0, "AD": 4}, False)])
 def test_fusion_audit_retains_state_agent_conflict(scores, expected):
     from advoice.authority_joint_fusion import fuse_authority_joint
@@ -235,6 +364,7 @@ def test_fusion_audit_retains_state_agent_conflict(scores, expected):
     audit = study_module._fusion_audit(fusion)
     assert audit["state_agent_conflict"] is expected
     assert audit["schema_version"] == fusion.schema_version
+    assert audit["agent_prediction_status"] == "inactive_unvalidated_strength"
 
 
 @pytest.mark.parametrize("decision_only", [False, None, 0, "false"])
@@ -320,6 +450,11 @@ def test_atomic_transaction_replays_once_and_applies_predeclared_delta(
     }
     replayed: list[tuple[Any, Any]] = []
     monkeypatch.setattr(study_module, "compile_authority_review_decision", lambda *_: _compiled(transaction))
+    monkeypatch.setattr(
+        study_module,
+        "validate_registered_calibration_artifact",
+        lambda *args, **kwargs: None,
+    )
 
     def replay(snapshot, revision, **kwargs):
         replayed.append((snapshot, revision))
@@ -330,17 +465,30 @@ def test_atomic_transaction_replays_once_and_applies_predeclared_delta(
         )
 
     monkeypatch.setattr(study_module, "replay_evidence", replay)
+    fusion = AuthorityJointFusionConfig(
+        state_strength=0.25,
+        agent_strength=0.0,
+        max_abs_state_delta=0.75,
+        ordinal_temperature=1.0,
+    )
+    calibration = _bind_fusion_config({
+        "selection_status": "validated_joint_gain",
+        "selected_screening_strength": 0.0,
+        "selected_staging_strength": 0.0,
+        "state_selection_status": "validated_joint_gain",
+        "selected_state_strength": 0.25,
+        "deployment_context_hash": study_module._calibration_context_hash(
+            dataset, runtime, fusion,
+        ),
+    }, fusion)
     result = run_authority_state_delta_cohort(
         dataset,
         runtime,
         output_dir=tmp_path,
         config=AuthorityStateDeltaStudyConfig(
-            joint_fusion=AuthorityJointFusionConfig(
-                state_strength=0.25,
-                agent_strength=0.0,
-                max_abs_state_delta=0.75,
-                ordinal_temperature=1.0,
-            )
+            joint_fusion=fusion,
+            calibration_artifact_hash=study_module.hash_artifact(calibration),
+            calibration_artifact=calibration,
         ),
     )
 

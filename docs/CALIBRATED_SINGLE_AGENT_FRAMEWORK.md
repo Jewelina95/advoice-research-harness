@@ -51,8 +51,20 @@ The artifact is selected from development/OOF predictions under macro-F1 gain
 plus AUROC, log-loss and Brier non-inferiority constraints. Missing, invalid or
 unsuccessful calibration produces exact supervised parity.
 
-Manual nonzero strengths remain available only for controlled method debugging.
-They are not publication results and must not be selected from evaluation data.
+The cohort runner requires the validated artifact content and verifies its hash,
+validation status and selected strengths. A hash alone is insufficient. Command-line
+manual nonzero strengths are rejected, so an evaluation run cannot bypass the
+development calibration contract. The artifact must also carry a matching
+`deployment_context_hash`, binding it to the dataset endpoint, class order,
+fusion schema, provider/model, review mode and policy identity. It also stores
+and hashes the complete `AuthorityJointFusionConfig`; changing temperature,
+delta bounds, conflict gating or any threshold invalidates the calibration.
+Nonzero authority additionally requires a repository-controlled registry entry
+in `configs/calibration/authority_registry.json`. The entry binds the artifact,
+deployment context and calibration run. The run attests a subject manifest,
+OOF predictions, predeclared acceptance criteria, training code/config hashes,
+and that test labels were not consumed. The registry is intentionally empty
+until a qualifying development calibration is completed and reviewed.
 
 ## Stage semantics
 
@@ -61,6 +73,9 @@ screening boundary and a coarse cognitive-status boundary; speech alone does not
 establish Alzheimer pathology. A dataset may later expose SCD or dementia
 severity labels, and the generic fusion preserves those labels, but each endpoint
 requires its own subject-disjoint calibration and evidence-observability policy.
+For HC/MCI/AD, a non-neutral MCI-versus-AD update also requires direct two-sided
+citations: support for the preferred stage and counter-evidence for the other.
+General HC-versus-impairment evidence cannot acquire staging authority.
 
 ## Cost boundary
 

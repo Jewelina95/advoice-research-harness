@@ -6,7 +6,7 @@ turns reviewed states into evidence revisions.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
@@ -18,7 +18,7 @@ from .decision_lock import canonical_json, hash_artifact
 from .transcript_sanitization import sanitize_transcript_payload
 
 
-SCHEMA_VERSION = "advoice.authority_review_runtime.v3-single-blind-default"
+SCHEMA_VERSION = "advoice.authority_review_runtime.v4-evidence-bound-likelihood"
 STATE_ACTIONS = frozenset({"retain", "downweight", "invalidate", "mark_unavailable"})
 DOWNWEIGHT_MULTIPLIERS = (0.25, 0.5, 0.75)
 REVIEW_AVAILABLE = "available"
@@ -131,6 +131,46 @@ class StateReviewAction:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class LikelihoodEvidenceCitation:
+    """Typed evidence supporting or countering one Agent class score."""
+
+    class_label: str
+    state_id: str
+    relation: Literal["support", "counter"]
+    cited_metric_evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.class_label.strip() or not self.state_id.strip():
+            raise AuthorityReviewValidationError(
+                "Likelihood evidence requires class_label and state_id."
+            )
+        if self.relation not in {"support", "counter"}:
+            raise AuthorityReviewValidationError(
+                "Likelihood evidence relation must be support or counter."
+            )
+        object.__setattr__(self, "cited_metric_evidence_ids", _strings(
+            self.cited_metric_evidence_ids, field="cited_metric_evidence_ids"
+        ))
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "LikelihoodEvidenceCitation":
+        return cls(
+            class_label=str(value.get("class_label", "")),
+            state_id=str(value.get("state_id", "")),
+            relation=str(value.get("relation", "")),  # type: ignore[arg-type]
+            cited_metric_evidence_ids=tuple(value.get("cited_metric_evidence_ids", ())),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class_label": self.class_label,
+            "state_id": self.state_id,
+            "relation": self.relation,
+            "cited_metric_evidence_ids": list(self.cited_metric_evidence_ids),
+        }
+
+
 def _actions_by_state(actions: Sequence[StateReviewAction]) -> Mapping[str, StateReviewAction]:
     values = {action.state_id: action for action in actions}
     if len(values) != len(actions):
@@ -162,6 +202,7 @@ class BlindEvidenceAssessment:
     state_actions: Mapping[str, StateReviewAction]
     ordinal_scores: Mapping[str, int]
     report_trace: tuple[str, ...]
+    likelihood_evidence: tuple[LikelihoodEvidenceCitation, ...] = ()
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -175,6 +216,8 @@ class BlindEvidenceAssessment:
             raise AuthorityReviewValidationError("Blind assessment requires ordinal evidence scores.")
         if not isinstance(self.report_trace, tuple) or any(not str(item).strip() for item in self.report_trace):
             raise AuthorityReviewValidationError("report_trace must be a tuple of non-empty strings.")
+        if len(self.likelihood_evidence) != len(set(self.likelihood_evidence)):
+            raise AuthorityReviewValidationError("likelihood_evidence cannot contain duplicates.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -186,7 +229,95 @@ class BlindEvidenceAssessment:
             "state_actions": {key: action.to_dict() for key, action in self.state_actions.items()},
             "ordinal_scores": dict(self.ordinal_scores),
             "report_trace": list(self.report_trace),
+            "likelihood_evidence": [item.to_dict() for item in self.likelihood_evidence],
         }
+
+
+def agent_evidence_strength(
+    prepared: PreparedAuthorityCase,
+    assessment: BlindEvidenceAssessment,
+) -> float:
+    """Return conservative cited-evidence authority in [0, 1].
+
+    The score uses only validated inference evidence.  More model uncertainty
+    cannot increase it.  Two independent cognitive states are required for
+    full diversity credit; observed confounds and weak technical reliability
+    reduce authority.
+    """
+
+    likelihood_evidence = tuple(getattr(assessment, "likelihood_evidence", ()))
+    if not likelihood_evidence:
+        return 0.0
+    evidence_by_id = {
+        item.evidence_id: item
+        for item in prepared.evidence
+        if item.inference_permission and item.observable
+    }
+    cited_ids = {
+        evidence_id
+        for citation in likelihood_evidence
+        for evidence_id in citation.cited_metric_evidence_ids
+    }
+    cited = [evidence_by_id[evidence_id] for evidence_id in cited_ids if evidence_id in evidence_by_id]
+    if not cited:
+        return 0.0
+    reliabilities = []
+    for item in cited:
+        components = item.reliability_components.to_dict()
+        reliability = min(float(value) for value in components.values())
+        if item.confounds.observed:
+            reliability *= 0.5
+        reliabilities.append(reliability)
+    state_diversity = min(
+        1.0,
+        len({citation.state_id for citation in likelihood_evidence}) / 2.0,
+    )
+    metric_family_diversity = min(
+        1.0,
+        len({item.metric_id for item in cited if item.metric_id}) / 2.0,
+    )
+    independence_credit = min(state_diversity, metric_family_diversity)
+    return max(
+        0.0,
+        min(1.0, independence_credit * sum(reliabilities) / len(reliabilities)),
+    )
+
+
+def agent_staging_evidence_strength(
+    prepared: PreparedAuthorityCase,
+    assessment: BlindEvidenceAssessment,
+) -> float:
+    """Return evidence authority for MCI-versus-AD staging only.
+
+    A stage preference needs direct evidence on both sides of the MCI/AD
+    contrast. General impairment evidence cannot acquire staging authority.
+    """
+
+    labels = tuple(prepared.route.target_route.labels)
+    if "MCI" not in labels or "AD" not in labels:
+        return 0.0
+    scores = assessment.ordinal_scores
+    if scores["MCI"] == scores["AD"]:
+        return 0.0
+    preferred = "MCI" if scores["MCI"] > scores["AD"] else "AD"
+    countered = "AD" if preferred == "MCI" else "MCI"
+    citations = tuple(
+        citation
+        for citation in assessment.likelihood_evidence
+        if citation.class_label in {"MCI", "AD"}
+    )
+    if not any(
+        item.class_label == preferred and item.relation == "support"
+        for item in citations
+    ) or not any(
+        item.class_label == countered and item.relation == "counter"
+        for item in citations
+    ):
+        return 0.0
+    return agent_evidence_strength(
+        prepared,
+        replace(assessment, likelihood_evidence=citations),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +664,14 @@ def build_blind_payload(
             "state_id_rule": "Use state_id exactly; never use state_card_id.",
             "output_rule": "Return only states requiring a non-retain evidence action; omitted states are retained.",
             "citation_rule": "Each action may cite only MetricEvidence IDs whose state_id matches the action state_id.",
+            "likelihood_rule": (
+                "A support citation means the cited evidence raises the named class plausibility; "
+                "a counter citation means it lowers that class plausibility. When scores differ, cite "
+                "at least one support item for a highest-scored class and at least one counter item "
+                "for a lowest-scored class. These citations determine prediction authority; uncited "
+                "scores are neutral. When all scores are equal, still cite the conflicting or neutral "
+                "evidence that justifies no class preference."
+            ),
             "action_multiplier_rule": {
                 "downweight": list(DOWNWEIGHT_MULTIPLIERS),
                 "invalidate": [0.0],
@@ -651,6 +790,41 @@ def _action_schema(
     return {"anyOf": variants}
 
 
+def _likelihood_evidence_schema(
+    class_order: Sequence[str],
+    evidence_ids_by_state: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
+    variants = []
+    for class_label in class_order:
+        for state_id in sorted(evidence_ids_by_state):
+            evidence_ids = sorted(set(str(value) for value in evidence_ids_by_state[state_id]))
+            if not evidence_ids:
+                continue
+            variants.append({
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "class_label": {"type": "string", "enum": [class_label]},
+                    "state_id": {"type": "string", "enum": [state_id]},
+                    "relation": {"type": "string", "enum": ["support", "counter"]},
+                    "cited_metric_evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": evidence_ids},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                },
+                "required": [
+                    "class_label", "state_id", "relation", "cited_metric_evidence_ids",
+                ],
+            })
+    if not variants:
+        raise AuthorityReviewValidationError(
+            "Structured review schema has no evidence available for likelihood citations."
+        )
+    return {"anyOf": variants}
+
+
 def _blind_schema(
     class_order: Sequence[str], evidence_ids_by_state: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
@@ -667,9 +841,14 @@ def _blind_schema(
                 "minItems": 0, "maxItems": len(evidence_ids_by_state),
             },
             "ordinal_scores": {"type": "object", "properties": score_properties, "required": list(class_order), "additionalProperties": False},
+            "likelihood_evidence": {
+                "type": "array",
+                "items": _likelihood_evidence_schema(class_order, evidence_ids_by_state),
+                "minItems": 1,
+            },
             "report_trace": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["case_id", "reviewed_packet_hash", "reviewed_evidence_hash", "reviewed_state_graph_hash", "state_actions", "ordinal_scores", "report_trace"],
+        "required": ["case_id", "reviewed_packet_hash", "reviewed_evidence_hash", "reviewed_state_graph_hash", "state_actions", "ordinal_scores", "likelihood_evidence", "report_trace"],
     }
 
 
@@ -740,14 +919,84 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
     actions = tuple(StateReviewAction.from_mapping(item) for item in actions_value if isinstance(item, Mapping))
     if len(actions) != len(actions_value):
         raise AuthorityReviewValidationError("Every state action must be an object.")
+    likelihood_value = response.get("likelihood_evidence")
+    if not isinstance(likelihood_value, list) or not likelihood_value:
+        raise AuthorityReviewValidationError(
+            "Blind provider response requires non-empty likelihood_evidence."
+        )
+    likelihood = tuple(
+        LikelihoodEvidenceCitation.from_mapping(item)
+        for item in likelihood_value
+        if isinstance(item, Mapping)
+    )
+    if len(likelihood) != len(likelihood_value):
+        raise AuthorityReviewValidationError(
+            "Every likelihood evidence citation must be an object."
+        )
+    allowed_labels = set(prepared.route.target_route.labels)
+    for citation in likelihood:
+        if citation.class_label not in allowed_labels:
+            raise AuthorityReviewValidationError(
+                "Likelihood evidence cites a class outside the target route."
+            )
+        unknown = set(citation.cited_metric_evidence_ids) - set(evidence_states)
+        if unknown:
+            raise AuthorityReviewValidationError(
+                "Likelihood evidence cites unknown MetricEvidence IDs: "
+                + ", ".join(sorted(unknown))
+            )
+        foreign = sorted(
+            evidence_id for evidence_id in citation.cited_metric_evidence_ids
+            if evidence_states[evidence_id] != citation.state_id
+        )
+        if foreign:
+            raise AuthorityReviewValidationError(
+                "Likelihood evidence cites MetricEvidence outside its state: "
+                + ", ".join(foreign)
+            )
+    ordinal_scores = _scores(
+        response.get("ordinal_scores", {}), prepared.route.target_route.labels
+    )
+    if len(set(ordinal_scores.values())) > 1:
+        maximum = max(ordinal_scores.values())
+        minimum = min(ordinal_scores.values())
+        supported = {
+            citation.class_label for citation in likelihood if citation.relation == "support"
+        }
+        countered = {
+            citation.class_label for citation in likelihood if citation.relation == "counter"
+        }
+        if not ({label for label, score in ordinal_scores.items() if score == maximum} & supported):
+            raise AuthorityReviewValidationError(
+                "The highest Agent score requires a supporting evidence citation."
+            )
+        if not ({label for label, score in ordinal_scores.items() if score == minimum} & countered):
+            raise AuthorityReviewValidationError(
+                "The lowest Agent score requires a counter-evidence citation."
+            )
+    if {"MCI", "AD"}.issubset(allowed_labels) and ordinal_scores["MCI"] != ordinal_scores["AD"]:
+        preferred = "MCI" if ordinal_scores["MCI"] > ordinal_scores["AD"] else "AD"
+        countered = "AD" if preferred == "MCI" else "MCI"
+        if not any(
+            item.class_label == preferred and item.relation == "support"
+            for item in likelihood
+        ) or not any(
+            item.class_label == countered and item.relation == "counter"
+            for item in likelihood
+        ):
+            raise AuthorityReviewValidationError(
+                "A non-neutral MCI/AD stage preference requires direct support for "
+                "the preferred stage and counter-evidence for the other stage."
+            )
     assessment = BlindEvidenceAssessment(
         case_id=str(response.get("case_id", "")),
         reviewed_packet_hash=str(response.get("reviewed_packet_hash", "")),
         reviewed_evidence_hash=str(response.get("reviewed_evidence_hash", "")),
         reviewed_state_graph_hash=str(response.get("reviewed_state_graph_hash", "")),
         state_actions=_validate_actions(actions, states, evidence_states),
-        ordinal_scores=_scores(response.get("ordinal_scores", {}), prepared.route.target_route.labels),
+        ordinal_scores=ordinal_scores,
         report_trace=tuple(response.get("report_trace", ())),
+        likelihood_evidence=likelihood,
     )
     if (assessment.case_id, assessment.reviewed_packet_hash, assessment.reviewed_evidence_hash, assessment.reviewed_state_graph_hash) != (
         pseudo, prepared.reviewed_packet_hash, prepared.reviewed_evidence_hash, prepared.reviewed_state_graph_hash,
@@ -953,8 +1202,8 @@ class AuthorityReviewRuntime:
 
 __all__ = [
     "AdvisorReconciliation", "AuthorityReviewError", "AuthorityReviewResult", "AuthorityReviewRuntime",
-    "AuthorityReviewValidationError", "BlindEvidenceAssessment", "REVIEW_AVAILABLE",
+    "AuthorityReviewValidationError", "BlindEvidenceAssessment", "LikelihoodEvidenceCitation", "REVIEW_AVAILABLE",
     "REVIEW_MODE_LEGACY_TWO_PASS", "REVIEW_MODE_SINGLE_BLIND", "REVIEW_MODES",
     "REVIEW_PROVIDER_ERROR", "REVIEW_UNAVAILABLE", "SCHEMA_VERSION", "STATE_ACTIONS", "StateReviewAction", "build_advisor_payload",
-    "build_blind_payload", "sanitize_provider_payload",
+    "agent_evidence_strength", "agent_staging_evidence_strength", "build_blind_payload", "sanitize_provider_payload",
 ]

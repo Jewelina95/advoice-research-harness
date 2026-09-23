@@ -164,11 +164,21 @@ def test_validated_calibration_artifact_controls_screening_and_staging_strengths
     artifact = tmp_path / "artifact"
     artifact.mkdir()
     calibration = tmp_path / "agent_correction_calibration.json"
-    calibration.write_text(json.dumps({
+    fusion = cli.AuthorityJointFusionConfig(
+        state_strength=0.0,
+        agent_strength=0.25,
+        staging_strength=0.5,
+        max_abs_state_delta=0.75,
+        ordinal_temperature=1.0,
+    )
+    calibration_payload = {
         "selection_status": "validated_joint_gain",
         "selected_screening_strength": 0.25,
         "selected_staging_strength": 0.5,
-    }), encoding="utf-8")
+        "joint_fusion_config": fusion.to_dict(),
+        "joint_fusion_config_hash": hash_artifact(fusion.to_dict()),
+    }
+    calibration.write_text(json.dumps(calibration_payload), encoding="utf-8")
     captured: dict[str, object] = {}
     monkeypatch.setattr(cli.AuthorityStudyDataset, "from_artifact_dir", lambda path: object())
     monkeypatch.setattr(cli, "build_authority_review_runtime", lambda **kwargs: object())
@@ -186,11 +196,8 @@ def test_validated_calibration_artifact_controls_screening_and_staging_strengths
     assert fusion.state_strength == 0.0
     assert fusion.agent_strength == 0.25
     assert fusion.staging_strength == 0.5
-    assert captured["config"].calibration_artifact_hash == hash_artifact({  # type: ignore[union-attr]
-        "selection_status": "validated_joint_gain",
-        "selected_screening_strength": 0.25,
-        "selected_staging_strength": 0.5,
-    })
+    assert captured["config"].calibration_artifact_hash == hash_artifact(calibration_payload)  # type: ignore[union-attr]
+    assert captured["config"].calibration_artifact["selection_status"] == "validated_joint_gain"  # type: ignore[index,union-attr]
 
 
 def test_state_replay_requires_its_own_validated_strength(
@@ -206,8 +213,14 @@ def test_state_replay_requires_its_own_validated_strength(
         "selected_state_strength": 0.125,
     }), encoding="utf-8")
     args = _args(tmp_path, calibration_artifact=artifact)
-    state, screening, staging, _ = cli._resolved_strengths(args)
+    state, screening, staging, _, payload = cli._resolved_strengths(args)
     assert (state, screening, staging) == (0.125, 0.25, 0.5)
+    assert payload is not None
+
+
+def test_manual_nonzero_strength_is_rejected_without_calibration(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="require --calibration-artifact"):
+        cli._validate_args(_args(tmp_path, agent_strength=0.25))
 
 
 def test_unvalidated_calibration_artifact_is_rejected(tmp_path: Path) -> None:

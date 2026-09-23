@@ -1,0 +1,485 @@
+{
+  "schema_version": "advoice.post_agent_evaluation.v1",
+  "source": {
+    "case_audit": {
+      "filename": "case_audit.json",
+      "sha256": "423feeb9ba29bf9e836abc06ec5133c88448a5fb4dcfb05b4c0211fc58421f92"
+    },
+    "truth_csv": {
+      "filename": "condition_c_base_predictions.csv",
+      "sha256": "28f305e750de25d96cc4de0637035c2cfd0fb7ed697f49f120c31c474c3f202b"
+    },
+    "model_metadata": {
+      "filename": "ours_model.json",
+      "sha256": "50447b870c97fae4066ecee5b86e110ec02affe40af31eb8d38756286ae035fc"
+    }
+  },
+  "agent_gain": {
+    "case_count": 9,
+    "class_order": [
+      "HC",
+      "MCI",
+      "AD"
+    ],
+    "frozen": {
+      "accuracy": 0.7777777777777778,
+      "balanced_accuracy": 0.6785714285714286,
+      "macro_f1": 0.4523809523809524,
+      "observed_class_macro_f1": 0.6785714285714286,
+      "log_loss": 0.7117632057758532,
+      "macro_auroc_ovr": null
+    },
+    "fused": {
+      "accuracy": 0.8888888888888888,
+      "balanced_accuracy": 0.75,
+      "macro_f1": 0.5333333333333333,
+      "observed_class_macro_f1": 0.8,
+      "log_loss": 0.6170724344370758,
+      "macro_auroc_ovr": null
+    },
+    "delta": {
+      "accuracy": 0.11111111111111105,
+      "balanced_accuracy": 0.0714285714285714,
+      "macro_f1": 0.08095238095238094,
+      "observed_class_macro_f1": 0.12142857142857144,
+      "log_loss": -0.09469077133877735,
+      "macro_auroc_ovr": null
+    },
+    "paired_counts": {
+      "helped": 1,
+      "harmed": 0,
+      "unchanged": 8
+    },
+    "paired_exact_p_value": 1.0,
+    "changed_cases": [
+      {
+        "case_id": "lvfu",
+        "truth": "HC",
+        "before": "AD",
+        "after": "HC"
+      }
+    ],
+    "case_effects": [
+      {
+        "case_id": "dffo",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.6659451837649167,
+        "after_true_probability": 0.6659451837649167,
+        "true_probability_delta": 0.0
+      },
+      {
+        "case_id": "dvpv",
+        "truth": "AD",
+        "before": "AD",
+        "after": "AD",
+        "before_true_probability": 0.6682985312726714,
+        "after_true_probability": 0.556249726210335,
+        "true_probability_delta": -0.11204880506233639
+      },
+      {
+        "case_id": "juws",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.5945295413126951,
+        "after_true_probability": 0.5945295413126951,
+        "true_probability_delta": 0.0
+      },
+      {
+        "case_id": "lvfu",
+        "truth": "HC",
+        "before": "AD",
+        "after": "HC",
+        "before_true_probability": 0.34980554191966756,
+        "after_true_probability": 0.6272315983929228,
+        "true_probability_delta": 0.2774260564732552
+      },
+      {
+        "case_id": "pedu",
+        "truth": "AD",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.301298642934962,
+        "after_true_probability": 0.10515060517179753,
+        "true_probability_delta": -0.19614803776316447
+      },
+      {
+        "case_id": "pfyx",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.42438145088542145,
+        "after_true_probability": 0.7264010974299551,
+        "true_probability_delta": 0.3020196465445336
+      },
+      {
+        "case_id": "rtvy",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.7637875713054045,
+        "after_true_probability": 0.7637875713054045,
+        "true_probability_delta": 0.0
+      },
+      {
+        "case_id": "wmek",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.4301762759566836,
+        "after_true_probability": 0.7004744873459657,
+        "true_probability_delta": 0.2702982113892821
+      },
+      {
+        "case_id": "ygom",
+        "truth": "HC",
+        "before": "HC",
+        "after": "HC",
+        "before_true_probability": 0.42480026664615417,
+        "after_true_probability": 0.6861463909805572,
+        "true_probability_delta": 0.261346124334403
+      }
+    ],
+    "claim_status": "pilot_only"
+  },
+  "permission": {
+    "case_count": 9,
+    "citation_count": 750,
+    "violation_count": 0,
+    "violations": [],
+    "citation_scope_compliance": 1.0,
+    "inference_permission_status": "interface_verified_by_runtime_schema_and_validator",
+    "report_permission_status": "not_testable_report_generation_deferred"
+  },
+  "trace": {
+    "case_count": 9,
+    "complete_case_count": 9,
+    "trace_complete_rate": 1.0,
+    "cases": [
+      {
+        "case_id": "dffo",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "dvpv",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "juws",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "lvfu",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "pedu",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "pfyx",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "rtvy",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "wmek",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      },
+      {
+        "case_id": "ygom",
+        "complete": true,
+        "checks": {
+          "frozen_packet_link": true,
+          "pre_packet_link": true,
+          "post_packet_link": true,
+          "transaction_link": true,
+          "revision_link": true,
+          "fusion_frozen_link": true,
+          "fusion_pre_link": true,
+          "fusion_post_link": true,
+          "fusion_revision_link": true,
+          "fusion_audit_hash_present": true,
+          "fusion_input_hash_present": true,
+          "replay_audit_hashes_present": true
+        }
+      }
+    ],
+    "interpretation": "structural_linkage_only_not_causal_faithfulness"
+  },
+  "propagation": {
+    "case_count": 9,
+    "transaction_case_count": 9,
+    "transaction_to_state_change": 9,
+    "transaction_without_state_change": 0,
+    "state_change_to_prediction_change": 1,
+    "state_change_blocked_or_subthreshold": 8,
+    "mean_state_probability_l1": 0.6272805126630885,
+    "prediction_consistency_rate": 1.0,
+    "state_gate_active_count": 6,
+    "agent_gate_active_count": 0,
+    "staging_gate_active_count": 0,
+    "report_consistency_status": "not_testable_report_generation_deferred",
+    "cases": [
+      {
+        "case_id": "dffo",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.5629411438632285,
+        "prediction_changed": false,
+        "prediction_probability_changed": false,
+        "prediction_probability_l1": 0.0,
+        "correction_applied": false,
+        "state_gate": 0.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "dvpv",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.3011986613062617,
+        "prediction_changed": false,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.254452924527666,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "juws",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.2061389123636547,
+        "prediction_changed": false,
+        "prediction_probability_changed": false,
+        "prediction_probability_l1": 0.0,
+        "correction_applied": false,
+        "state_gate": 0.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "lvfu",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.511081639260711,
+        "prediction_changed": true,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.5548521129465102,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "pedu",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 1.486445068718531,
+        "prediction_changed": false,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.5975270814682837,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "pfyx",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.878211229665274,
+        "prediction_changed": false,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.6040392930890672,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "rtvy",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.6343310291027872,
+        "prediction_changed": false,
+        "prediction_probability_changed": false,
+        "prediction_probability_l1": 0.0,
+        "correction_applied": false,
+        "state_gate": 0.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "wmek",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.5477232618067923,
+        "prediction_changed": false,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.5405964227785642,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      },
+      {
+        "case_id": "ygom",
+        "has_transaction": true,
+        "state_changed": true,
+        "state_probability_l1": 0.5174536678805567,
+        "prediction_changed": false,
+        "prediction_probability_changed": true,
+        "prediction_probability_l1": 0.522692248668806,
+        "correction_applied": true,
+        "state_gate": 1.0,
+        "agent_gate": 0.0,
+        "staging_gate": 0.0
+      }
+    ]
+  },
+  "perturbation": {
+    "status": "not_run",
+    "reason": "paired perturbation outputs were not supplied"
+  },
+  "representation": {
+    "text_backbone": {
+      "model": "Alibaba-NLP/gte-multilingual-base",
+      "revision": "9bbca17d9273fd0d03d5725c7a4b0f6b45142062"
+    },
+    "audio_backbone": {
+      "model": "utter-project/mHuBERT-147",
+      "revision": "7ad3fc0bc5106c58c9c13526abccad527150d135"
+    },
+    "audio_window_count": 14845,
+    "audio_subject_coverage": 1.0,
+    "downstream_training": "multinomial_logistic_stacking",
+    "base_oof_macro_f1": 0.5979401956342337,
+    "final_oof_macro_f1": 0.6277692249164741,
+    "base_oof_macro_auroc": 0.8076324005778613,
+    "final_oof_macro_auroc": 0.8090282991817394,
+    "within_training_delta_macro_f1": 0.029829029282240405,
+    "within_training_delta_macro_auroc": 0.0013958986038780097,
+    "interpretation": "pretrained self-supervised/representation backbones followed by supervised downstream fitting; these deltas are not the post-Agent causal effect",
+    "representation_ablation_status": "not_identified_without_a_matched_no_backbone_arm"
+  },
+  "historical_context": null
+}

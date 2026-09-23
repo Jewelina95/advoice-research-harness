@@ -113,14 +113,24 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "Use --calibration-artifact or manual strength flags, not both."
         )
+    if args.calibration_artifact is None and any(
+        value != 0.0 for value in (state_strength, args.agent_strength, args.staging_strength)
+    ):
+        raise ValueError(
+            "Nonzero fusion strengths require --calibration-artifact; manual test-time strengths are disabled."
+        )
 
 
-def _resolved_strengths(args: argparse.Namespace) -> tuple[float, float, float, str | None]:
+def _resolved_strengths(
+    args: argparse.Namespace,
+) -> tuple[float, float, float, str | None, dict[str, Any] | None]:
     """Resolve only frozen development-set strengths; reject test-time tuning."""
 
     manual_state = args.state_strength if args.alpha is None else args.alpha
     if args.calibration_artifact is None:
-        return float(manual_state), float(args.agent_strength), float(args.staging_strength), None
+        return (
+            float(manual_state), float(args.agent_strength), float(args.staging_strength), None, None,
+        )
     path = args.calibration_artifact.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Calibration artifact does not exist: {path}")
@@ -153,7 +163,7 @@ def _resolved_strengths(args: argparse.Namespace) -> tuple[float, float, float, 
     # Replayed state deltas and ordinal screening scores use different numeric
     # scales. They remain mutually exclusive at inference, but they cannot share
     # a coefficient unless each route was calibrated on development data.
-    return state, float(screening), float(staging), hash_artifact(payload)
+    return state, float(screening), float(staging), hash_artifact(payload), payload
 
 
 def _summary(result: Any, *, provider: str, model: str, review_mode: str) -> dict[str, Any]:
@@ -197,7 +207,13 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         cache_dir=cache_dir,
         review_mode=args.review_mode,
     )
-    state_strength, agent_strength, staging_strength, calibration_hash = _resolved_strengths(args)
+    (
+        state_strength,
+        agent_strength,
+        staging_strength,
+        calibration_hash,
+        calibration_artifact,
+    ) = _resolved_strengths(args)
     result = run_authority_state_delta_cohort(
         dataset,
         runtime,
@@ -216,6 +232,7 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             selection_order=args.selection_order,
             selection_salt=args.selection_salt,
             calibration_artifact_hash=calibration_hash,
+            calibration_artifact=calibration_artifact,
         ),
     )
     summary = _summary(

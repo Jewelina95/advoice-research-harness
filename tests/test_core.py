@@ -505,6 +505,7 @@ def test_metric_reference_uses_task_specific_training_label(tmp_path: Path) -> N
     evidence = pd.read_csv(evidence_path)
     assert evidence["reference_label"].eq("no_decline").all()
     assert evidence["reference_median"].eq(2.0).all()
+    assert evidence["reference_sample_size"].eq(1).all()
     assert evidence["cn_train_median"].eq(2.0).all()
     target = evidence.loc[evidence["subject_id"].eq(2)].iloc[0]
     assert bool(target["missing"])

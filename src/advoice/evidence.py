@@ -715,6 +715,7 @@ def build_metric_evidence(
             )
         for task_scope, metric_instance in metric_instances:
             reference_values = controls.get(metric_instance, pd.Series(dtype=float))
+            reference_finite = reference_values.replace([np.inf, -np.inf], np.nan).dropna()
             median, scale, reference_available = _robust_reference(
                 reference_values
             )
@@ -723,6 +724,7 @@ def build_metric_evidence(
                 "task_scope": task_scope,
                 "median": median,
                 "scale": scale,
+                "n": int(len(reference_finite)),
                 "available": reference_available,
             }
             language_references: dict[str, dict[str, Any]] = {}
@@ -760,10 +762,12 @@ def build_metric_evidence(
                 subject_language = str(subject.get("language", "unknown"))
                 reference_scope = "pooled_training_reference"
                 subject_median, subject_scale = median, scale
+                subject_reference_n = int(len(reference_finite))
                 if metric in LANGUAGE_DEPENDENT_METRICS:
                     language_reference = language_references.get(subject_language, {})
                     subject_median = float(language_reference.get("median", 0.0))
                     subject_scale = float(language_reference.get("scale", 1.0))
+                    subject_reference_n = int(language_reference.get("n", 0))
                     reference_available = bool(language_reference.get("available", False))
                     reference_scope = f"training_reference_language:{subject_language}"
                 value_missing = value is None or not np.isfinite(value)
@@ -816,6 +820,7 @@ def build_metric_evidence(
                         "reference_scope": reference_scope,
                         "reference_median": subject_median,
                         "reference_scale": subject_scale,
+                        "reference_sample_size": subject_reference_n,
                         "cn_train_median": subject_median,
                         "cn_train_scale": subject_scale,
                         "robust_z": z,

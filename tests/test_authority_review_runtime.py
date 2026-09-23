@@ -11,10 +11,13 @@ import pytest
 from advoice.authority_review_runtime import (
     AuthorityReviewRuntime,
     AuthorityReviewValidationError,
+    LikelihoodEvidenceCitation,
     REVIEW_AVAILABLE,
     REVIEW_MODE_LEGACY_TWO_PASS,
     REVIEW_MODE_SINGLE_BLIND,
     REVIEW_PROVIDER_ERROR,
+    agent_evidence_strength,
+    agent_staging_evidence_strength,
     build_blind_payload,
     _parse_blind,
     _parse_reconciliation,
@@ -118,6 +121,17 @@ def _blind(prepared: PreparedAuthorityCase) -> dict[str, object]:
             "reliability_multiplier": 0.75, "rationale": "Measurement reliability is reduced.",
         }],
         "ordinal_scores": {"HC": 2, "AD": 2},
+        "likelihood_evidence": [{
+            "class_label": "AD",
+            "state_id": "S01",
+            "relation": "support",
+            "cited_metric_evidence_ids": ["metric:pause"],
+        }, {
+            "class_label": "HC",
+            "state_id": "S01",
+            "relation": "counter",
+            "cited_metric_evidence_ids": ["metric:pause"],
+        }],
         "report_trace": ["S01 reviewed against metric:pause."],
     }
 
@@ -259,9 +273,73 @@ def test_review_rejects_citations_without_inference_permission() -> None:
 
     blind_response = _blind(blocked_case)
     blind_response["state_actions"] = []
-    blind = _parse_blind(blind_response, blocked_case)
+    with pytest.raises(AuthorityReviewValidationError, match="unknown MetricEvidence"):
+        _parse_blind(blind_response, blocked_case)
+    blind = _parse_blind(_blind(prepared), prepared)
     with pytest.raises(AuthorityReviewValidationError, match="unknown MetricEvidence"):
         _parse_reconciliation(_advisor(blocked_case), blocked_case, blind)
+
+
+def test_agent_likelihood_requires_directional_class_citations() -> None:
+    prepared = _prepared()
+    response = _blind(prepared)
+    response["ordinal_scores"] = {"HC": 0, "AD": 4}
+    response["likelihood_evidence"] = [response["likelihood_evidence"][0]]
+
+    with pytest.raises(AuthorityReviewValidationError, match="lowest Agent score"):
+        _parse_blind(response, prepared)
+
+
+def test_agent_evidence_strength_is_citation_bound_not_uncertainty_bound() -> None:
+    prepared = _prepared()
+    response = _blind(prepared)
+    response["ordinal_scores"] = {"HC": 0, "AD": 4}
+    assessment = _parse_blind(response, prepared)
+
+    assert agent_evidence_strength(prepared, assessment) == pytest.approx(0.5)
+
+
+def test_agent_evidence_strength_does_not_double_count_one_metric_across_states() -> None:
+    prepared = _prepared()
+    duplicate_family = replace(
+        prepared.evidence[0], evidence_id="metric:pause:s02", state_id="S02"
+    )
+    prepared = replace(prepared, evidence=prepared.evidence + (duplicate_family,))
+    assessment = _parse_blind(_blind(_prepared()), _prepared())
+    assessment = replace(
+        assessment,
+        likelihood_evidence=assessment.likelihood_evidence + (
+            LikelihoodEvidenceCitation(
+                class_label="AD",
+                state_id="S02",
+                relation="support",
+                cited_metric_evidence_ids=("metric:pause:s02",),
+            ),
+        ),
+    )
+
+    assert agent_evidence_strength(prepared, assessment) == pytest.approx(0.5)
+
+
+def test_mci_ad_stage_preference_requires_direct_two_sided_citations() -> None:
+    prepared = _prepared()
+    target = replace(prepared.route.target_route, labels=("HC", "MCI", "AD"))
+    prepared = replace(prepared, route=replace(prepared.route, target_route=target))
+    response = _blind(prepared)
+    response["ordinal_scores"] = {"HC": 0, "MCI": 1, "AD": 4}
+
+    with pytest.raises(AuthorityReviewValidationError, match="MCI/AD stage preference"):
+        _parse_blind(response, prepared)
+
+    response["likelihood_evidence"].append({
+        "class_label": "MCI",
+        "state_id": "S01",
+        "relation": "counter",
+        "cited_metric_evidence_ids": ["metric:pause"],
+    })
+    assessment = _parse_blind(response, prepared)
+
+    assert agent_staging_evidence_strength(prepared, assessment) == pytest.approx(0.5)
 
 
 def test_reconciliation_rejects_cross_state_amendment_citations() -> None:

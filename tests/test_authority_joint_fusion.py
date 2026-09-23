@@ -35,6 +35,8 @@ def _fuse(**overrides):
         "blind_ordinal_scores": {"HC": 0, "MCI": 2, "AD": 4},
         "class_order": LABELS,
         "config": _config(),
+        "agent_evidence_strength": 1.0,
+        "agent_staging_evidence_strength": 1.0,
         "provenance": {"case_hash": "a" * 64, "blind_review_hash": "b" * 64},
     }
     values.update(overrides)
@@ -103,6 +105,41 @@ def test_conflict_aware_gate_keeps_agreement_at_exact_frozen_parity() -> None:
     )
     assert gated.agent_authority_gate == 0.0
     assert _bits(gated.fused_probabilities.values()) == _bits(frozen.values())
+
+
+def test_agent_scores_without_validated_evidence_are_strictly_neutral() -> None:
+    frozen = {"HC": 0.55, "MCI": 0.25, "AD": 0.20}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
+        agent_evidence_strength=0.0,
+        config=_config(state_strength=0.0, agent_strength=1.0, conflict_aware_gating=False),
+    )
+
+    assert result.agent_authority_gate == 0.0
+    assert result.frozen_parity
+    assert _bits(result.fused_probabilities.values()) == _bits(frozen.values())
+
+
+def test_uncertainty_is_eligibility_not_continuous_agent_amplification() -> None:
+    common = {
+        "pre_state_probabilities": {"HC": 0.5, "MCI": 0.3, "AD": 0.2},
+        "post_state_probabilities": {"HC": 0.5, "MCI": 0.3, "AD": 0.2},
+        "blind_ordinal_scores": {"HC": 0, "MCI": 3, "AD": 2},
+        "agent_evidence_strength": 0.6,
+        "config": _config(state_strength=0.0, agent_strength=1.0),
+    }
+    moderately_uncertain = _fuse(
+        frozen_probabilities={"HC": 0.60, "MCI": 0.25, "AD": 0.15}, **common
+    )
+    highly_uncertain = _fuse(
+        frozen_probabilities={"HC": 0.51, "MCI": 0.29, "AD": 0.20}, **common
+    )
+
+    assert moderately_uncertain.agent_authority_gate == pytest.approx(0.45)
+    assert highly_uncertain.agent_authority_gate == pytest.approx(0.45)
 
 
 def test_conflict_aware_gate_preserves_clear_counter_evidence() -> None:
@@ -202,13 +239,70 @@ def test_validated_staging_strength_can_change_mci_ad_odds_separately() -> None:
         blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
         config=_config(
             state_strength=0.0,
-            agent_strength=1.0,
+            agent_strength=0.0,
             staging_strength=1.0,
             conflict_aware_gating=False,
         ),
     )
 
     assert result.fused_probabilities["AD"] > result.fused_probabilities["MCI"]
+    assert result.fused_probabilities["HC"] == pytest.approx(frozen["HC"])
+    assert (
+        result.fused_probabilities["MCI"] + result.fused_probabilities["AD"]
+    ) == pytest.approx(frozen["MCI"] + frozen["AD"])
+
+
+def test_staging_scores_without_mci_ad_evidence_are_strictly_neutral() -> None:
+    frozen = {"HC": 0.20, "MCI": 0.40, "AD": 0.40}
+    result = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
+        agent_staging_evidence_strength=0.0,
+        config=_config(
+            state_strength=0.0,
+            agent_strength=0.0,
+            staging_strength=1.0,
+            conflict_aware_gating=False,
+        ),
+    )
+
+    assert result.staging_authority_gate == 0.0
+    assert result.fused_probabilities == frozen
+
+
+def test_staging_only_evidence_cannot_change_hc_screening_mass() -> None:
+    frozen = {"HC": 0.63, "MCI": 0.19, "AD": 0.18}
+    mci_favouring = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 4, "AD": 1},
+        config=_config(
+            state_strength=0.0,
+            agent_strength=0.0,
+            staging_strength=1.0,
+            conflict_aware_gating=False,
+        ),
+    )
+    ad_favouring = _fuse(
+        frozen_probabilities=frozen,
+        pre_state_probabilities=frozen,
+        post_state_probabilities=frozen,
+        blind_ordinal_scores={"HC": 0, "MCI": 1, "AD": 4},
+        config=_config(
+            state_strength=0.0,
+            agent_strength=0.0,
+            staging_strength=1.0,
+            conflict_aware_gating=False,
+        ),
+    )
+
+    assert mci_favouring.fused_probabilities["HC"] == pytest.approx(frozen["HC"])
+    assert ad_favouring.fused_probabilities["HC"] == pytest.approx(frozen["HC"])
+    assert mci_favouring.fused_probabilities["MCI"] > mci_favouring.fused_probabilities["AD"]
+    assert ad_favouring.fused_probabilities["AD"] > ad_favouring.fused_probabilities["MCI"]
 
 
 def test_route_specific_cognitive_stages_are_not_dropped() -> None:
@@ -335,6 +429,7 @@ def test_state_delta_is_bounded_and_zero_probabilities_remain_numerically_stable
         ({"pre_state_probabilities": {"HC": 0.5, "MCI": 0.3, "AD": 0.3}}, "must sum"),
         ({"blind_ordinal_scores": {"HC": 0, "MCI": 2, "AD": 5}}, "0 through 4"),
         ({"blind_ordinal_scores": {"HC": 0, "MCI": 2}}, "must contain"),
+        ({"agent_evidence_strength": 1.1}, "agent_evidence_strength"),
         ({"class_order": ("HC", "HC")}, "duplicate"),
     ],
 )

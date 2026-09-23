@@ -10,7 +10,15 @@ from pathlib import Path
 from advoice.authority_joint_fusion import AuthorityJointFusionConfig, fuse_authority_joint
 
 
-def replay_audit(source: Path, *, channel: str) -> dict:
+PILOT_STATUS = "non_deployable_unvalidated_historical_replay"
+
+
+def replay_audit(
+    source: Path,
+    *,
+    channel: str,
+    allow_unvalidated_pilot: bool = False,
+) -> dict:
     payload = source.read_bytes()
     original = json.loads(payload)
     records = []
@@ -20,13 +28,26 @@ def replay_audit(source: Path, *, channel: str) -> dict:
             skipped.append(case["case_id"])
             continue
         old = case["fusion"]
+        historical_config = AuthorityJointFusionConfig(**old["config"])
+        if any(
+            value > 0.0 for value in (
+                historical_config.state_strength,
+                historical_config.agent_strength,
+                historical_config.staging_strength,
+            )
+        ) and not allow_unvalidated_pilot:
+            raise ValueError(
+                "Refusing to replay nonzero historical authority without "
+                "--allow-unvalidated-pilot. Use the calibrated cohort runner "
+                "for deployable evaluation."
+            )
         result = fuse_authority_joint(
             case["frozen"]["probabilities"],
             case["pre_state"]["probabilities"],
             case["post_state"]["probabilities"],
             old["blind_ordinal_scores"],
             class_order=case["prepared"]["class_order"],
-            config=AuthorityJointFusionConfig(**old["config"]),
+            config=historical_config,
             channel=channel,
             provenance=old.get("provenance", {}),
         )
@@ -40,6 +61,9 @@ def replay_audit(source: Path, *, channel: str) -> dict:
         })
     return {
         "schema_version": "advoice.offline_fusion_replay.v1",
+        "deployment_status": PILOT_STATUS,
+        "publication_eligible": False,
+        "calibrated_authority": False,
         "purpose": "Engineering replay of previously inspected cases; not a fresh performance estimate.",
         "source_sha256": hashlib.sha256(payload).hexdigest(),
         "source_study_hash": original.get("study_hash"),
@@ -60,8 +84,17 @@ def main() -> None:
     parser.add_argument("source", type=Path, help="Existing case_audit.json")
     parser.add_argument("--channel", required=True, help="Original observation channel; never guessed")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--allow-unvalidated-pilot",
+        action="store_true",
+        help="Acknowledge that historical nonzero strengths are uncalibrated and non-deployable.",
+    )
     args = parser.parse_args()
-    result = replay_audit(args.source, channel=args.channel)
+    result = replay_audit(
+        args.source,
+        channel=args.channel,
+        allow_unvalidated_pilot=args.allow_unvalidated_pilot,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Preserve every original audit and refuse accidental replacement.
     with args.output.open("x", encoding="utf-8") as handle:

@@ -25,7 +25,7 @@ from typing import Any
 from .utils import hash_values
 
 
-AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v4-hierarchical-stage"
+AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v5-evidence-bound"
 PROBABILITY_FLOOR = 1e-12
 _FORBIDDEN_PROVENANCE_TOKENS = frozenset({"label", "labels", "truth", "ground_truth", "target"})
 
@@ -229,6 +229,8 @@ class AuthorityJointFusionResult:
     pre_state_probabilities: Mapping[str, float]
     post_state_probabilities: Mapping[str, float]
     blind_ordinal_scores: Mapping[str, int]
+    agent_evidence_strength: float
+    agent_staging_evidence_strength: float
     state_log_evidence: Mapping[str, float]
     bounded_state_log_evidence: Mapping[str, float]
     agent_log_evidence: Mapping[str, float]
@@ -275,6 +277,8 @@ class AuthorityJointFusionResult:
             "pre_state_probabilities": dict(self.pre_state_probabilities),
             "post_state_probabilities": dict(self.post_state_probabilities),
             "blind_ordinal_scores": dict(self.blind_ordinal_scores),
+            "agent_evidence_strength": self.agent_evidence_strength,
+            "agent_staging_evidence_strength": self.agent_staging_evidence_strength,
             "state_log_evidence": dict(self.state_log_evidence),
             "bounded_state_log_evidence": dict(self.bounded_state_log_evidence),
             "agent_log_evidence": dict(self.agent_log_evidence),
@@ -306,6 +310,8 @@ def fuse_authority_joint(
     *,
     class_order: Sequence[str],
     config: AuthorityJointFusionConfig,
+    agent_evidence_strength: float = 0.0,
+    agent_staging_evidence_strength: float = 0.0,
     channel: str | None = None,
     provenance: Mapping[str, Any] | None = None,
 ) -> AuthorityJointFusionResult:
@@ -327,6 +333,18 @@ def fuse_authority_joint(
         post_state_probabilities, class_order=labels, name="post_state_probabilities"
     )
     ordinal = _ordinal_vector(blind_ordinal_scores, class_order=labels)
+    evidence_strength = _finite_real(
+        agent_evidence_strength, name="agent_evidence_strength"
+    )
+    if not 0.0 <= evidence_strength <= 1.0:
+        raise AuthorityJointFusionError("agent_evidence_strength must be in [0, 1].")
+    staging_evidence_strength = _finite_real(
+        agent_staging_evidence_strength, name="agent_staging_evidence_strength"
+    )
+    if not 0.0 <= staging_evidence_strength <= 1.0:
+        raise AuthorityJointFusionError(
+            "agent_staging_evidence_strength must be in [0, 1]."
+        )
     normalized_channel = "unknown" if channel is None else str(channel).strip().lower()
     if not normalized_channel:
         normalized_channel = "unknown"
@@ -437,12 +455,13 @@ def fuse_authority_joint(
         staging_likelihood = tuple(staging_likelihood_values)
         staging_neutral = (
             config.staging_strength == 0.0
+            or staging_evidence_strength == 0.0
             or ordinal[mci_index] == ordinal[ad_index]
             or report_only_channel
         )
         if not staging_neutral:
             if not config.conflict_aware_gating:
-                staging_gate = 1.0
+                staging_gate = staging_evidence_strength
             else:
                 impaired_mass = frozen[mci_index] + frozen[ad_index]
                 conditional_stage = (
@@ -459,15 +478,19 @@ def fuse_authority_joint(
                 stage_margin = abs(ordinal[mci_index] - ordinal[ad_index]) / 4.0
                 if frozen_stage_index != agent_stage_index:
                     if staging_uncertainty >= config.min_frozen_uncertainty:
-                        staging_gate = staging_uncertainty * stage_margin
+                        staging_gate = staging_evidence_strength * stage_margin
                     elif stage_margin >= config.min_counterevidence_margin:
-                        staging_gate = stage_margin
+                        staging_gate = staging_evidence_strength * stage_margin
         staging_neutral = staging_neutral or staging_gate == 0.0
-    agent_neutral = config.agent_strength == 0.0 or len(set(ordinal)) == 1
+    agent_neutral = (
+        config.agent_strength == 0.0
+        or evidence_strength == 0.0
+        or len(set(ordinal)) == 1
+    )
     if agent_neutral or report_only_channel:
         agent_gate = 0.0
     elif not config.conflict_aware_gating:
-        agent_gate = 1.0
+        agent_gate = evidence_strength
     else:
         if is_three_stage:
             frozen_top_is_impaired = math.fsum(
@@ -487,10 +510,14 @@ def fuse_authority_joint(
             agent_gate = 0.0
         elif agent_agrees:
             agent_gate = 0.0
-        elif frozen_uncertainty >= config.min_frozen_uncertainty:
-            agent_gate = frozen_uncertainty * agent_margin
-        elif agent_margin >= config.min_counterevidence_margin:
-            agent_gate = agent_margin
+        elif (
+            frozen_uncertainty >= config.min_frozen_uncertainty
+            or agent_margin >= config.min_counterevidence_margin
+        ):
+            # Supervised uncertainty is an eligibility condition only.  The
+            # amount of Agent authority comes from validated cited evidence,
+            # not from weakness of the supervised model.
+            agent_gate = evidence_strength * agent_margin
         else:
             agent_gate = 0.0
     agent_neutral = agent_neutral or agent_gate == 0.0
@@ -502,6 +529,8 @@ def fuse_authority_joint(
         "pre_state_probabilities": list(pre_state),
         "post_state_probabilities": list(post_state),
         "blind_ordinal_scores": list(ordinal),
+        "agent_evidence_strength": evidence_strength,
+        "agent_staging_evidence_strength": staging_evidence_strength,
         "channel": normalized_channel,
         "fusion_route": "three_class_screening" if is_three_stage else "class_likelihood",
         "config": config.to_dict(),
@@ -512,6 +541,47 @@ def fuse_authority_joint(
     frozen_parity = state_neutral and agent_neutral and staging_neutral
     if frozen_parity:
         fused = frozen
+    elif is_three_stage:
+        # Preserve the two clinically distinct decisions explicitly:
+        # (1) HC versus cognitive impairment and (2) MCI versus AD conditional
+        # on impairment.  A staging-only intervention must never change the HC
+        # mass, while screening evidence must preserve the frozen MCI:AD ratio.
+        mci_index, ad_index = impaired_indices
+        frozen_impaired = frozen[mci_index] + frozen[ad_index]
+        screening_adjustment = (
+            (0.0 if state_neutral else config.state_strength * state_gate * (
+                bounded_state[mci_index] - bounded_state[hc_index]
+            ))
+            + (0.0 if agent_neutral else config.agent_strength * agent_gate * (
+                agent_log[mci_index] - agent_log[hc_index]
+            ))
+        )
+        impaired_logit = _logit(frozen_impaired) + screening_adjustment
+        fused_impaired = 1.0 / (1.0 + math.exp(-impaired_logit))
+
+        if frozen_impaired > 0.0:
+            frozen_stage = (
+                frozen[mci_index] / frozen_impaired,
+                frozen[ad_index] / frozen_impaired,
+            )
+        else:
+            frozen_stage = (0.5, 0.5)
+        if staging_neutral:
+            fused_stage = frozen_stage
+        else:
+            stage_logits = (
+                math.log(max(frozen_stage[0], PROBABILITY_FLOOR))
+                + config.staging_strength * staging_gate * staging_log[mci_index],
+                math.log(max(frozen_stage[1], PROBABILITY_FLOOR))
+                + config.staging_strength * staging_gate * staging_log[ad_index],
+            )
+            fused_stage = _softmax(stage_logits)
+
+        fused_values = [0.0 for _ in labels]
+        fused_values[hc_index] = 1.0 - fused_impaired
+        fused_values[mci_index] = fused_impaired * fused_stage[0]
+        fused_values[ad_index] = fused_impaired * fused_stage[1]
+        fused = tuple(fused_values)
     else:
         logits = tuple(
             math.log(max(base, PROBABILITY_FLOOR))
@@ -551,6 +621,8 @@ def fuse_authority_joint(
         pre_state_probabilities=_ordered(labels, pre_state),
         post_state_probabilities=_ordered(labels, post_state),
         blind_ordinal_scores=_ordered(labels, ordinal),
+        agent_evidence_strength=evidence_strength,
+        agent_staging_evidence_strength=staging_evidence_strength,
         state_log_evidence=_ordered(labels, centered_state),
         bounded_state_log_evidence=_ordered(labels, bounded_state),
         agent_log_evidence=_ordered(labels, agent_log),

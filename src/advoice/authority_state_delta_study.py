@@ -27,9 +27,12 @@ from .authority_review_runtime import (
     AuthorityReviewRuntime,
     REVIEW_AVAILABLE,
     REVIEW_MODE_SINGLE_BLIND,
+    agent_evidence_strength,
+    agent_staging_evidence_strength,
 )
 from .authority_review_transaction_bridge import compile_authority_review_decision
 from .authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
+from .calibration_registry import validate_registered_calibration_artifact
 from .authority_joint_fusion import (
     AUTHORITY_JOINT_FUSION_SCHEMA_VERSION,
     AuthorityJointFusionConfig,
@@ -82,6 +85,7 @@ class AuthorityStateDeltaStudyConfig:
     selection_salt: str = "authority-pilot-v1"
     max_cases: int | None = None
     calibration_artifact_hash: str | None = None
+    calibration_artifact: Mapping[str, Any] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.joint_fusion, AuthorityJointFusionConfig):
@@ -100,6 +104,61 @@ class AuthorityStateDeltaStudyConfig:
             value = self.calibration_artifact_hash
             if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                 raise ValueError("calibration_artifact_hash must be a lowercase SHA-256 hex digest.")
+        nonzero_strengths = any(
+            value > 0.0 for value in (
+                self.joint_fusion.state_strength,
+                self.joint_fusion.agent_strength,
+                self.joint_fusion.staging_strength,
+            )
+        )
+        if nonzero_strengths and self.calibration_artifact is None:
+            raise ValueError(
+                "Nonzero fusion strengths require the validated calibration artifact, not only its hash."
+            )
+        if self.calibration_artifact is not None:
+            artifact = dict(self.calibration_artifact)
+            actual_hash = hash_artifact(artifact)
+            if self.calibration_artifact_hash != actual_hash:
+                raise ValueError("Calibration artifact content does not match calibration_artifact_hash.")
+            if nonzero_strengths:
+                calibrated_config = artifact.get("joint_fusion_config")
+                if not isinstance(calibrated_config, Mapping):
+                    raise ValueError(
+                        "Calibration artifact requires the complete joint_fusion_config."
+                    )
+                expected_config = self.joint_fusion.to_dict()
+                if dict(calibrated_config) != expected_config:
+                    raise ValueError(
+                        "Calibration artifact joint_fusion_config does not match the runtime config."
+                    )
+                if artifact.get("joint_fusion_config_hash") != hash_artifact(expected_config):
+                    raise ValueError(
+                        "Calibration artifact joint_fusion_config_hash is invalid."
+                    )
+            if self.joint_fusion.agent_strength > 0.0 or self.joint_fusion.staging_strength > 0.0:
+                if artifact.get("selection_status") != "validated_joint_gain":
+                    raise ValueError("Agent calibration is not validated for joint gain.")
+                expected = {
+                    "selected_screening_strength": self.joint_fusion.agent_strength,
+                    "selected_staging_strength": self.joint_fusion.staging_strength,
+                }
+                for key, value in expected.items():
+                    raw_value = artifact.get(key)
+                    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+                        raise ValueError(f"Calibration artifact {key} must be numeric.")
+                    if float(raw_value) != value:
+                        raise ValueError(f"Calibration artifact {key} does not match fusion config.")
+            if self.joint_fusion.state_strength > 0.0:
+                if artifact.get("state_selection_status") != "validated_joint_gain":
+                    raise ValueError("State replay calibration is not validated for joint gain.")
+                raw_state_strength = artifact.get("selected_state_strength")
+                if isinstance(raw_state_strength, bool) or not isinstance(raw_state_strength, (int, float)):
+                    raise ValueError("Calibration artifact selected_state_strength must be numeric.")
+                if float(raw_state_strength) != self.joint_fusion.state_strength:
+                    raise ValueError(
+                        "Calibration artifact selected_state_strength does not match fusion config."
+                    )
+            object.__setattr__(self, "calibration_artifact", artifact)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +244,26 @@ def run_authority_state_delta_cohort(
     selected_config = config or AuthorityStateDeltaStudyConfig()
     if not isinstance(selected_config, AuthorityStateDeltaStudyConfig):
         raise TypeError("config must be an AuthorityStateDeltaStudyConfig.")
+    if any(
+        value > 0.0 for value in (
+            selected_config.joint_fusion.state_strength,
+            selected_config.joint_fusion.agent_strength,
+            selected_config.joint_fusion.staging_strength,
+        )
+    ):
+        artifact = selected_config.calibration_artifact or {}
+        if artifact.get("deployment_context_hash") != _calibration_context_hash(
+            dataset,
+            runtime,
+            selected_config.joint_fusion,
+        ):
+            raise AuthorityStateDeltaStudyError(
+                "Calibration artifact does not match the current dataset, endpoint, runtime, and policy identity."
+            )
+        validate_registered_calibration_artifact(
+            artifact,
+            artifact_hash=str(selected_config.calibration_artifact_hash),
+        )
 
     root = Path(output_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -325,6 +404,14 @@ def _run_case(
             blind_assessment.ordinal_scores,
             class_order=frozen_packet.class_order,
             config=study_config.joint_fusion,
+            agent_evidence_strength=agent_evidence_strength(
+                prepared,
+                blind_assessment,
+            ),
+            agent_staging_evidence_strength=agent_staging_evidence_strength(
+                prepared,
+                blind_assessment,
+            ),
             channel=str(prepared.case_metadata.get("channel", "unknown")),
             provenance={
                 "frozen_packet_hash": _packet_hash(frozen_packet),
@@ -435,6 +522,14 @@ def _packet_audit(packet: ExplanationPacket) -> dict[str, Any]:
 
 
 def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
+    if fusion.config.agent_strength == 0.0:
+        agent_prediction_status = "inactive_unvalidated_strength"
+    elif fusion.agent_evidence_strength == 0.0:
+        agent_prediction_status = "blocked_no_validated_evidence"
+    elif fusion.agent_authority_gate > 0.0 or fusion.staging_authority_gate > 0.0:
+        agent_prediction_status = "active"
+    else:
+        agent_prediction_status = "eligible_but_not_applied"
     return {
         "schema_version": fusion.schema_version,
         "audit_hash": fusion.audit_hash,
@@ -457,6 +552,9 @@ def _fusion_audit(fusion: AuthorityJointFusionResult) -> dict[str, Any]:
         "staging_component_neutral": fusion.staging_component_neutral,
         "staging_authority_gate": fusion.staging_authority_gate,
         "blind_ordinal_scores": dict(fusion.blind_ordinal_scores),
+        "agent_evidence_strength": fusion.agent_evidence_strength,
+        "agent_staging_evidence_strength": fusion.agent_staging_evidence_strength,
+        "agent_prediction_status": agent_prediction_status,
         "config": fusion.config.to_dict(),
         "provenance": dict(fusion.provenance),
     }
@@ -642,6 +740,35 @@ def _runtime_study_identity(runtime: ReviewRuntime | None) -> Mapping[str, Any] 
         "model": str(getattr(runtime, "model", "test_or_unspecified")),
         "review_mode": str(getattr(runtime, "review_mode", "legacy_or_test_runtime")),
     }
+
+
+def _calibration_context_hash(
+    dataset: AuthorityStudyDataset,
+    runtime: ReviewRuntime,
+    joint_fusion: AuthorityJointFusionConfig = DEFAULT_JOINT_FUSION_CONFIG,
+) -> str:
+    """Bind development calibration to the deployed endpoint and Agent policy."""
+
+    frozen_hashes = dict(getattr(dataset.frozen, "artifact_hashes", {}) or {})
+    advisor_hashes = dict(getattr(dataset.advisor, "artifact_hashes", {}) or {})
+    module_a = dataset.executor.module_a
+    module_a_snapshot_hash = str(getattr(module_a, "artifact_snapshot_hash_", ""))
+    states_config = getattr(dataset.executor, "states_config", {})
+    correlation_config = getattr(dataset.executor, "correlation_config", None)
+    return hash_artifact({
+        "fusion_schema_version": AUTHORITY_JOINT_FUSION_SCHEMA_VERSION,
+        "dataset_id": dataset.advisor.dataset_id,
+        "class_order": list(dataset.class_order),
+        "frozen_artifact_hashes": frozen_hashes,
+        "condition_c_artifact_hashes": advisor_hashes,
+        "module_a_snapshot_hash": module_a_snapshot_hash,
+        "states_config_hash": hash_artifact(states_config),
+        "correlation_config_hash": (
+            None if correlation_config is None else hash_artifact(correlation_config)
+        ),
+        "joint_fusion_config_hash": hash_artifact(joint_fusion.to_dict()),
+        "runtime": _runtime_study_identity(runtime),
+    })
 
 
 def _assert_unique_case_ids(cases: Sequence[PreparedAuthorityStudyCase]) -> None:

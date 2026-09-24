@@ -58,7 +58,8 @@ def _normalise(row: Mapping[str, Any]) -> dict[str, str]:
     required = {"dataset_id", "source_id", "subject_id", "source_group_id", "label", "language", "raw_path"}
     if required - set(row):
         raise ManifestError(f"Source inventory is missing fields: {','.join(sorted(required - set(row)))}")
-    keys = (*required, "transcript_path", "task_id", "source_split", "source_version", "source_track", "raw_hash",
+    keys = (*required, "transcript_path", "transcript_availability", "transcript_provenance",
+            "task_id", "source_split", "source_version", "source_track", "raw_hash",
             "source_provenance_hash", "source_quality_flag", "quality_provenance_hash")
     value = {key: str(row.get(key, "")) for key in keys}
     value["raw_hash"] = value["raw_hash"] or hashlib.sha256(value["raw_path"].encode()).hexdigest()
@@ -66,6 +67,8 @@ def _normalise(row: Mapping[str, Any]) -> dict[str, str]:
     value["source_split"] = value["source_split"] or "development"
     value["source_version"] = value["source_version"] or "metadata_v1"
     value["source_track"] = value["source_track"] or "primary"
+    value["transcript_availability"] = value["transcript_availability"] or "not_declared"
+    value["transcript_provenance"] = value["transcript_provenance"] or "not_declared"
     return value
 
 
@@ -92,6 +95,17 @@ def _groups(rows: Sequence[dict[str, str]]) -> list[dict[str, Any]]:
                        "task_ids": tuple(sorted({m["task_id"] for m in members})),
                        "raw_hashes": tuple(sorted({m["raw_hash"] for m in members})), "rows": tuple(members)})
     return output
+
+
+def _canary_candidates(grouped: Sequence[dict[str, Any]], source: Sequence[Mapping[str, str]],
+                       analytical_groups: set[tuple[str, str]], analytical_hashes: set[str]) -> list[dict[str, Any]]:
+    reserved = [row for row in source if row["source_split"] == "excluded"]
+    reserved_groups = {(row["dataset_id"], row["source_group_id"]) for row in reserved}
+    reserved_hashes = {row["raw_hash"] for row in reserved}
+    return [row for row in grouped if row["dataset_id"] == "PREPARE_DrivenData"
+            and row["rows"][0]["source_split"] == "development"
+            and (row["dataset_id"], row["source_group_id"]) not in analytical_groups | reserved_groups
+            and not (set(row["raw_hashes"]) & (analytical_hashes | reserved_hashes))]
 
 
 def _take(rows: Sequence[dict[str, Any]], count: int, seed: int) -> list[dict[str, Any]]:
@@ -179,6 +193,15 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
     seed, n_splits = int(config.get("seed", SEED)), int(config.get("n_splits", 5))
     source = sorted((_normalise(row) for row in source_inventory), key=_sort_source)
     prepare = _prepare_audit(config, source)
+    collisions = [row for row in source if row["source_split"] == "identity_collision"]
+    if collisions:
+        groups = defaultdict(list)
+        for row in collisions:
+            groups[(row["dataset_id"], row["source_group_id"])].append(row)
+        unresolved = [members for members in groups.values()
+                      if len({row["label"] for row in members}) > 1 or len({row["raw_hash"] for row in members}) > 1]
+        if unresolved:
+            raise ManifestError("Unresolved source identity collisions block the affected cohort.")
     eligible, exclusions, reasons = [], [], Counter()
     for row in source:
         reason = ("six_second_track" if row["source_track"] == "six_second" else
@@ -200,7 +223,12 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
     audit = {"seed": seed, "n_splits": n_splits, "source_records": len(source),
              "source_records_by_dataset_track": {f"{d}:{t}": n for (d, t), n in sorted(Counter((r["dataset_id"], r["source_track"]) for r in source).items())},
              "excluded_records": len(exclusions), "exclusion_reason_counts": dict(sorted(reasons.items())),
-             "prepare_invalid_uid_provenance": prepare, "cohorts": {}, "canary_gap": 12}
+             "prepare_invalid_uid_provenance": prepare,
+             "transcript_availability_counts": {f"{d}:{status}": n for (d, status), n in sorted(
+                 Counter((r["dataset_id"], r["transcript_availability"]) for r in source).items())},
+             "cohorts": {}}
+    analytical_groups: set[tuple[str, str]] = set()
+    analytical_hashes: set[str] = set()
     for offset, (dataset, (total, holdout_n)) in enumerate(CORE_COHORTS.items()):
         candidates = [r for r in grouped if r["dataset_id"] == dataset and r["rows"][0]["source_split"] == "development"]
         selected = _take(candidates, total, seed + offset)
@@ -212,6 +240,8 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
             held = row["source_group_id"] in holdout
             output.append(_subject(row, "holdout" if held else "development", task, order,
                                    "not_applicable" if held else fold_map[row["source_group_id"]]).to_dict())
+            analytical_groups.add((row["dataset_id"], row["source_group_id"]))
+            analytical_hashes.update(row["raw_hashes"])
         audit["cohorts"][dataset] = {"selected": total, "development": total - holdout_n, "holdout": holdout_n,
                                        "source_pool": len(candidates), "development_fold_counts": dict(sorted(Counter(fold_map.values()).items()))}
     for offset, (dataset, count) in enumerate(STRESS_COHORTS.items()):
@@ -220,6 +250,19 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
         task, order = _task({r["label"] for r in selected})
         output.extend(_subject(row, "stress", task, order, "not_applicable").to_dict() for row in selected)
         audit["cohorts"][dataset] = {"selected": count, "stress": count, "source_pool": len(candidates)}
+        for row in selected:
+            analytical_groups.add((row["dataset_id"], row["source_group_id"]))
+            analytical_hashes.update(row["raw_hashes"])
+    prepare_candidates = [row for row in grouped if row["dataset_id"] == "PREPARE_DrivenData"
+                          and row["rows"][0]["source_split"] == "development"]
+    prepare_unused = _canary_candidates(grouped, source, analytical_groups, analytical_hashes)
+    canary_count = min(12, len(prepare_unused))
+    canaries = _take(prepare_unused, canary_count, seed + 400) if canary_count else []
+    if canaries:
+        task, order = _task({row["label"] for row in prepare_candidates})
+        output.extend(_subject(row, "engineering_canary", task, order, "not_applicable").to_dict() for row in canaries)
+    audit["cohorts"]["engineering_canary"] = {"selected": canary_count, "source_pool": len(prepare_unused),
+                                                   "gap": 12 - canary_count, "source_dataset": "PREPARE_DrivenData"}
     groups, assets = defaultdict(set), defaultdict(set)
     for row in output:
         groups[row["source_group_id"]].add(row["partition"])
@@ -267,6 +310,10 @@ def actual_source_inventory(raw_root: str | Path, historical_root: str | Path) -
             inventory.append({"dataset_id": dataset, "source_id": row.get("case_id", ""), "subject_id": row.get("subject_id", ""),
                               "source_group_id": row.get("source_identity_key") or row.get("subject_id", ""), "label": row.get("label", ""),
                               "language": row.get("language", "und"), "raw_path": str(path.resolve()), "transcript_path": row.get("transcript_path", ""),
+                              "transcript_availability": ("available" if row.get("transcript_path") and Path(row["transcript_path"]).is_file()
+                                                          else "missing_path" if row.get("transcript_path") else "not_available"),
+                              "transcript_provenance": ("historical_manifest_verified" if row.get("transcript_path") and Path(row["transcript_path"]).is_file()
+                                                        else "historical_manifest_missing" if row.get("transcript_path") else "dataset_declares_no_source_transcript"),
                               "task_id": row.get("task_type", "overall"), "source_split": split,
                               "source_track": "long" if dataset == "NCMMSC2021_AD" else "primary", "raw_hash": row.get("audio_sha256", ""),
                               "source_version": "historical_manifest_boundary_v1", "source_provenance_hash": provenance,
@@ -275,7 +322,13 @@ def actual_source_inventory(raw_root: str | Path, historical_root: str | Path) -
     known = {Path(r["raw_path"]).resolve() for r in inventory if r["dataset_id"] == "NCMMSC2021_AD"}
     config_hash = _sha(Path(__file__).resolve().parents[3] / "configs/datasets/NCMMSC2021_AD.yaml")
     for track, root in (("six_second", ncm_root / "AD_dataset_6s"), ("long", ncm_root / "AD_dataset_long")):
-        files = sorted(p.resolve() for p in root.rglob("*") if p.is_file() and (track == "six_second" or p.suffix.lower() in _AUDIO))
+        all_files = sorted(p.resolve() for p in root.rglob("*") if p.is_file())
+        files = [p for p in all_files if p.suffix.lower() in _AUDIO]
+        for path in all_files:
+            if path.suffix.lower() not in _AUDIO:
+                pre_exclusions.append({"dataset_id": "NCMMSC2021_AD",
+                    "source_id": _pseudo("src", "NCMMSC2021_AD", str(path.relative_to(ncm_root))),
+                    "reason": "filesystem_metadata_ignored"})
         for path in files:
             if path in known:
                 continue
@@ -283,6 +336,7 @@ def actual_source_inventory(raw_root: str | Path, historical_root: str | Path) -
             split = "identity_collision" if track == "long" and "train" in path.relative_to(ncm_root).parts else "excluded"
             inventory.append({"dataset_id": "NCMMSC2021_AD", "source_id": str(path.relative_to(ncm_root)), "subject_id": subject,
                               "source_group_id": group, "label": label, "language": "zh", "raw_path": str(path), "transcript_path": "",
+                              "transcript_availability": "not_available", "transcript_provenance": "dataset_declares_generated_asr_only",
                               "task_id": "six_second_challenge" if track == "six_second" else "long_picture_description", "source_split": split,
                               "source_track": track, "raw_hash": _sha(path), "source_version": "ncmmsc_raw_tree_v1", "source_provenance_hash": config_hash})
     prepare_root = raw / "DementiaBank_Challenges/PREPARE_DrivenData"
@@ -301,7 +355,9 @@ def actual_source_inventory(raw_root: str | Path, historical_root: str | Path) -
         audio = next((p.resolve() for p in sorted((prepare_root / "_harness_extracted/train").glob(f"{uid}.*")) if p.suffix.lower() in _AUDIO), None)
         inventory.append({"dataset_id": "PREPARE_DrivenData", "source_id": uid, "subject_id": uid, "source_group_id": uid,
                           "label": label_map[row["diagnosis"]], "language": row.get("language", "und"), "raw_path": str(audio) if audio else "",
-                          "transcript_path": "", "task_id": tasks.get(uid, {}).get("task", "overall"), "source_split": "invalid", "source_track": "primary",
+                          "transcript_path": "", "transcript_availability": "not_available",
+                          "transcript_provenance": "dataset_declares_generated_asr_only",
+                          "task_id": tasks.get(uid, {}).get("task", "overall"), "source_split": "invalid", "source_track": "primary",
                           "raw_hash": _sha(audio) if audio else hashlib.sha256(uid.encode()).hexdigest(), "source_version": PREPARE_TASK_SOURCE_VERSION,
                           "source_provenance_hash": task_hash, "source_quality_flag": tasks.get(uid, {}).get("valid", ""),
                           "quality_provenance_hash": task_hash})
@@ -333,6 +389,13 @@ def load_sealed_scoring_labels(path: str | Path) -> tuple[LabelRow, ...]:
     rows = read_labels_jsonl(Path(path).read_bytes().splitlines(), purpose="scoring")
     if any(row.subject.partition not in {"holdout", "stress"} for row in rows):
         raise PilotContractError("Scoring label capability cannot load development truth.")
+    return rows
+
+
+def load_canary_labels(path: str | Path) -> tuple[LabelRow, ...]:
+    rows = read_labels_jsonl(Path(path).read_bytes().splitlines(), purpose="training")
+    if any(row.subject.partition != "engineering_canary" for row in rows):
+        raise PilotContractError("Canary label capability is restricted to engineering canaries.")
     return rows
 
 
@@ -371,21 +434,87 @@ def write_pilot_artifacts(output_dir: str | Path, source_inventory: Sequence[Map
     _write_labels(output / "development_labels.jsonl", [r for r in labels if r.subject.partition == "development"], "training")
     _write_labels(output / "sealed_holdout_labels.jsonl", [r for r in labels if r.subject.partition == "holdout"], "scoring")
     _write_labels(output / "sealed_stress_labels.jsonl", [r for r in labels if r.subject.partition == "stress"], "scoring")
+    _write_labels(output / "canary_labels.jsonl", [r for r in labels if r.subject.partition == "engineering_canary"], "training")
     _write_csv(output / "exclusions.csv", sorted(exclusions, key=lambda r: (r["dataset_id"], r["reason"], r["source_id"])), ("dataset_id", "source_id", "reason"))
     (output / "identity_audit.json").write_bytes(_canonical(dict(audit)))
     cache = {"global_references": "ineligible", "historical_in_sample_predictions": "ineligible", "old_state_normalization": "ineligible",
              "raw_deterministic_metrics": "eligible_with_verified_raw_hash", "unadapted_encoder_outputs": "eligible_with_verified_source_provenance"}
     (output / "cache_provenance.json").write_bytes(_canonical(cache))
     names = ("source_index.jsonl", "split_manifest.csv", "folds.csv", "development_labels.jsonl", "sealed_holdout_labels.jsonl",
-             "sealed_stress_labels.jsonl", "exclusions.csv", "identity_audit.json", "cache_provenance.json")
+             "sealed_stress_labels.jsonl", "canary_labels.jsonl", "exclusions.csv", "identity_audit.json", "cache_provenance.json")
     (output / "sha256_manifest.json").write_bytes(_canonical({"algorithm": "sha256", "files": {name: _sha(output / name) for name in sorted(names)}}))
     return {name: output / name for name in (*names, "sha256_manifest.json")}
+
+
+def _write_blocked_inventory(output_dir: str | Path, source: Sequence[Mapping[str, Any]], initial: Sequence[Mapping[str, str]],
+                             config: Mapping[str, Any]) -> None:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    normalized_source = sorted((_normalise(row) for row in source), key=_sort_source)
+    stale = ("split_manifest.csv", "folds.csv", "development_labels.jsonl", "sealed_holdout_labels.jsonl",
+             "sealed_stress_labels.jsonl", "canary_labels.jsonl", "labels.csv", "sha256_manifest.json")
+    for name in stale:
+        path = output / name
+        if path.exists():
+            path.unlink()
+    source_path = output / "source_index.jsonl"
+    source_path.write_text("".join(_canonical(row).decode() + "\n" for row in normalized_source), encoding="utf-8")
+    source_path.chmod(0o600)
+    exclusions = list(initial)
+    collision_groups: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in normalized_source:
+        reason = ("six_second_track" if row["source_track"] == "six_second" else
+                  "source_identity_collision" if row["source_split"] == "identity_collision" else
+                  "prepare_invalid_uid" if row["dataset_id"] == "PREPARE_DrivenData" and row["source_split"] == "invalid" else
+                  "source_cohort_excluded" if row["source_split"] not in {"development", "stress"} else "")
+        if reason:
+            exclusions.append({"dataset_id": row["dataset_id"], "source_id": _pseudo("src", row["dataset_id"], row["source_id"]), "reason": reason})
+        if row["source_split"] == "identity_collision":
+            collision_groups[(row["dataset_id"], row["source_group_id"])].append(row)
+    exclusions.sort(key=lambda row: (row["dataset_id"], row["reason"], row["source_id"]))
+    _write_csv(output / "exclusions.csv", exclusions, ("dataset_id", "source_id", "reason"))
+    eligible = [row for row in normalized_source if row["source_split"] in {"development", "stress"}
+                and row["source_track"] != "six_second" and row["raw_path"]]
+    grouped = _groups(eligible)
+    prepare_pool = [row for row in grouped if row["dataset_id"] == "PREPARE_DrivenData"
+                    and row["rows"][0]["source_split"] == "development"]
+    prepare_selected = _take(prepare_pool, CORE_COHORTS["PREPARE_DrivenData"][0], int(config.get("seed", SEED)))
+    prepare_groups = {(row["dataset_id"], row["source_group_id"]) for row in prepare_selected}
+    prepare_hashes = {digest for row in prepare_selected for digest in row["raw_hashes"]}
+    canary_pool = _canary_candidates(grouped, normalized_source, prepare_groups, prepare_hashes)
+    exclusion_counts = Counter(row["reason"] for row in exclusions)
+    audit = {"status": "blocked", "blocking_reason": "unresolved_source_identity_collision",
+             "source_records": len(normalized_source),
+             "source_records_by_dataset_track": {f"{d}:{t}": n for (d, t), n in sorted(Counter((r["dataset_id"], r["source_track"]) for r in normalized_source).items())},
+             "exclusion_reason_counts": dict(sorted(exclusion_counts.items())),
+             "prepare_invalid_uid_provenance": _prepare_audit(config, normalized_source),
+             "transcript_availability_counts": {f"{d}:{status}": n for (d, status), n in sorted(Counter((r["dataset_id"], r["transcript_availability"]) for r in normalized_source).items())},
+             "filesystem_metadata_ignored": sum(row["reason"] == "filesystem_metadata_ignored" for row in initial),
+             "engineering_canary_reservation": {"requested": 12, "available_after_prepare_analytical_reservation": len(canary_pool),
+                                                  "status": "not_frozen_due_to_block"},
+             "collision_groups": [{"dataset_id": dataset, "source_group_id": _pseudo("grp", dataset, group),
+                 "record_count": len(rows), "distinct_label_count": len({row["label"] for row in rows}),
+                 "distinct_hash_count": len({row["raw_hash"] for row in rows}),
+                 "source_ids": sorted(_pseudo("src", dataset, row["source_id"]) for row in rows),
+                 "resolution": "unresolved_conflicting_identity_and_label"}
+                for (dataset, group), rows in sorted(collision_groups.items())]}
+    (output / "identity_audit.json").write_bytes(_canonical(audit))
+    cache = {"global_references": "ineligible", "historical_in_sample_predictions": "ineligible", "old_state_normalization": "ineligible",
+             "raw_deterministic_metrics": "eligible_with_verified_raw_hash", "unadapted_encoder_outputs": "eligible_with_verified_source_provenance"}
+    (output / "cache_provenance.json").write_bytes(_canonical(cache))
+    names = ("source_index.jsonl", "exclusions.csv", "identity_audit.json", "cache_provenance.json")
+    (output / "sha256_manifest.json").write_bytes(_canonical({"algorithm": "sha256", "status": "blocked",
+        "files": {name: _sha(output / name) for name in sorted(names)}}))
 
 
 def freeze_actual_pilot_data(*, raw_root: str | Path, historical_root: str | Path, output_dir: str | Path) -> dict[str, Path]:
     source, initial = actual_source_inventory(raw_root, historical_root)
     config: dict[str, Any] = {"seed": SEED, "prepare_invalid_expected_count": 33}
-    manifest, exclusions, audit = build_pilot_manifest(config, source)
+    try:
+        manifest, exclusions, audit = build_pilot_manifest(config, source)
+    except ManifestError:
+        _write_blocked_inventory(output_dir, source, initial, config)
+        raise
     labels = make_label_rows(manifest, source)
     audit["partition_counts"] = dict(sorted(Counter(r["partition"] for r in manifest).items()))
     audit["initial_missing_provenance_exclusions"] = len(initial)
@@ -393,4 +522,4 @@ def freeze_actual_pilot_data(*, raw_root: str | Path, historical_root: str | Pat
 
 
 __all__ = ["ManifestError", "actual_source_inventory", "build_pilot_manifest", "freeze_actual_pilot_data",
-           "load_development_labels", "load_sealed_scoring_labels", "make_group_folds", "make_label_rows", "write_pilot_artifacts"]
+           "load_canary_labels", "load_development_labels", "load_sealed_scoring_labels", "make_group_folds", "make_label_rows", "write_pilot_artifacts"]

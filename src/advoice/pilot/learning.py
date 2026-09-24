@@ -166,11 +166,81 @@ class TrustedAdapterRegistry:
         return attestation
 
 
-# T2 owns no production fitting implementation. Exact production adapter types must
-# be added here by the runner integration task; an empty allowlist fails closed.
+# The analytical runner has a deliberately small portable fallback recipe.  These
+# are exact types, rather than a capability flag that another adapter can claim.
+# They consume only the already-materialized truth-free FoldCaseInput feature maps;
+# the runner is responsible for proving those maps came from real prepared inputs.
+_PORTABLE_LOGISTIC_RECIPE = "fold_local_median_standardize_balanced_logistic_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class _PortableAnalyticalPredictorAdapter:
+    role: Literal["base", "replay"]
+
+    @property
+    def implementation_id(self) -> str:
+        return "advoice.pilot.learning.portable_" + self.role + "_logistic"
+
+    @property
+    def implementation_version(self) -> str:
+        return _PORTABLE_LOGISTIC_RECIPE
+
+    def feature_pipeline_hash(
+        self, feature_names: tuple[str, ...], class_order: tuple[str, ...],
+    ) -> str:
+        return _digest({
+            "implementation_id": self.implementation_id,
+            "implementation_version": self.implementation_version,
+            "role": self.role,
+            "feature_names": feature_names,
+            "class_order": class_order,
+            "recipe": _PORTABLE_LOGISTIC_RECIPE,
+        })
+
+    def fit(
+        self,
+        *,
+        cases: Mapping[str, "FoldCaseInput"],
+        labels: Mapping[str, str],
+        fit_ids: tuple[str, ...],
+        excluded_ids: tuple[str, ...],
+        feature_names: tuple[str, ...],
+        model_id: str,
+        class_order: tuple[str, ...],
+        seed: int,
+        c: float,
+        max_iter: int,
+        adapter_attestation_id: str | None,
+    ) -> "LinearModelArtifact":
+        return _fit_linear_model(
+            cases=cases, labels=labels, fit_ids=fit_ids, excluded_ids=excluded_ids,
+            feature_names=feature_names,
+            feature_source="base" if self.role == "base" else "state",
+            model_id=model_id, adapter_implementation=self.implementation_id,
+            adapter_version=self.implementation_version,
+            feature_pipeline_hash=self.feature_pipeline_hash(feature_names, class_order),
+            adapter_attestation_id=adapter_attestation_id, class_order=class_order,
+            seed=seed, c=c, max_iter=max_iter,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PortableBasePredictorAdapter(_PortableAnalyticalPredictorAdapter):
+    """Closed analytical adapter for full prepared base features."""
+
+    role: Literal["base"] = "base"
+
+
+@dataclass(frozen=True, slots=True)
+class PortableReplayPredictorAdapter(_PortableAnalyticalPredictorAdapter):
+    """Closed analytical adapter for prepared state features before/after replay."""
+
+    role: Literal["replay"] = "replay"
+
+
 _TRUSTED_ANALYTICAL_ADAPTER_TYPES: dict[str, tuple[type[Any], ...]] = {
-    "base": (),
-    "replay": (),
+    "base": (PortableBasePredictorAdapter,),
+    "replay": (PortableReplayPredictorAdapter,),
 }
 
 
@@ -2120,7 +2190,8 @@ __all__ = [
     "FoldArtifact", "FoldArtifactManifest", "FoldArtifactProof", "FoldCaseInput",
     "FoldInputs", "FoldLeakageError", "FoldPrediction",
     "FrozenFoldConfig", "HeadCalibrator", "JointCalibrators", "LearningError",
-    "LinearModelArtifact", "PredictorAdapter", "ReplayContext",
+    "LinearModelArtifact", "PortableBasePredictorAdapter",
+    "PortableReplayPredictorAdapter", "PredictorAdapter", "ReplayContext",
     "SyntheticLinearPredictorAdapter", "agent_contrast",
     "apply_head", "combine_head_probabilities", "fit_fold", "fit_joint_calibrators",
     "head_probability", "model_identity_manifest", "predict_fold", "predict_joint", "refit_full_development",

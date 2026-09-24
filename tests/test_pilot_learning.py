@@ -24,14 +24,18 @@ def _subject(
     partition: str = "development",
     fold_id: str = "fold_0",
     group_index: int | None = None,
+    dataset_id: str = "fixture",
+    source_version: str = "fixture_v1",
+    channel: str = "picture_description",
 ) -> c.SubjectRow:
     group = index if group_index is None else group_index
     return c.SubjectRow(
-        dataset_id="fixture", subject_id=f"sub_{index:016x}", partition=partition,
+        dataset_id=dataset_id, subject_id=f"sub_{index:016x}", partition=partition,
         task=task, class_order=class_order, source_group_id=f"grp_{group:016x}",
-        channel="picture_description", language="en",
+        channel=channel, language="en",
         task_ids=("picture_description",), role="participant", fold_id=fold_id,
-        raw_hashes={f"asset_{index:016x}": _hash(f"asset-{index}")}, source_version="fixture_v1",
+        raw_hashes={f"asset_{index:016x}": _hash(f"asset-{index}")},
+        source_version=source_version,
     )
 
 
@@ -176,10 +180,16 @@ def _three_class_rows(
 
 
 def _binary_rows() -> tuple[list[l.CalibrationRow], dict[str, str], l.FoldArtifactManifest]:
-    rows: list[l.CalibrationRow] = []
     predictions, labels, manifest, _, _ = _actual_oof_predictions(
         task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
     )
+    return _binary_rows_for_predictions(predictions, labels), labels, manifest
+
+
+def _binary_rows_for_predictions(
+    predictions: list[l.FoldPrediction], labels: dict[str, str],
+) -> list[l.CalibrationRow]:
+    rows: list[l.CalibrationRow] = []
     for index, prediction in enumerate(predictions):
         label = labels[prediction.subject.subject_id]
         scores = {"HC": 3, "AD": 1} if label == "HC" else {"HC": 1, "AD": 3}
@@ -189,7 +199,56 @@ def _binary_rows() -> tuple[list[l.CalibrationRow], dict[str, str], l.FoldArtifa
             state_probabilities_after=prediction.state_probabilities,
             arm_refusal_reasons={"J-A": None, "J-S": None, "J-AS": None},
         ))
-    return rows, labels, manifest
+    return rows
+
+
+def _analytical_fixture(
+    *, origin: str,
+) -> tuple[l.FoldInputs, tuple[str, ...], tuple[str, ...], l.FrozenFoldConfig]:
+    inputs, fit_ids, validation_ids, synthetic_config = _fold_fixture()
+    cases: dict[str, l.FoldCaseInput] = {}
+    for subject_id, case in inputs.cases.items():
+        subject = replace(
+            case.subject,
+            dataset_id="dementiabank_prepared",
+            source_version="dbank_2026_09",
+        )
+        provenance = l.PreparedFeatureProvenance.from_features(
+            subject=subject,
+            base_features=case.base_features,
+            state_features=case.state_features,
+            origin=origin,
+            source_manifest_hash=_hash("prepared-source-manifest"),
+        )
+        cases[subject_id] = l.FoldCaseInput(
+            subject=subject,
+            base_features=case.base_features,
+            state_features=case.state_features,
+            evidence_snapshot=_snapshot(subject),
+            feature_provenance=provenance,
+        )
+    analytical_inputs = l.FoldInputs(cases=cases, labels=inputs.labels)
+    base = l.FixedPilotBasePredictorAdapter()
+    replay = l.FixedPilotReplayPredictorAdapter()
+    registry = l.create_trusted_adapter_registry(
+        (base, replay),
+        class_order=synthetic_config.class_order,
+        feature_names_by_role={
+            "base": synthetic_config.base_feature_names,
+            "replay": synthetic_config.state_feature_names,
+        },
+    )
+    config = replace(
+        synthetic_config,
+        base_model_id="fixed_pilot_base_v1",
+        replay_model_id="fixed_pilot_replay_v1",
+        analytical_run=True,
+        base_adapter=base,
+        replay_adapter=replay,
+        trusted_adapter_registry=registry,
+        development_manifest=l.seal_development_manifest(analytical_inputs),
+    )
+    return analytical_inputs, fit_ids, validation_ids, config
 
 
 def _manual_head(
@@ -232,9 +291,32 @@ def test_real_model_and_fusion_symbols_are_distinct_and_current():
     assert len({l.FULL_BASE_PREDICTOR_SYMBOL, l.STATE_REPLAY_PREDICTOR_SYMBOL,
                 l.EXISTING_FUSION_SYMBOL}) == 3
     manifest = l.model_identity_manifest()
-    assert manifest["base"]["symbol"] == l.FULL_BASE_PREDICTOR_SYMBOL
-    assert "subject_transcripts" in manifest["base"]["feature_signature"]
+    assert manifest["base"]["symbol"] == "advoice.pilot.learning.FixedPilotBasePredictorAdapter"
+    assert manifest["base"]["reference_symbol"] == l.FULL_BASE_PREDICTOR_SYMBOL
+    assert manifest["base"]["scope"] == "fixed_pilot_predictor_over_real_prepared_features"
+    assert manifest["base"]["validated_condition_c_equivalence"] is False
+    assert manifest["base"]["validated_full_extraction"] is False
     assert manifest["replay"]["feature_signature"][0] == "explicit_state_feature_whitelist"
+
+
+def test_analytical_adapter_rejects_fixture_provenance_and_binds_reference_ranges():
+    inputs, fit_ids, validation_ids, config = _analytical_fixture(
+        origin="synthetic_fixture",
+    )
+    with pytest.raises(l.LearningError, match="real prepared feature provenance"):
+        l.fit_fold(inputs, fit_ids, validation_ids, config)
+
+    inputs, fit_ids, validation_ids, config = _analytical_fixture(
+        origin="real_prepared",
+    )
+    artifact = l.fit_fold(inputs, fit_ids, validation_ids, config)
+    assert artifact.purpose == "analytical"
+    assert artifact.predictor_scope == "fixed_pilot_predictor_over_real_prepared_features"
+    assert artifact.base_model.adapter_implementation.endswith("fixed_prepared_base_logistic")
+    assert l.FULL_BASE_PREDICTOR_SYMBOL not in artifact.base_model.adapter_implementation
+    assert artifact.reference_ranges
+    assert len(artifact.reference_range_hash) == 64
+    assert artifact.reference_range_hash in artifact.reference_fit_hash_inputs
 
 
 def test_synthetic_adapter_is_typed_persisted_and_blocked_for_analytical_runs():
@@ -247,12 +329,23 @@ def test_synthetic_adapter_is_typed_persisted_and_blocked_for_analytical_runs():
     assert artifact.base_model.feature_pipeline_hash != artifact.replay_model.feature_pipeline_hash
     assert len(artifact.base_model.feature_pipeline_hash) == 64
     assert l.FULL_BASE_PREDICTOR_SYMBOL not in artifact.base_model.adapter_implementation
+    analytical_inputs, analytical_fit, analytical_validation, analytical_config = (
+        _analytical_fixture(origin="real_prepared")
+    )
     with pytest.raises(l.LearningError, match="production predictor adapter"):
-        l.fit_fold(inputs, fit_ids, validation_ids, replace(config, analytical_run=True))
+        l.fit_fold(
+            analytical_inputs, analytical_fit, analytical_validation,
+            replace(
+                analytical_config, base_adapter=None, replay_adapter=None,
+                trusted_adapter_registry=None,
+            ),
+        )
 
 
 def test_synthetic_adapter_cannot_self_attest_for_analytical_use(monkeypatch):
-    inputs, fit_ids, validation_ids, config = _fold_fixture()
+    inputs, fit_ids, validation_ids, config = _analytical_fixture(
+        origin="real_prepared",
+    )
     base = l.SyntheticLinearPredictorAdapter("base")
     replay = l.SyntheticLinearPredictorAdapter("replay")
     monkeypatch.setattr(l.SyntheticLinearPredictorAdapter, "analytical_capable", True, raising=False)
@@ -262,7 +355,8 @@ def test_synthetic_adapter_cannot_self_attest_for_analytical_use(monkeypatch):
         l.fit_fold(
             inputs, fit_ids, validation_ids,
             replace(
-                config, analytical_run=True, base_adapter=base, replay_adapter=replay,
+                config, base_adapter=base, replay_adapter=replay,
+                trusted_adapter_registry=None,
             ),
         )
 
@@ -370,6 +464,22 @@ def test_full_refit_rejects_subset_against_canonical_development_manifest():
         )
 
 
+def test_fold_manifest_rejects_incomplete_sealed_development_membership():
+    inputs, fit_ids, validation_ids, config = _fold_fixture()
+    artifact = l.fit_fold(inputs, fit_ids, validation_ids, config)
+    predictions = []
+    for subject_id in validation_ids:
+        case = inputs.cases[subject_id]
+        bound = replace(case, evidence_snapshot=_snapshot(
+            case.subject,
+            reference_fit_id=artifact.reference_fit_id,
+            reference_fit_hash=artifact.reference_fit_hash,
+        ))
+        predictions.append(l.predict_fold(artifact, bound))
+    with pytest.raises(l.FoldLeakageError, match="complete development OOF membership"):
+        l.seal_fold_artifacts((artifact,), predictions)
+
+
 def test_state_only_signature_cannot_masquerade_as_full_base():
     with pytest.raises(l.LearningError, match="state-only baseline"):
         l.FrozenFoldConfig(
@@ -451,11 +561,8 @@ def test_full_refit_is_blocked_until_oof_is_complete():
             reference_fit_hash=artifact.reference_fit_hash,
         ))
         predictions.append(l.predict_fold(artifact, bound))
-    manifest = l.seal_fold_artifacts((artifact,), predictions)
-    with pytest.raises(l.LearningError, match="exactly one OOF"):
-        l.refit_full_development(
-            inputs, predictions, manifest, config,
-        )
+    with pytest.raises(l.FoldLeakageError, match="complete development OOF membership"):
+        l.seal_fold_artifacts((artifact,), predictions)
 
 
 def test_oof_duplicate_and_fabricated_fold_binding_are_rejected():
@@ -469,11 +576,8 @@ def test_oof_duplicate_and_fabricated_fold_binding_are_rejected():
     fabricated_prediction = replace(
         rows[0].fold_prediction, fold_artifact_id="fold_fabricated", prediction_hash="",
     )
-    fabricated_row = replace(rows[0], fold_prediction=fabricated_prediction)
-    with pytest.raises(l.FoldLeakageError, match="sealed fold artifact"):
-        l.fit_joint_calibrators(
-            [fabricated_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
-        )
+    with pytest.raises(l.FoldLeakageError, match="sealed OOF calibration receipt"):
+        replace(rows[0], fold_prediction=fabricated_prediction)
 
 
 def test_oof_binding_retains_and_verifies_resolved_fold_artifact_fields():
@@ -489,11 +593,8 @@ def test_oof_binding_retains_and_verifies_resolved_fold_artifact_fields():
     assert prediction.validation_group_id not in prediction.fit_group_ids
 
     tampered = replace(prediction, base_fit_hash="model_fabricated", prediction_hash="")
-    tampered_row = replace(rows[0], fold_prediction=tampered)
-    with pytest.raises(l.FoldLeakageError, match="resolved sealed fold artifact"):
-        l.fit_joint_calibrators(
-            [tampered_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
-        )
+    with pytest.raises(l.FoldLeakageError, match="sealed OOF calibration receipt"):
+        replace(rows[0], fold_prediction=tampered)
 
 
 def test_oof_probability_tamper_with_recomputed_prediction_hash_is_rejected():
@@ -504,13 +605,142 @@ def test_oof_probability_tamper_with_recomputed_prediction_hash_is_rejected():
         prediction, base_probabilities=forged_probabilities, prediction_hash="",
     )
     assert forged_prediction.prediction_hash != prediction.prediction_hash
-    forged_row = replace(
-        rows[0], base_probabilities=forged_probabilities,
-        fold_prediction=forged_prediction,
-    )
-    with pytest.raises(l.FoldLeakageError, match="sealed fold output"):
+    with pytest.raises(l.FoldLeakageError, match="sealed OOF calibration receipt"):
+        replace(
+            rows[0], base_probabilities=forged_probabilities,
+            fold_prediction=forged_prediction,
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"agent_v0_scores": {"HC": 0, "MCI": 4, "AD": 4}},
+        {"assessment_hashes": (("v0", "d" * 64),)},
+        {"source_trace_hashes": ("e" * 64,)},
+        {"replay_hash": "f" * 64},
+        {"fusion_hash": "0" * 64},
+        {"state_probabilities_after": (0.2, 0.3, 0.5)},
+    ],
+)
+def test_oof_calibration_receipt_rejects_agent_trace_replay_and_fusion_fabrication(change):
+    rows, labels, manifest = _three_class_rows()
+    assert rows[0].oof_receipt is not None
+    with pytest.raises(l.FoldLeakageError, match="sealed OOF calibration receipt"):
+        forged = replace(rows[0], **change)
         l.fit_joint_calibrators(
-            [forged_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
+            [forged, *rows[1:]], labels, l.CalibrationConfig(), manifest,
+        )
+
+
+def test_calibration_requires_manifest_complete_rows_and_labels_not_matching_subsets():
+    rows, labels, manifest = _three_class_rows()
+    omitted = rows[0].subject.subject_id
+    subset_labels = {key: value for key, value in labels.items() if key != omitted}
+    with pytest.raises(l.FoldLeakageError, match="complete sealed development OOF membership"):
+        l.fit_joint_calibrators(
+            rows[1:], subset_labels, l.CalibrationConfig(), manifest,
+        )
+
+
+def test_final_refit_binds_frozen_calibrators_and_rejects_relabelled_training_identity():
+    predictions, labels, manifest, inputs, config = _actual_oof_predictions(
+        task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
+    )
+    rows = _binary_rows_for_predictions(predictions, labels)
+    calibrators = l.fit_joint_calibrators(
+        rows, labels, l.CalibrationConfig(), manifest,
+    )
+    final = l.refit_full_development(
+        inputs, predictions, manifest, config, calibrators=calibrators,
+    )
+    assert final.calibrator_artifact_id == calibrators.artifact_id
+    assert final.calibration_recipe_hash == calibrators.calibration_recipe_hash
+
+    training_case = inputs.cases[predictions[0].subject.subject_id]
+    relabelled = replace(training_case.subject, partition="holdout", fold_id="holdout")
+    holdout_case = l.FoldCaseInput(
+        subject=relabelled,
+        base_features=training_case.base_features,
+        state_features=training_case.state_features,
+        evidence_snapshot=_snapshot(
+            relabelled,
+            reference_fit_id=final.reference_fit_id,
+            reference_fit_hash=final.reference_fit_hash,
+        ),
+    )
+    with pytest.raises(l.FoldLeakageError, match="training identity"):
+        l.predict_fold(final, holdout_case)
+
+    disguised = replace(
+        training_case.subject,
+        subject_id="sub_fffffffffffffff0",
+        source_group_id="grp_fffffffffffffff0",
+        partition="holdout",
+        fold_id="holdout",
+    )
+    disguised_case = l.FoldCaseInput(
+        subject=disguised,
+        base_features=training_case.base_features,
+        state_features=training_case.state_features,
+        evidence_snapshot=_snapshot(
+            disguised,
+            reference_fit_id=final.reference_fit_id,
+            reference_fit_hash=final.reference_fit_hash,
+        ),
+    )
+    with pytest.raises(l.FoldLeakageError, match="training identity"):
+        l.predict_fold(final, disguised_case)
+
+
+def test_analytical_final_refit_requires_matching_frozen_calibrators_and_recipe():
+    inputs, _, _, config = _analytical_fixture(origin="real_prepared")
+    artifacts: list[l.FoldArtifact] = []
+    predictions: list[l.FoldPrediction] = []
+    for fold_id in ("fold_0", "fold_1"):
+        validation = tuple(
+            subject_id for subject_id, case in inputs.cases.items()
+            if case.subject.fold_id == fold_id
+        )
+        fit = tuple(subject_id for subject_id in inputs.cases if subject_id not in validation)
+        artifact = l.fit_fold(inputs, fit, validation, config)
+        artifacts.append(artifact)
+        for subject_id in validation:
+            case = inputs.cases[subject_id]
+            bound = replace(case, evidence_snapshot=_snapshot(
+                case.subject,
+                reference_fit_id=artifact.reference_fit_id,
+                reference_fit_hash=artifact.reference_fit_hash,
+            ))
+            predictions.append(l.predict_fold(artifact, bound))
+    manifest = l.seal_fold_artifacts(artifacts, predictions)
+    labels = dict(inputs.labels)
+    rows = _binary_rows_for_predictions(predictions, labels)
+    with pytest.raises(l.LearningError, match="frozen calibrators"):
+        l.refit_full_development(inputs, predictions, manifest, config)
+
+    with pytest.raises(l.FoldLeakageError, match="synthetic fixture OOF receipt"):
+        l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
+
+    fixture_rows, fixture_labels, fixture_manifest = _binary_rows()
+    fixture_calibrators = l.fit_joint_calibrators(
+        fixture_rows, fixture_labels, l.CalibrationConfig(), fixture_manifest,
+    )
+    proof = manifest.proofs[0]
+    changed = replace(
+        fixture_calibrators,
+        fold_manifest_id=manifest.manifest_id,
+        dataset_id=proof.dataset_id,
+        source_version=proof.source_version,
+        channel=proof.channel,
+        development_manifest_id=proof.development_manifest_id,
+        model_recipe_hash="0" * 64,
+        purpose="analytical",
+        artifact_id="",
+    )
+    with pytest.raises(l.FoldLeakageError, match="calibrator.*recipe"):
+        l.refit_full_development(
+            inputs, predictions, manifest, config, calibrators=changed,
         )
 
 
@@ -672,6 +902,49 @@ def test_matched_fit_baselines_use_exact_joint_fit_ids():
     assert rows[0].subject.subject_id not in fitted.arms["J-AS"]["impairment"].fit_ids
 
 
+def test_matched_fit_baseline_predictions_are_exposed_for_locked_scoring():
+    rows, labels, manifest = _three_class_rows(invalid_second_pass=0)
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
+    predictions = {
+        item.arm: item for item in l.predict_matched_baselines(rows[1], fitted)
+    }
+    assert set(predictions) == {
+        "B_matched_J-A", "B_matched_J-S", "B_matched_J-AS",
+    }
+    for prediction in predictions.values():
+        assert prediction.status == "ok"
+        assert prediction.probabilities is not None
+        assert sum(prediction.probabilities) == pytest.approx(1.0)
+        assert fitted.artifact_id in prediction.trace_ids
+
+
+def test_calibrator_binding_rejects_cross_dataset_source_version_and_channel_reuse():
+    rows, labels, manifest = _binary_rows()
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
+    original = rows[0]
+    changed_subject = replace(
+        original.subject,
+        dataset_id="different_dataset",
+        source_version="different_version",
+        channel="different_channel",
+        partition="holdout",
+        fold_id="holdout",
+    )
+    holdout_row = l.CalibrationRow(
+        subject=changed_subject,
+        fusion_hash=_hash("cross-dataset"),
+        base_probabilities=original.base_probabilities,
+        agent_v0_scores=original.agent_v0_scores,
+        agent_v1_scores=original.agent_v1_scores,
+        v1_required=original.v1_required,
+        state_probabilities_before=original.state_probabilities_before,
+        state_probabilities_after=original.state_probabilities_after,
+        arm_refusal_reasons=original.arm_refusal_reasons,
+    )
+    with pytest.raises(l.FoldLeakageError, match="dataset/source/channel/task/class binding"):
+        l.predict_joint(holdout_row, fitted)
+
+
 def test_calibrator_serialization_preserves_predictions_within_tolerance():
     rows, labels, manifest = _three_class_rows()
     fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
@@ -679,6 +952,13 @@ def test_calibrator_serialization_preserves_predictions_within_tolerance():
     before = l.predict_joint(rows[5], fitted)
     after = l.predict_joint(rows[5], restored)
     assert fitted.artifact_id == restored.artifact_id
+    assert restored.dataset_id == fitted.dataset_id
+    assert restored.source_version == fitted.source_version
+    assert restored.channel == fitted.channel
+    assert restored.development_manifest_id == fitted.development_manifest_id
+    assert restored.model_recipe_hash == fitted.model_recipe_hash
+    assert restored.calibration_recipe_hash == fitted.calibration_recipe_hash
+    assert restored.oof_calibration_receipt_ids == fitted.oof_calibration_receipt_ids
     for left, right in zip(before, after, strict=True):
         assert left.status == right.status
         assert left.probabilities == pytest.approx(right.probabilities, abs=1e-10)

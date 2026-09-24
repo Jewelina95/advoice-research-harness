@@ -8,10 +8,12 @@ The production model identities intentionally remain distinct:
 * the historical pure fusion primitive is
   ``advoice.authority_joint_fusion.fuse_authority_joint``.
 
-This module does not load historical prediction tables.  Its built-in linear
-adapter is explicitly synthetic/test-only.  Analytical fitting fails closed
-unless the runner supplies typed production-capable base and replay adapters
-while preserving the fit/provenance boundary defined here.
+This module does not load historical prediction tables.  Its analytical
+adapter is a fixed pilot predictor over already prepared, truth-free feature
+maps.  It is not an implementation or validation of the full Condition C
+training/extraction pipeline.  Analytical fitting fails closed unless the
+runner supplies real prepared-feature provenance and closed adapter
+attestations while preserving the fit/provenance boundary defined here.
 """
 from __future__ import annotations
 
@@ -29,10 +31,11 @@ from sklearn.linear_model import LogisticRegression
 from .contracts import EvidenceSnapshot, FusionRow, PredictionRow, SubjectRow
 
 
-LEARNING_SCHEMA_VERSION = "advoice.pilot.learning.v3"
+LEARNING_SCHEMA_VERSION = "advoice.pilot.learning.v4"
 FULL_BASE_PREDICTOR_SYMBOL = "advoice.condition_c.train_condition_c"
 STATE_REPLAY_PREDICTOR_SYMBOL = "advoice.module_a.TaskConditionedStatisticalExpert"
 EXISTING_FUSION_SYMBOL = "advoice.authority_joint_fusion.fuse_authority_joint"
+PILOT_PREDICTOR_SCOPE = "fixed_pilot_predictor_over_real_prepared_features"
 PROBABILITY_FLOOR = 1e-6
 ARMS = ("B_raw", "B", "J-A", "J-S", "J-AS")
 CALIBRATED_ARMS = ("B", "J-A", "J-S", "J-AS")
@@ -47,6 +50,7 @@ _DEVELOPMENT_MANIFEST_SEAL = object()
 _ADAPTER_REGISTRY_SEAL = object()
 _ADAPTER_ATTESTATION_SEAL = object()
 _PREDICTION_RECEIPT_SEAL = object()
+_CALIBRATION_RECEIPT_SEAL = object()
 
 Arm = Literal["B_raw", "B", "J-A", "J-S", "J-AS"]
 HeadName = Literal["binary", "impairment", "stage"]
@@ -166,24 +170,22 @@ class TrustedAdapterRegistry:
         return attestation
 
 
-# The analytical runner has a deliberately small portable fallback recipe.  These
-# are exact types, rather than a capability flag that another adapter can claim.
-# They consume only the already-materialized truth-free FoldCaseInput feature maps;
-# the runner is responsible for proving those maps came from real prepared inputs.
-_PORTABLE_LOGISTIC_RECIPE = "fold_local_median_standardize_balanced_logistic_v1"
+# These exact adapter types implement the fixed pilot recipe over prepared feature
+# maps.  They deliberately make no Condition C or full-extractor equivalence claim.
+_FIXED_PILOT_LOGISTIC_RECIPE = "fixed_pilot_prepared_median_standardize_balanced_logistic_v1"
 
 
 @dataclass(frozen=True, slots=True)
-class _PortableAnalyticalPredictorAdapter:
+class _FixedPilotPredictorAdapter:
     role: Literal["base", "replay"]
 
     @property
     def implementation_id(self) -> str:
-        return "advoice.pilot.learning.portable_" + self.role + "_logistic"
+        return "advoice.pilot.learning.fixed_prepared_" + self.role + "_logistic"
 
     @property
     def implementation_version(self) -> str:
-        return _PORTABLE_LOGISTIC_RECIPE
+        return _FIXED_PILOT_LOGISTIC_RECIPE
 
     def feature_pipeline_hash(
         self, feature_names: tuple[str, ...], class_order: tuple[str, ...],
@@ -194,7 +196,8 @@ class _PortableAnalyticalPredictorAdapter:
             "role": self.role,
             "feature_names": feature_names,
             "class_order": class_order,
-            "recipe": _PORTABLE_LOGISTIC_RECIPE,
+            "recipe": _FIXED_PILOT_LOGISTIC_RECIPE,
+            "scope": PILOT_PREDICTOR_SCOPE,
         })
 
     def fit(
@@ -225,22 +228,28 @@ class _PortableAnalyticalPredictorAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class PortableBasePredictorAdapter(_PortableAnalyticalPredictorAdapter):
-    """Closed analytical adapter for full prepared base features."""
+class FixedPilotBasePredictorAdapter(_FixedPilotPredictorAdapter):
+    """Closed fixed pilot adapter over real prepared base features."""
 
     role: Literal["base"] = "base"
 
 
 @dataclass(frozen=True, slots=True)
-class PortableReplayPredictorAdapter(_PortableAnalyticalPredictorAdapter):
-    """Closed analytical adapter for prepared state features before/after replay."""
+class FixedPilotReplayPredictorAdapter(_FixedPilotPredictorAdapter):
+    """Closed fixed pilot adapter over real prepared replay-state features."""
 
     role: Literal["replay"] = "replay"
 
 
+# Compatibility names remain importable, but resolve to the same exact closed
+# classes and do not restore the former portable/full-pipeline claim.
+PortableBasePredictorAdapter = FixedPilotBasePredictorAdapter
+PortableReplayPredictorAdapter = FixedPilotReplayPredictorAdapter
+
+
 _TRUSTED_ANALYTICAL_ADAPTER_TYPES: dict[str, tuple[type[Any], ...]] = {
-    "base": (PortableBasePredictorAdapter,),
-    "replay": (PortableReplayPredictorAdapter,),
+    "base": (FixedPilotBasePredictorAdapter,),
+    "replay": (FixedPilotReplayPredictorAdapter,),
 }
 
 
@@ -250,7 +259,7 @@ def create_trusted_adapter_registry(
     class_order: Sequence[str] | None = None,
     feature_names_by_role: Mapping[str, Sequence[str]] | None = None,
 ) -> TrustedAdapterRegistry:
-    """Issue attestations only for exact production adapter types in the closed registry."""
+    """Issue attestations only for exact fixed-pilot adapter types in the closed registry."""
 
     attestations: list[TrustedAdapterAttestation] = []
     for adapter in adapters:
@@ -285,22 +294,29 @@ def create_trusted_adapter_registry(
 
 
 def model_identity_manifest() -> dict[str, dict[str, Any]]:
-    """Describe the production symbols discovered in the current source tree."""
+    """Describe pilot adapters without claiming full-pipeline equivalence."""
 
     return {
         "base": {
-            "symbol": FULL_BASE_PREDICTOR_SYMBOL,
+            "symbol": "advoice.pilot.learning.FixedPilotBasePredictorAdapter",
+            "reference_symbol": FULL_BASE_PREDICTOR_SYMBOL,
+            "scope": PILOT_PREDICTOR_SCOPE,
+            "validated_condition_c_equivalence": False,
+            "validated_full_extraction": False,
             "feature_signature": (
-                "subject_features", "subject_transcripts", "fold_calibrated_states",
-                "metric_evidence", "task_and_reliability_adapters",
+                "real_prepared_base_feature_map", "bound_source_manifest",
+                "fold_local_reference_ranges",
             ),
             "training_recipe": (
-                "fold-local branch experts; nested OOF selection; multinomial logistic "
-                "stacking or validated dynamic reliability gate; frozen probability calibration"
+                "fixed fit-only median imputation and standardization; class-balanced "
+                "logistic regression over the frozen prepared feature list"
             ),
         },
         "replay": {
-            "symbol": STATE_REPLAY_PREDICTOR_SYMBOL,
+            "symbol": "advoice.pilot.learning.FixedPilotReplayPredictorAdapter",
+            "reference_symbol": STATE_REPLAY_PREDICTOR_SYMBOL,
+            "scope": PILOT_PREDICTOR_SCOPE,
+            "validated_full_extraction": False,
             "feature_signature": (
                 "explicit_state_feature_whitelist", "task_adapter", "language_adapter",
             ),
@@ -389,6 +405,98 @@ def _softmax(values: np.ndarray) -> np.ndarray:
     return weights / weights.sum(axis=1, keepdims=True)
 
 
+def _canonical_feature_mapping(
+    values: Mapping[str, float | int | None],
+) -> tuple[tuple[str, float | None], ...]:
+    result: list[tuple[str, float | None]] = []
+    for name in sorted(values):
+        value = values[name]
+        try:
+            normalized = None if value is None else float(value)
+        except (TypeError, ValueError):
+            normalized = None
+        if normalized is not None and not math.isfinite(normalized):
+            normalized = None
+        result.append((str(name), normalized))
+    return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFeatureProvenance:
+    """Identity and hashes for one already prepared pilot feature record."""
+
+    origin: Literal["real_prepared", "synthetic_fixture"]
+    dataset_id: str
+    source_version: str
+    channel: str
+    task: str
+    class_order: tuple[str, ...]
+    subject_id: str
+    source_manifest_hash: str
+    base_feature_hash: str
+    state_feature_hash: str
+    provenance_hash: str = ""
+
+    def __post_init__(self) -> None:
+        if self.origin not in ("real_prepared", "synthetic_fixture"):
+            raise LearningError("Unknown prepared feature provenance origin.")
+        if any(len(value) != 64 for value in (
+            self.source_manifest_hash, self.base_feature_hash, self.state_feature_hash,
+        )):
+            raise LearningError("Prepared feature provenance requires SHA-256 hashes.")
+        payload = self.to_dict(include_hash=False)
+        expected = _digest(payload)
+        if self.provenance_hash and self.provenance_hash != expected:
+            raise LearningError("Stale prepared feature provenance hash.")
+        object.__setattr__(self, "provenance_hash", expected)
+
+    @classmethod
+    def from_features(
+        cls,
+        *,
+        subject: SubjectRow,
+        base_features: Mapping[str, float | int | None],
+        state_features: Mapping[str, float | int | None],
+        origin: Literal["real_prepared", "synthetic_fixture"],
+        source_manifest_hash: str,
+    ) -> Self:
+        return cls(
+            origin=origin, dataset_id=subject.dataset_id,
+            source_version=subject.source_version, channel=subject.channel,
+            task=subject.task, class_order=subject.class_order,
+            subject_id=subject.subject_id, source_manifest_hash=source_manifest_hash,
+            base_feature_hash=_digest(_canonical_feature_mapping(base_features)),
+            state_feature_hash=_digest(_canonical_feature_mapping(state_features)),
+        )
+
+    def validate(
+        self,
+        subject: SubjectRow,
+        base_features: Mapping[str, float | int | None],
+        state_features: Mapping[str, float | int | None],
+    ) -> None:
+        expected = PreparedFeatureProvenance.from_features(
+            subject=subject, base_features=base_features, state_features=state_features,
+            origin=self.origin, source_manifest_hash=self.source_manifest_hash,
+        )
+        if self != expected:
+            raise LearningError("Prepared feature provenance differs from its subject or features.")
+
+    def to_dict(self, *, include_hash: bool = True) -> dict[str, Any]:
+        result = {
+            "origin": self.origin, "dataset_id": self.dataset_id,
+            "source_version": self.source_version, "channel": self.channel,
+            "task": self.task, "class_order": list(self.class_order),
+            "subject_id": self.subject_id,
+            "source_manifest_hash": self.source_manifest_hash,
+            "base_feature_hash": self.base_feature_hash,
+            "state_feature_hash": self.state_feature_hash,
+        }
+        if include_hash:
+            result["provenance_hash"] = self.provenance_hash
+        return result
+
+
 @dataclass(frozen=True, slots=True)
 class FoldCaseInput:
     """Truth-free features and same-fold evidence for one subject."""
@@ -397,10 +505,15 @@ class FoldCaseInput:
     base_features: Mapping[str, float | int | None]
     state_features: Mapping[str, float | int | None]
     evidence_snapshot: EvidenceSnapshot
+    feature_provenance: PreparedFeatureProvenance | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_snapshot.subject != self.subject:
             raise LearningError("Evidence snapshot and fold subject differ.")
+        if self.feature_provenance is not None:
+            self.feature_provenance.validate(
+                self.subject, self.base_features, self.state_features,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,21 +537,49 @@ class DevelopmentSubjectProof:
     source_group_id: str
     fold_id: str
     subject_hash: str
+    source_identity_hash: str
+    feature_provenance_hash: str
 
     @classmethod
-    def from_subject(cls, subject: SubjectRow) -> Self:
+    def from_case(cls, case: FoldCaseInput) -> Self:
+        subject = case.subject
         if subject.partition != "development":
             raise FoldLeakageError("Development manifests cannot contain non-development subjects.")
+        provenance_hash = (
+            case.feature_provenance.provenance_hash
+            if case.feature_provenance is not None
+            else _digest({
+                "origin": "implicit_synthetic_fixture",
+                "subject_hash": subject.content_hash,
+                "base_features": _canonical_feature_mapping(case.base_features),
+                "state_features": _canonical_feature_mapping(case.state_features),
+            })
+        )
         return cls(
             subject_id=subject.subject_id, source_group_id=subject.source_group_id,
             fold_id=subject.fold_id, subject_hash=subject.content_hash,
+            source_identity_hash=_source_identity_hash(subject),
+            feature_provenance_hash=provenance_hash,
         )
 
     def to_dict(self) -> dict[str, str]:
         return {
             "subject_id": self.subject_id, "source_group_id": self.source_group_id,
             "fold_id": self.fold_id, "subject_hash": self.subject_hash,
+            "source_identity_hash": self.source_identity_hash,
+            "feature_provenance_hash": self.feature_provenance_hash,
         }
+
+
+def _source_identity_hash(subject: SubjectRow) -> str:
+    return _digest({
+        "dataset_id": subject.dataset_id,
+        "source_version": subject.source_version,
+        "channel": subject.channel,
+        "task": subject.task,
+        "task_ids": subject.task_ids,
+        "raw_hashes": tuple(sorted(subject.raw_hashes.items())),
+    })
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -446,13 +587,25 @@ class DevelopmentManifest:
     """Canonical immutable development cohort derived from SubjectRow contracts."""
 
     subjects: tuple[DevelopmentSubjectProof, ...]
+    dataset_id: str
+    source_version: str
+    channel: str
+    task: str
+    class_order: tuple[str, ...]
+    source_manifest_hash: str | None
     manifest_id: str
 
     def __init__(
         self,
         subjects: tuple[DevelopmentSubjectProof, ...],
-        manifest_id: str = "",
         *,
+        dataset_id: str,
+        source_version: str,
+        channel: str,
+        task: str,
+        class_order: tuple[str, ...],
+        source_manifest_hash: str | None,
+        manifest_id: str = "",
         _seal: object | None = None,
     ) -> None:
         if _seal is not _DEVELOPMENT_MANIFEST_SEAL:
@@ -465,12 +618,29 @@ class DevelopmentManifest:
         subject_ids = tuple(item.subject_id for item in ordered)
         if len(set(subject_ids)) != len(subject_ids):
             raise LearningError("Canonical development manifest contains duplicate subjects.")
-        expected = "development_manifest_" + _digest(
-            [item.to_dict() for item in ordered]
-        )[:24]
+        identity_hashes = tuple(item.source_identity_hash for item in ordered)
+        if len(set(identity_hashes)) != len(identity_hashes):
+            raise FoldLeakageError(
+                "Canonical development manifest contains duplicate source identities."
+            )
+        binding = {
+            "dataset_id": dataset_id, "source_version": source_version,
+            "channel": channel, "task": task, "class_order": class_order,
+            "source_manifest_hash": source_manifest_hash,
+        }
+        if not all((dataset_id, source_version, channel, task)):
+            raise LearningError("Development manifest dataset binding is incomplete.")
+        if source_manifest_hash is not None and len(source_manifest_hash) != 64:
+            raise LearningError("Development source manifest hash must be SHA-256.")
+        expected = "development_manifest_" + _digest({
+            "binding": binding,
+            "subjects": [item.to_dict() for item in ordered],
+        })[:24]
         if manifest_id and manifest_id != expected:
             raise LearningError("Stale development manifest ID.")
         object.__setattr__(self, "subjects", ordered)
+        for name, value in binding.items():
+            object.__setattr__(self, name, value)
         object.__setattr__(self, "manifest_id", expected)
 
     @property
@@ -481,12 +651,39 @@ class DevelopmentManifest:
 def seal_development_manifest(inputs: FoldInputs) -> DevelopmentManifest:
     """Seal every development SubjectRow in the supplied canonical data contracts."""
 
-    proofs = tuple(
-        DevelopmentSubjectProof.from_subject(case.subject)
-        for case in inputs.cases.values()
+    cases = tuple(
+        case for case in inputs.cases.values()
         if case.subject.partition == "development"
     )
-    return DevelopmentManifest(proofs, _seal=_DEVELOPMENT_MANIFEST_SEAL)
+    proofs = tuple(
+        DevelopmentSubjectProof.from_case(case)
+        for case in cases
+    )
+    bindings = {
+        (
+            case.subject.dataset_id, case.subject.source_version,
+            case.subject.channel, case.subject.task, case.subject.class_order,
+        )
+        for case in cases
+    }
+    if len(bindings) != 1:
+        raise LearningError(
+            "Canonical development subjects must share dataset/source/channel/task/class."
+        )
+    source_hashes = {
+        case.feature_provenance.source_manifest_hash
+        for case in inputs.cases.values()
+        if case.subject.partition == "development" and case.feature_provenance is not None
+    }
+    if len(source_hashes) > 1:
+        raise LearningError("Prepared development features must share one source manifest.")
+    dataset_id, source_version, channel, task, class_order = next(iter(bindings))
+    return DevelopmentManifest(
+        proofs, dataset_id=dataset_id, source_version=source_version,
+        channel=channel, task=task, class_order=class_order,
+        source_manifest_hash=next(iter(source_hashes), None),
+        _seal=_DEVELOPMENT_MANIFEST_SEAL,
+    )
 
 
 def _validate_development_manifest(
@@ -496,7 +693,7 @@ def _validate_development_manifest(
         raise LearningError("A sealed canonical development manifest is required.")
     actual = tuple(sorted(
         (
-            DevelopmentSubjectProof.from_subject(case.subject)
+            DevelopmentSubjectProof.from_case(case)
             for case in inputs.cases.values()
             if case.subject.partition == "development"
         ),
@@ -504,6 +701,22 @@ def _validate_development_manifest(
     ))
     if actual != manifest.subjects:
         raise FoldLeakageError("Inputs differ from the sealed canonical development manifest.")
+    bindings = {
+        (
+            case.subject.dataset_id, case.subject.source_version,
+            case.subject.channel, case.subject.task, case.subject.class_order,
+        )
+        for case in inputs.cases.values()
+        if case.subject.partition == "development"
+    }
+    expected_binding = {
+        (
+            manifest.dataset_id, manifest.source_version, manifest.channel,
+            manifest.task, manifest.class_order,
+        )
+    }
+    if bindings != expected_binding:
+        raise FoldLeakageError("Inputs differ from the sealed development dataset binding.")
     return manifest.subject_ids
 
 
@@ -874,11 +1087,105 @@ def _model_recipe_hash(
     })
 
 
+def _validate_analytical_feature_provenance(
+    inputs: FoldInputs,
+    subject_ids: Sequence[str],
+    manifest: DevelopmentManifest,
+) -> None:
+    source_hashes: set[str] = set()
+    for subject_id in subject_ids:
+        case = inputs.cases[subject_id]
+        provenance = case.feature_provenance
+        if provenance is None or provenance.origin != "real_prepared":
+            raise LearningError(
+                "Analytical fitting requires real prepared feature provenance; "
+                "synthetic fixture provenance is forbidden."
+            )
+        tokens = (
+            provenance.dataset_id.lower(), provenance.source_version.lower(),
+            case.subject.dataset_id.lower(), case.subject.source_version.lower(),
+        )
+        if any(marker in token for token in tokens for marker in ("fixture", "synthetic")):
+            raise LearningError(
+                "Analytical fitting requires real prepared feature provenance; "
+                "fixture-labelled sources are forbidden."
+            )
+        provenance.validate(case.subject, case.base_features, case.state_features)
+        source_hashes.add(provenance.source_manifest_hash)
+    if source_hashes != {manifest.source_manifest_hash}:
+        raise LearningError(
+            "Analytical prepared features differ from the sealed development source manifest."
+        )
+
+
+def _feature_provenance_hash(case: FoldCaseInput) -> str:
+    if case.feature_provenance is not None:
+        return case.feature_provenance.provenance_hash
+    return _digest({
+        "origin": "implicit_synthetic_fixture",
+        "subject_hash": case.subject.content_hash,
+        "base_features": _canonical_feature_mapping(case.base_features),
+        "state_features": _canonical_feature_mapping(case.state_features),
+    })
+
+
+def _reference_range_binding(
+    cases: Mapping[str, FoldCaseInput],
+    fit_ids: tuple[str, ...],
+    config: FrozenFoldConfig,
+) -> tuple[
+    tuple[tuple[str, str, float | None, float | None], ...],
+    tuple[tuple[str, str], ...],
+    str,
+]:
+    ranges: list[tuple[str, str, float | None, float | None]] = []
+    for role, names in (
+        ("base", config.base_feature_names), ("state", config.state_feature_names),
+    ):
+        for name in names:
+            values: list[float] = []
+            for subject_id in fit_ids:
+                source = (
+                    cases[subject_id].base_features if role == "base"
+                    else cases[subject_id].state_features
+                )
+                value = source.get(name)
+                try:
+                    normalized = None if value is None else float(value)
+                except (TypeError, ValueError):
+                    normalized = None
+                if normalized is not None and math.isfinite(normalized):
+                    values.append(normalized)
+            ranges.append((
+                role, name,
+                None if not values else min(values),
+                None if not values else max(values),
+            ))
+    provenance = tuple(
+        (subject_id, _feature_provenance_hash(cases[subject_id]))
+        for subject_id in fit_ids
+    )
+    range_hash = _digest({
+        "fit_ids": fit_ids,
+        "feature_provenance_hashes": provenance,
+        "ranges": ranges,
+    })
+    return tuple(ranges), provenance, range_hash
+
+
 @dataclass(frozen=True, slots=True)
 class FoldArtifact:
     class_order: tuple[str, ...]
+    dataset_id: str
+    source_version: str
+    channel: str
+    task: str
     development_manifest_id: str
+    development_subject_ids: tuple[str, ...]
+    development_identity_hashes: tuple[str, ...]
+    source_manifest_hash: str | None
     recipe_hash: str
+    predictor_scope: str
     fold_id: str
     fit_ids: tuple[str, ...]
     validation_ids: tuple[str, ...]
@@ -891,8 +1198,14 @@ class FoldArtifact:
     base_fit_id: str
     reference_fit_id: str
     reference_fit_hash: str
+    reference_ranges: tuple[tuple[str, str, float | None, float | None], ...]
+    reference_range_hash: str
+    reference_fit_hash_inputs: tuple[str, ...]
+    fit_feature_provenance_hashes: tuple[tuple[str, str], ...]
     final_refit: bool
     purpose: Literal["analytical", "synthetic_test"]
+    calibrator_artifact_id: str | None = None
+    calibration_recipe_hash: str | None = None
     artifact_id: str = ""
 
     def __post_init__(self) -> None:
@@ -905,8 +1218,27 @@ class FoldArtifact:
             or self.replay_model.adapter_attestation_id is None
         ):
             raise LearningError("Analytical fold artifacts require trusted adapter attestations.")
+        if self.predictor_scope != PILOT_PREDICTOR_SCOPE:
+            raise LearningError("Fold artifact has an unknown predictor scope.")
         if not self.development_manifest_id or len(self.recipe_hash) != 64:
             raise LearningError("Fold artifacts require a development manifest and model recipe hash.")
+        if not all((self.dataset_id, self.source_version, self.channel, self.task)):
+            raise LearningError("Fold artifact dataset binding is incomplete.")
+        if set(self.fit_ids) | set(self.validation_ids) != set(self.development_subject_ids):
+            raise FoldLeakageError("Fold IDs do not cover the sealed development membership.")
+        if len(self.development_identity_hashes) != len(self.development_subject_ids):
+            raise LearningError("Fold development identity hashes are incomplete.")
+        expected_range_hash = _digest({
+            "fit_ids": self.fit_ids,
+            "feature_provenance_hashes": self.fit_feature_provenance_hashes,
+            "ranges": self.reference_ranges,
+        })
+        if self.reference_range_hash != expected_range_hash:
+            raise LearningError("Fold reference range hash is stale.")
+        if self.reference_range_hash not in self.reference_fit_hash_inputs:
+            raise LearningError("Fold reference hash does not bind the reference ranges.")
+        if self.reference_fit_hash != _digest(self.reference_fit_hash_inputs):
+            raise LearningError("Fold reference fit hash is stale.")
         if set(self.fit_ids) & set(self.validation_ids):
             raise FoldLeakageError("Fit and validation IDs overlap.")
         if set(self.fit_group_ids) & set(self.validation_group_ids):
@@ -917,6 +1249,12 @@ class FoldArtifact:
             raise LearningError("Validation subject/group proof differs from validation groups.")
         if self.final_refit != (not self.validation_ids):
             raise LearningError("Only a validation-free private refit may be final.")
+        if (self.calibrator_artifact_id is None) != (self.calibration_recipe_hash is None):
+            raise LearningError("Final calibrator artifact and recipe binding must be paired.")
+        if not self.final_refit and self.calibrator_artifact_id is not None:
+            raise LearningError("OOF fold artifacts cannot bind final calibrators.")
+        if self.purpose == "analytical" and self.final_refit and self.calibrator_artifact_id is None:
+            raise LearningError("Analytical final refit requires frozen calibrators and recipe.")
         payload = self.to_dict(include_id=False)
         expected = "fold_" + _digest(payload)[:24]
         if self.artifact_id and self.artifact_id != expected:
@@ -926,8 +1264,14 @@ class FoldArtifact:
     def to_dict(self, *, include_id: bool = True) -> dict[str, Any]:
         result = {
             "schema_version": LEARNING_SCHEMA_VERSION,
+            "dataset_id": self.dataset_id, "source_version": self.source_version,
+            "channel": self.channel, "task": self.task,
             "development_manifest_id": self.development_manifest_id,
+            "development_subject_ids": list(self.development_subject_ids),
+            "development_identity_hashes": list(self.development_identity_hashes),
+            "source_manifest_hash": self.source_manifest_hash,
             "recipe_hash": self.recipe_hash,
+            "predictor_scope": self.predictor_scope,
             "class_order": list(self.class_order), "fold_id": self.fold_id,
             "fit_ids": list(self.fit_ids), "validation_ids": list(self.validation_ids),
             "excluded_ids": list(self.excluded_ids), "fit_group_ids": list(self.fit_group_ids),
@@ -935,8 +1279,17 @@ class FoldArtifact:
             "validation_subject_groups": [list(item) for item in self.validation_subject_groups],
             "base_model": self.base_model.to_dict(), "replay_model": self.replay_model.to_dict(),
             "base_fit_id": self.base_fit_id, "reference_fit_id": self.reference_fit_id,
-            "reference_fit_hash": self.reference_fit_hash, "final_refit": self.final_refit,
+            "reference_fit_hash": self.reference_fit_hash,
+            "reference_ranges": [list(item) for item in self.reference_ranges],
+            "reference_range_hash": self.reference_range_hash,
+            "reference_fit_hash_inputs": list(self.reference_fit_hash_inputs),
+            "fit_feature_provenance_hashes": [
+                list(item) for item in self.fit_feature_provenance_hashes
+            ],
+            "final_refit": self.final_refit,
             "purpose": self.purpose,
+            "calibrator_artifact_id": self.calibrator_artifact_id,
+            "calibration_recipe_hash": self.calibration_recipe_hash,
         }
         if include_id:
             result["artifact_id"] = self.artifact_id
@@ -946,8 +1299,17 @@ class FoldArtifact:
 @dataclass(frozen=True, slots=True)
 class FoldArtifactProof:
     fold_artifact_id: str
+    dataset_id: str
+    source_version: str
+    channel: str
+    task: str
+    class_order: tuple[str, ...]
     development_manifest_id: str
+    development_subject_ids: tuple[str, ...]
+    development_identity_hashes: tuple[str, ...]
+    source_manifest_hash: str | None
     recipe_hash: str
+    predictor_scope: str
     fold_id: str
     fit_ids: tuple[str, ...]
     fit_group_ids: tuple[str, ...]
@@ -958,15 +1320,23 @@ class FoldArtifactProof:
     replay_model_artifact_hash: str
     reference_fit_id: str
     reference_fit_hash: str
+    reference_range_hash: str
     final_refit: bool
+    purpose: Literal["analytical", "synthetic_test"]
     artifact_content_hash: str
 
     @classmethod
     def from_artifact(cls, artifact: FoldArtifact) -> Self:
         return cls(
             fold_artifact_id=artifact.artifact_id,
+            dataset_id=artifact.dataset_id, source_version=artifact.source_version,
+            channel=artifact.channel, task=artifact.task, class_order=artifact.class_order,
             development_manifest_id=artifact.development_manifest_id,
+            development_subject_ids=artifact.development_subject_ids,
+            development_identity_hashes=artifact.development_identity_hashes,
+            source_manifest_hash=artifact.source_manifest_hash,
             recipe_hash=artifact.recipe_hash, fold_id=artifact.fold_id,
+            predictor_scope=artifact.predictor_scope,
             fit_ids=artifact.fit_ids, fit_group_ids=artifact.fit_group_ids,
             validation_ids=artifact.validation_ids,
             validation_subject_groups=artifact.validation_subject_groups,
@@ -975,15 +1345,24 @@ class FoldArtifactProof:
             replay_model_artifact_hash=artifact.replay_model.artifact_id,
             reference_fit_id=artifact.reference_fit_id,
             reference_fit_hash=artifact.reference_fit_hash,
+            reference_range_hash=artifact.reference_range_hash,
             final_refit=artifact.final_refit,
+            purpose=artifact.purpose,
             artifact_content_hash=_digest(artifact.to_dict()),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "fold_artifact_id": self.fold_artifact_id,
+            "dataset_id": self.dataset_id, "source_version": self.source_version,
+            "channel": self.channel, "task": self.task,
+            "class_order": list(self.class_order),
             "development_manifest_id": self.development_manifest_id,
+            "development_subject_ids": list(self.development_subject_ids),
+            "development_identity_hashes": list(self.development_identity_hashes),
+            "source_manifest_hash": self.source_manifest_hash,
             "recipe_hash": self.recipe_hash, "fold_id": self.fold_id,
+            "predictor_scope": self.predictor_scope,
             "fit_ids": list(self.fit_ids), "fit_group_ids": list(self.fit_group_ids),
             "validation_ids": list(self.validation_ids),
             "validation_subject_groups": [list(item) for item in self.validation_subject_groups],
@@ -992,7 +1371,9 @@ class FoldArtifactProof:
             "replay_model_artifact_hash": self.replay_model_artifact_hash,
             "reference_fit_id": self.reference_fit_id,
             "reference_fit_hash": self.reference_fit_hash,
+            "reference_range_hash": self.reference_range_hash,
             "final_refit": self.final_refit,
+            "purpose": self.purpose,
             "artifact_content_hash": self.artifact_content_hash,
         }
 
@@ -1021,6 +1402,12 @@ class FoldPredictionReceipt:
     subject_hash: str
     snapshot_hash: str
     fold_artifact_id: str
+    development_manifest_id: str
+    recipe_hash: str
+    reference_range_hash: str
+    feature_provenance_hash: str
+    calibrator_artifact_id: str | None
+    calibration_recipe_hash: str | None
     base_features: tuple[tuple[str, float | None], ...]
     state_features: tuple[tuple[str, float | None], ...]
     base_probabilities: tuple[float, ...]
@@ -1034,6 +1421,12 @@ class FoldPredictionReceipt:
         subject_hash: str,
         snapshot_hash: str,
         fold_artifact_id: str,
+        development_manifest_id: str,
+        recipe_hash: str,
+        reference_range_hash: str,
+        feature_provenance_hash: str,
+        calibrator_artifact_id: str | None,
+        calibration_recipe_hash: str | None,
         base_features: tuple[tuple[str, float | None], ...],
         state_features: tuple[tuple[str, float | None], ...],
         base_probabilities: tuple[float, ...],
@@ -1046,6 +1439,12 @@ class FoldPredictionReceipt:
         payload = {
             "subject_id": subject_id, "subject_hash": subject_hash,
             "snapshot_hash": snapshot_hash, "fold_artifact_id": fold_artifact_id,
+            "development_manifest_id": development_manifest_id,
+            "recipe_hash": recipe_hash,
+            "reference_range_hash": reference_range_hash,
+            "feature_provenance_hash": feature_provenance_hash,
+            "calibrator_artifact_id": calibrator_artifact_id,
+            "calibration_recipe_hash": calibration_recipe_hash,
             "base_features": base_features, "state_features": state_features,
             "base_probabilities": base_probabilities,
             "state_probabilities": state_probabilities,
@@ -1061,6 +1460,12 @@ class FoldPredictionReceipt:
         return {
             "subject_id": self.subject_id, "subject_hash": self.subject_hash,
             "snapshot_hash": self.snapshot_hash, "fold_artifact_id": self.fold_artifact_id,
+            "development_manifest_id": self.development_manifest_id,
+            "recipe_hash": self.recipe_hash,
+            "reference_range_hash": self.reference_range_hash,
+            "feature_provenance_hash": self.feature_provenance_hash,
+            "calibrator_artifact_id": self.calibrator_artifact_id,
+            "calibration_recipe_hash": self.calibration_recipe_hash,
             "base_features": [list(item) for item in self.base_features],
             "state_features": [list(item) for item in self.state_features],
             "base_probabilities": list(self.base_probabilities),
@@ -1110,6 +1515,20 @@ class FoldArtifactManifest:
             raise FoldLeakageError("OOF artifacts do not share one development manifest.")
         if len({item.recipe_hash for item in self.proofs}) != 1:
             raise FoldLeakageError("OOF artifacts do not share one frozen model recipe.")
+        bindings = {
+            (
+                item.dataset_id, item.source_version, item.channel, item.task,
+                item.class_order, item.development_manifest_id,
+                item.development_subject_ids, item.development_identity_hashes,
+                item.source_manifest_hash,
+                item.predictor_scope, item.purpose,
+            )
+            for item in self.proofs
+        }
+        if len(bindings) != 1:
+            raise FoldLeakageError(
+                "OOF artifacts do not share one dataset/development/predictor binding."
+            )
         for proof, artifact in zip(self.proofs, self._artifacts, strict=True):
             if proof != FoldArtifactProof.from_artifact(artifact):
                 raise LearningError("Fold-artifact proof differs from its immutable artifact.")
@@ -1121,8 +1540,13 @@ class FoldArtifactManifest:
         validation_ids = tuple(
             subject_id for proof in self.proofs for subject_id in proof.validation_ids
         )
+        development_ids = self.proofs[0].development_subject_ids
+        if len(set(validation_ids)) != len(validation_ids) or set(validation_ids) != set(development_ids):
+            raise FoldLeakageError(
+                "Sealed folds require complete development OOF membership exactly once."
+            )
         output_ids = tuple(item.subject_id for item in self.outputs)
-        if len(set(validation_ids)) != len(validation_ids) or set(output_ids) != set(validation_ids):
+        if len(set(output_ids)) != len(output_ids) or set(output_ids) != set(validation_ids):
             raise FoldLeakageError(
                 "Sealed fold outputs must cover every validation subject exactly once."
             )
@@ -1133,6 +1557,22 @@ class FoldArtifactManifest:
         if self.manifest_id and self.manifest_id != expected:
             raise LearningError("Stale fold-artifact manifest ID.")
         object.__setattr__(self, "manifest_id", expected)
+
+    @property
+    def development_subject_ids(self) -> tuple[str, ...]:
+        return self.proofs[0].development_subject_ids
+
+    @property
+    def development_manifest_id(self) -> str:
+        return self.proofs[0].development_manifest_id
+
+    @property
+    def recipe_hash(self) -> str:
+        return self.proofs[0].recipe_hash
+
+    @property
+    def purpose(self) -> Literal["analytical", "synthetic_test"]:
+        return self.proofs[0].purpose
 
     def resolve(self, artifact_id: str) -> FoldArtifactProof:
         matches = [item for item in self.proofs if item.fold_artifact_id == artifact_id]
@@ -1195,6 +1635,12 @@ class FoldPrediction:
     evidence_snapshot: EvidenceSnapshot
     replay_context: ReplayContext
     fold_artifact_id: str
+    development_manifest_id: str
+    recipe_hash: str
+    reference_range_hash: str
+    feature_provenance_hash: str
+    calibrator_artifact_id: str | None
+    calibration_recipe_hash: str | None
     fold_id: str
     fit_ids: tuple[str, ...]
     fit_group_ids: tuple[str, ...]
@@ -1214,6 +1660,19 @@ class FoldPrediction:
             raise LearningError("Fold prediction subject differs from its evidence snapshot.")
         if not isinstance(self.output_receipt, FoldPredictionReceipt):
             raise LearningError("Fold prediction requires a predict_fold output receipt.")
+        if (
+            self.output_receipt.development_manifest_id != self.development_manifest_id
+            or self.output_receipt.recipe_hash != self.recipe_hash
+            or self.output_receipt.reference_range_hash != self.reference_range_hash
+            or self.output_receipt.feature_provenance_hash != self.feature_provenance_hash
+            or self.output_receipt.calibrator_artifact_id != self.calibrator_artifact_id
+            or self.output_receipt.calibration_recipe_hash != self.calibration_recipe_hash
+        ):
+            raise LearningError("Fold prediction differs from its output receipt provenance.")
+        if (self.calibrator_artifact_id is None) != (self.calibration_recipe_hash is None):
+            raise LearningError("Prediction calibrator artifact and recipe binding must be paired.")
+        if not self.final_refit and self.calibrator_artifact_id is not None:
+            raise LearningError("OOF predictions cannot bind final calibrators.")
         _probability_vector(self.base_probabilities, self.subject.class_order)
         _probability_vector(self.state_probabilities, self.subject.class_order)
         if self.base_fit_hash == self.replay_context.replay_model.artifact_id:
@@ -1240,6 +1699,12 @@ class FoldPrediction:
             "state_probabilities": self.state_probabilities,
             "snapshot_hash": self.evidence_snapshot.snapshot_hash,
             "fold_artifact_id": self.fold_artifact_id,
+            "development_manifest_id": self.development_manifest_id,
+            "recipe_hash": self.recipe_hash,
+            "reference_range_hash": self.reference_range_hash,
+            "feature_provenance_hash": self.feature_provenance_hash,
+            "calibrator_artifact_id": self.calibrator_artifact_id,
+            "calibration_recipe_hash": self.calibration_recipe_hash,
             "fold_id": self.fold_id,
             "fit_ids": self.fit_ids,
             "fit_group_ids": self.fit_group_ids,
@@ -1272,6 +1737,15 @@ def _validate_prediction_receipt_against_artifact(
         or receipt.subject_hash != subject.content_hash
         or receipt.snapshot_hash != prediction.evidence_snapshot.snapshot_hash
         or receipt.fold_artifact_id != artifact.artifact_id
+        or receipt.development_manifest_id != artifact.development_manifest_id
+        or receipt.recipe_hash != artifact.recipe_hash
+        or receipt.reference_range_hash != artifact.reference_range_hash
+        or receipt.feature_provenance_hash != prediction.feature_provenance_hash
+        or prediction.development_manifest_id != artifact.development_manifest_id
+        or prediction.recipe_hash != artifact.recipe_hash
+        or prediction.reference_range_hash != artifact.reference_range_hash
+        or prediction.calibrator_artifact_id != artifact.calibrator_artifact_id
+        or prediction.calibration_recipe_hash != artifact.calibration_recipe_hash
         or receipt.base_probabilities != expected_base
         or receipt.state_probabilities != expected_state
         or prediction.base_probabilities != receipt.base_probabilities
@@ -1308,6 +1782,7 @@ def _fit_artifact(
     frozen_config: FrozenFoldConfig,
     *,
     final_refit: bool,
+    final_calibrators: JointCalibrators | None = None,
 ) -> FoldArtifact:
     excluded = tuple(dict.fromkeys((*frozen_config.excluded_ids, *validation)))
     known = set(inputs.cases)
@@ -1333,6 +1808,10 @@ def _fit_artifact(
         )
     if set(fit) & set(validation) or set(fit) & set(excluded):
         raise FoldLeakageError("Fit IDs overlap validation or excluded IDs.")
+    if frozen_config.analytical_run:
+        _validate_analytical_feature_provenance(
+            inputs, development_ids, frozen_config.development_manifest,
+        )
     fit_groups = tuple(dict.fromkeys(inputs.cases[item].subject.source_group_id for item in fit))
     validation_subject_groups = tuple(
         (item, inputs.cases[item].subject.source_group_id) for item in validation
@@ -1385,22 +1864,44 @@ def _fit_artifact(
         feature_names=frozen_config.state_feature_names, class_order=frozen_config.class_order,
         analytical_run=frozen_config.analytical_run,
     )
-    reference_hash = _digest({
-        "fit_ids": fit, "fit_group_ids": fit_groups,
-        "replay_model_artifact_id": replay.artifact_id,
-        "replay_feature_pipeline_hash": replay.feature_pipeline_hash,
-    })
+    reference_ranges, provenance_hashes, reference_range_hash = _reference_range_binding(
+        inputs.cases, fit, frozen_config,
+    )
+    reference_hash_inputs = (
+        _digest(fit), _digest(fit_groups), replay.artifact_id,
+        replay.feature_pipeline_hash, reference_range_hash,
+        _digest(provenance_hashes),
+    )
+    reference_hash = _digest(reference_hash_inputs)
+    manifest = frozen_config.development_manifest
     return FoldArtifact(
         class_order=frozen_config.class_order,
-        development_manifest_id=frozen_config.development_manifest.manifest_id,
+        dataset_id=manifest.dataset_id, source_version=manifest.source_version,
+        channel=manifest.channel, task=manifest.task,
+        development_manifest_id=manifest.manifest_id,
+        development_subject_ids=manifest.subject_ids,
+        development_identity_hashes=tuple(
+            item.source_identity_hash for item in manifest.subjects
+        ),
+        source_manifest_hash=manifest.source_manifest_hash,
         recipe_hash=recipe_hash, fold_id=fold_id, fit_ids=fit,
+        predictor_scope=PILOT_PREDICTOR_SCOPE,
         validation_ids=validation, excluded_ids=excluded, fit_group_ids=fit_groups,
         validation_group_ids=validation_groups,
         validation_subject_groups=validation_subject_groups,
         base_model=base, replay_model=replay, base_fit_id=f"base_{fold_id}",
         reference_fit_id=f"reference_{fold_id}", reference_fit_hash=reference_hash,
+        reference_ranges=reference_ranges, reference_range_hash=reference_range_hash,
+        reference_fit_hash_inputs=reference_hash_inputs,
+        fit_feature_provenance_hashes=provenance_hashes,
         final_refit=final_refit,
         purpose="analytical" if frozen_config.analytical_run else "synthetic_test",
+        calibrator_artifact_id=(
+            None if final_calibrators is None else final_calibrators.artifact_id
+        ),
+        calibration_recipe_hash=(
+            None if final_calibrators is None else final_calibrators.calibration_recipe_hash
+        ),
     )
 
 
@@ -1414,13 +1915,26 @@ def fit_fold(
 
     fit = _ordered_ids(fit_ids, "fit_ids")
     validation = _ordered_ids(validation_ids, "validation_ids")
-    return _fit_artifact(inputs, fit, validation, frozen_config, final_refit=False)
+    return _fit_artifact(
+        inputs, fit, validation, frozen_config,
+        final_refit=False, final_calibrators=None,
+    )
 
 
 def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> FoldPrediction:
     """Predict with the paired base/replay fit and bind same-fold evidence."""
 
     subject = case_inputs.subject
+    if (
+        subject.dataset_id, subject.source_version, subject.channel,
+        subject.task, subject.class_order,
+    ) != (
+        fold_artifact.dataset_id, fold_artifact.source_version, fold_artifact.channel,
+        fold_artifact.task, fold_artifact.class_order,
+    ):
+        raise FoldLeakageError(
+            "Prediction subject differs from the fold dataset/source/channel/task/class binding."
+        )
     if not fold_artifact.final_refit:
         if subject.partition != "development":
             raise FoldLeakageError("OOF prediction requires a development subject.")
@@ -1430,8 +1944,22 @@ def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> Fol
             raise FoldLeakageError("OOF prediction subject occurs in fit IDs.")
         if subject.source_group_id in fold_artifact.fit_group_ids:
             raise FoldLeakageError("OOF prediction identity group occurs in fit groups.")
-    elif subject.partition == "development":
-        raise FoldLeakageError("Final-refit models cannot generate development calibration rows.")
+    elif (
+        subject.partition == "development"
+        or subject.subject_id in fold_artifact.fit_ids
+        or subject.source_group_id in fold_artifact.fit_group_ids
+        or _source_identity_hash(subject) in fold_artifact.development_identity_hashes
+    ):
+        raise FoldLeakageError(
+            "Final prediction rejects a development training identity even when relabelled holdout."
+        )
+    if fold_artifact.purpose == "analytical":
+        provenance = case_inputs.feature_provenance
+        if provenance is None or provenance.origin != "real_prepared":
+            raise LearningError("Analytical prediction requires real prepared feature provenance.")
+        provenance.validate(subject, case_inputs.base_features, case_inputs.state_features)
+        if provenance.source_manifest_hash != fold_artifact.source_manifest_hash:
+            raise FoldLeakageError("Prediction prepared features differ from the fitted source manifest.")
     snapshot = case_inputs.evidence_snapshot
     if (
         snapshot.reference_fit_id != fold_artifact.reference_fit_id
@@ -1443,6 +1971,12 @@ def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> Fol
     receipt = FoldPredictionReceipt(
         subject_id=subject.subject_id, subject_hash=subject.content_hash,
         snapshot_hash=snapshot.snapshot_hash, fold_artifact_id=fold_artifact.artifact_id,
+        development_manifest_id=fold_artifact.development_manifest_id,
+        recipe_hash=fold_artifact.recipe_hash,
+        reference_range_hash=fold_artifact.reference_range_hash,
+        feature_provenance_hash=_feature_provenance_hash(case_inputs),
+        calibrator_artifact_id=fold_artifact.calibrator_artifact_id,
+        calibration_recipe_hash=fold_artifact.calibration_recipe_hash,
         base_features=_canonical_feature_values(
             case_inputs.base_features, fold_artifact.base_model.feature_names,
         ),
@@ -1461,7 +1995,14 @@ def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> Fol
             reference_fit_hash=fold_artifact.reference_fit_hash,
             before_probabilities=state_probability,
         ),
-        fold_artifact_id=fold_artifact.artifact_id, fold_id=fold_artifact.fold_id,
+        fold_artifact_id=fold_artifact.artifact_id,
+        development_manifest_id=fold_artifact.development_manifest_id,
+        recipe_hash=fold_artifact.recipe_hash,
+        reference_range_hash=fold_artifact.reference_range_hash,
+        feature_provenance_hash=_feature_provenance_hash(case_inputs),
+        calibrator_artifact_id=fold_artifact.calibrator_artifact_id,
+        calibration_recipe_hash=fold_artifact.calibration_recipe_hash,
+        fold_id=fold_artifact.fold_id,
         fit_ids=fold_artifact.fit_ids, fit_group_ids=fold_artifact.fit_group_ids,
         excluded_ids=fold_artifact.excluded_ids,
         validation_id=None if fold_artifact.final_refit else subject.subject_id,
@@ -1493,6 +2034,9 @@ def _verify_oof_prediction(
         raise FoldLeakageError("OOF prediction is not a development subject.")
     if (
         prediction.fold_id != proof.fold_id
+        or prediction.development_manifest_id != proof.development_manifest_id
+        or prediction.recipe_hash != proof.recipe_hash
+        or prediction.reference_range_hash != proof.reference_range_hash
         or subject.fold_id != proof.fold_id
         or prediction.fit_ids != proof.fit_ids
         or prediction.fit_group_ids != proof.fit_group_ids
@@ -1518,6 +2062,8 @@ def refit_full_development(
     oof_predictions: Sequence[FoldPrediction],
     fold_manifest: FoldArtifactManifest,
     frozen_config: FrozenFoldConfig,
+    *,
+    calibrators: JointCalibrators | None = None,
 ) -> FoldArtifact:
     """Refit only after every development subject has exactly one OOF row."""
 
@@ -1532,6 +2078,26 @@ def refit_full_development(
     expected_recipe = _model_recipe_hash(frozen_config, base_resolved, replay_resolved)
     if {item.recipe_hash for item in fold_manifest.proofs} != {expected_recipe}:
         raise FoldLeakageError("Full-development refit changed the verified OOF model recipe.")
+    if frozen_config.analytical_run and calibrators is None:
+        raise LearningError("Analytical final refit requires frozen calibrators and recipe.")
+    if calibrators is not None:
+        proof = fold_manifest.proofs[0]
+        if (
+            calibrators.fold_manifest_id != fold_manifest.manifest_id
+            or calibrators.development_manifest_id != proof.development_manifest_id
+            or calibrators.model_recipe_hash != expected_recipe
+            or calibrators.dataset_id != proof.dataset_id
+            or calibrators.source_version != proof.source_version
+            or calibrators.channel != proof.channel
+            or calibrators.task != proof.task
+            or calibrators.class_order != proof.class_order
+            or calibrators.purpose != proof.purpose
+        ):
+            raise FoldLeakageError(
+                "Final-refit calibrator dataset/development/model recipe binding differs."
+            )
+        if not calibrators.calibration_recipe_hash:
+            raise FoldLeakageError("Final-refit calibrator recipe is not frozen.")
     for prediction in oof_predictions:
         _verify_oof_prediction(prediction, fold_manifest)
     observed = [item.subject.subject_id for item in oof_predictions]
@@ -1540,7 +2106,161 @@ def refit_full_development(
     prediction_subjects = {item.subject.subject_id: item.subject for item in oof_predictions}
     if any(inputs.cases[item].subject != prediction_subjects[item] for item in expected):
         raise FoldLeakageError("Full-development refit subject records differ from verified OOF rows.")
-    return _fit_artifact(inputs, expected, (), frozen_config, final_refit=True)
+    if calibrators is not None and set(calibrators.oof_prediction_hashes) != {
+        item.prediction_hash for item in oof_predictions
+    }:
+        raise FoldLeakageError("Final-refit calibrators differ from the verified OOF predictions.")
+    return _fit_artifact(
+        inputs, expected, (), frozen_config,
+        final_refit=True, final_calibrators=calibrators,
+    )
+
+
+def _canonical_scores(
+    scores: Mapping[str, int] | None, class_order: Sequence[str],
+) -> tuple[tuple[str, int], ...] | None:
+    if scores is None:
+        return None
+    return tuple((label, int(scores[label])) for label in class_order)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class OOFCalibrationReceipt:
+    """Sealed binding for every downstream value used to fit calibration."""
+
+    subject_id: str
+    subject_hash: str
+    prediction_hash: str
+    fold_output_receipt_id: str
+    development_manifest_id: str
+    fusion_hash: str
+    assessment_hashes: tuple[tuple[str, str], ...]
+    agent_v0_scores: tuple[tuple[str, int], ...] | None
+    agent_v1_scores: tuple[tuple[str, int], ...] | None
+    source_trace_hashes: tuple[str, ...]
+    replay_hash: str | None
+    state_probabilities_before: tuple[float, ...] | None
+    state_probabilities_after: tuple[float, ...] | None
+    v1_required: bool
+    arm_refusal_reasons: tuple[tuple[str, str | None], ...]
+    provenance: Literal["fusion_record", "synthetic_fixture"]
+    receipt_id: str
+
+    def __init__(
+        self,
+        *,
+        subject_id: str,
+        subject_hash: str,
+        prediction_hash: str,
+        fold_output_receipt_id: str,
+        development_manifest_id: str,
+        fusion_hash: str,
+        assessment_hashes: tuple[tuple[str, str], ...],
+        agent_v0_scores: tuple[tuple[str, int], ...] | None,
+        agent_v1_scores: tuple[tuple[str, int], ...] | None,
+        source_trace_hashes: tuple[str, ...],
+        replay_hash: str | None,
+        state_probabilities_before: tuple[float, ...] | None,
+        state_probabilities_after: tuple[float, ...] | None,
+        v1_required: bool,
+        arm_refusal_reasons: tuple[tuple[str, str | None], ...],
+        provenance: Literal["fusion_record", "synthetic_fixture"],
+        receipt_id: str = "",
+        _seal: object | None = None,
+    ) -> None:
+        if _seal is not _CALIBRATION_RECEIPT_SEAL:
+            raise LearningError(
+                "OOF calibration receipts are issued only by CalibrationRow factories."
+            )
+        payload = {
+            "subject_id": subject_id, "subject_hash": subject_hash,
+            "prediction_hash": prediction_hash,
+            "fold_output_receipt_id": fold_output_receipt_id,
+            "development_manifest_id": development_manifest_id,
+            "fusion_hash": fusion_hash,
+            "assessment_hashes": assessment_hashes,
+            "agent_v0_scores": agent_v0_scores,
+            "agent_v1_scores": agent_v1_scores,
+            "source_trace_hashes": source_trace_hashes,
+            "replay_hash": replay_hash,
+            "state_probabilities_before": state_probabilities_before,
+            "state_probabilities_after": state_probabilities_after,
+            "v1_required": v1_required,
+            "arm_refusal_reasons": arm_refusal_reasons,
+            "provenance": provenance,
+        }
+        expected = "oof_calibration_" + _digest(payload)[:24]
+        if receipt_id and receipt_id != expected:
+            raise LearningError("Stale OOF calibration receipt ID.")
+        for name, value in payload.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "receipt_id", expected)
+
+    def to_dict(self, *, include_id: bool = True) -> dict[str, Any]:
+        result = {
+            "subject_id": self.subject_id, "subject_hash": self.subject_hash,
+            "prediction_hash": self.prediction_hash,
+            "fold_output_receipt_id": self.fold_output_receipt_id,
+            "development_manifest_id": self.development_manifest_id,
+            "fusion_hash": self.fusion_hash,
+            "assessment_hashes": [list(item) for item in self.assessment_hashes],
+            "agent_v0_scores": (
+                None if self.agent_v0_scores is None
+                else [list(item) for item in self.agent_v0_scores]
+            ),
+            "agent_v1_scores": (
+                None if self.agent_v1_scores is None
+                else [list(item) for item in self.agent_v1_scores]
+            ),
+            "source_trace_hashes": list(self.source_trace_hashes),
+            "replay_hash": self.replay_hash,
+            "state_probabilities_before": self.state_probabilities_before,
+            "state_probabilities_after": self.state_probabilities_after,
+            "v1_required": self.v1_required,
+            "arm_refusal_reasons": [list(item) for item in self.arm_refusal_reasons],
+            "provenance": self.provenance,
+        }
+        if include_id:
+            result["receipt_id"] = self.receipt_id
+        return result
+
+
+def _calibration_receipt_fields(
+    *,
+    subject: SubjectRow,
+    fusion_hash: str,
+    assessment_hashes: tuple[tuple[str, str], ...],
+    agent_v0_scores: Mapping[str, int] | None,
+    agent_v1_scores: Mapping[str, int] | None,
+    source_trace_hashes: tuple[str, ...],
+    replay_hash: str | None,
+    state_probabilities_before: tuple[float, ...] | None,
+    state_probabilities_after: tuple[float, ...] | None,
+    v1_required: bool,
+    arm_refusal_reasons: Mapping[str, str | None],
+    prediction: FoldPrediction,
+    provenance: Literal["fusion_record", "synthetic_fixture"],
+) -> dict[str, Any]:
+    return {
+        "subject_id": subject.subject_id,
+        "subject_hash": subject.content_hash,
+        "prediction_hash": prediction.prediction_hash,
+        "fold_output_receipt_id": prediction.output_receipt.receipt_id,
+        "development_manifest_id": prediction.development_manifest_id,
+        "fusion_hash": fusion_hash,
+        "assessment_hashes": tuple(assessment_hashes),
+        "agent_v0_scores": _canonical_scores(agent_v0_scores, subject.class_order),
+        "agent_v1_scores": _canonical_scores(agent_v1_scores, subject.class_order),
+        "source_trace_hashes": tuple(source_trace_hashes),
+        "replay_hash": replay_hash,
+        "state_probabilities_before": state_probabilities_before,
+        "state_probabilities_after": state_probabilities_after,
+        "v1_required": v1_required,
+        "arm_refusal_reasons": tuple(
+            (arm, arm_refusal_reasons[arm]) for arm in ("J-A", "J-S", "J-AS")
+        ),
+        "provenance": provenance,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1556,7 +2276,11 @@ class CalibrationRow:
     state_probabilities_before: tuple[float, ...] | None
     state_probabilities_after: tuple[float, ...] | None
     arm_refusal_reasons: Mapping[str, str | None]
+    assessment_hashes: tuple[tuple[str, str], ...] = ()
+    source_trace_hashes: tuple[str, ...] = ()
+    replay_hash: str | None = None
     fold_prediction: FoldPrediction | None = None
+    oof_receipt: OOFCalibrationReceipt | None = None
 
     def __post_init__(self) -> None:
         _probability_vector(self.base_probabilities, self.subject.class_order)
@@ -1577,13 +2301,34 @@ class CalibrationRow:
                     raise LearningError("Agent scores must be integer ordinals from zero through four.")
         if not self.v1_required and self.agent_v1_scores is not None:
             raise LearningError("A no-op replay must use v0 and cannot carry v1 scores.")
-        if self.fold_prediction is not None and (
-            self.fold_prediction.subject != self.subject
-            or self.fold_prediction.base_probabilities != self.base_probabilities
-        ):
-            raise FoldLeakageError(
-                "Calibration row differs from its bound fold prediction subject or base probabilities."
-            )
+        if len(self.fusion_hash) != 64:
+            raise LearningError("Calibration rows require a fusion SHA-256 hash.")
+        if any(len(value) != 64 for _, value in self.assessment_hashes):
+            raise LearningError("Assessment trace hashes must be SHA-256.")
+        if any(len(value) != 64 for value in self.source_trace_hashes):
+            raise LearningError("Source trace hashes must be SHA-256.")
+        if self.replay_hash is not None and len(self.replay_hash) != 64:
+            raise LearningError("Replay hash must be SHA-256.")
+        if self.fold_prediction is not None:
+            if (
+                self.fold_prediction.subject != self.subject
+                or self.fold_prediction.base_probabilities != self.base_probabilities
+                or (
+                    self.state_probabilities_before is not None
+                    and self.fold_prediction.state_probabilities
+                    != self.state_probabilities_before
+                )
+            ):
+                raise FoldLeakageError(
+                    "Calibration row differs from its bound fold prediction payload."
+                )
+            if self.oof_receipt is None:
+                raise FoldLeakageError(
+                    "Bound calibration rows require a sealed OOF calibration receipt."
+                )
+            _validate_oof_calibration_receipt(self)
+        elif self.oof_receipt is not None:
+            raise FoldLeakageError("Unbound calibration rows cannot carry OOF receipts.")
 
     @classmethod
     def from_fusion(
@@ -1607,13 +2352,56 @@ class CalibrationRow:
         }
         before = None if state_probabilities_before is None else tuple(state_probabilities_before)
         after = None if state_probabilities_after is None else tuple(state_probabilities_after)
+        assessment_hashes = tuple(
+            (assessment.revision, assessment.content_hash)
+            for assessment in (fusion.assessment_v0, fusion.assessment_v1)
+            if assessment is not None
+        )
+        source_hashes = [fusion.parent_snapshot_hash, fusion.child_snapshot_hash]
+        if fold_prediction is not None:
+            source_hashes.extend(
+                segment.content_hash
+                for segment in fold_prediction.evidence_snapshot.source_segments
+            )
+        if fusion.replay is not None:
+            source_hashes.extend(
+                segment.content_hash for segment in fusion.replay.after.source_segments
+            )
+        source_trace_hashes = tuple(dict.fromkeys(source_hashes))
+        replay_hash = None if fusion.replay is None else fusion.replay.content_hash
+        if fold_prediction is not None and (
+            fusion.subject != fold_prediction.subject
+            or fusion.base_probabilities != fold_prediction.base_probabilities
+            or fusion.base_fit_id != fold_prediction.base_fit_id
+            or fusion.base_fit_hash != fold_prediction.base_fit_hash
+            or fusion.reference_fit_id != fold_prediction.reference_fit_id
+            or fusion.reference_fit_hash != fold_prediction.reference_fit_hash
+            or fusion.parent_snapshot_hash != fold_prediction.evidence_snapshot.snapshot_hash
+        ):
+            raise FoldLeakageError("Fusion record differs from its bound fold prediction.")
+        receipt = None
+        if fold_prediction is not None:
+            fields = _calibration_receipt_fields(
+                subject=fusion.subject, fusion_hash=fusion.content_hash,
+                assessment_hashes=assessment_hashes, agent_v0_scores=v0,
+                agent_v1_scores=v1, source_trace_hashes=source_trace_hashes,
+                replay_hash=replay_hash, state_probabilities_before=before,
+                state_probabilities_after=after, v1_required=fusion.v1_required,
+                arm_refusal_reasons=reasons, prediction=fold_prediction,
+                provenance="fusion_record",
+            )
+            receipt = OOFCalibrationReceipt(
+                **fields, _seal=_CALIBRATION_RECEIPT_SEAL,
+            )
         return cls(
             subject=fusion.subject, fusion_hash=fusion.content_hash,
             base_probabilities=fusion.base_probabilities, agent_v0_scores=v0,
             agent_v1_scores=v1, v1_required=fusion.v1_required,
             state_probabilities_before=before,
             state_probabilities_after=after, arm_refusal_reasons=reasons,
-            fold_prediction=fold_prediction,
+            assessment_hashes=assessment_hashes,
+            source_trace_hashes=source_trace_hashes, replay_hash=replay_hash,
+            fold_prediction=fold_prediction, oof_receipt=receipt,
         )
 
     @classmethod
@@ -1630,13 +2418,64 @@ class CalibrationRow:
     ) -> Self:
         after = None if state_probabilities_after is None else tuple(state_probabilities_after)
         before = None if after is None else prediction.state_probabilities
+        assessment_hashes = tuple(
+            (revision, _digest({
+                "provenance": "synthetic_fixture", "revision": revision,
+                "scores": _canonical_scores(scores, prediction.subject.class_order),
+            }))
+            for revision, scores in (
+                ("v0", agent_v0_scores), ("v1", agent_v1_scores),
+            )
+            if scores is not None
+        )
+        source_trace_hashes = (prediction.evidence_snapshot.snapshot_hash,)
+        replay_hash = (
+            None if after is None else _digest({"before": before, "after": after})
+        )
+        fields = _calibration_receipt_fields(
+            subject=prediction.subject, fusion_hash=fusion_hash,
+            assessment_hashes=assessment_hashes,
+            agent_v0_scores=agent_v0_scores, agent_v1_scores=agent_v1_scores,
+            source_trace_hashes=source_trace_hashes, replay_hash=replay_hash,
+            state_probabilities_before=before, state_probabilities_after=after,
+            v1_required=v1_required, arm_refusal_reasons=arm_refusal_reasons,
+            prediction=prediction, provenance="synthetic_fixture",
+        )
+        receipt = OOFCalibrationReceipt(
+            **fields, _seal=_CALIBRATION_RECEIPT_SEAL,
+        )
         return cls(
             subject=prediction.subject, fusion_hash=fusion_hash,
             base_probabilities=prediction.base_probabilities,
             agent_v0_scores=agent_v0_scores, agent_v1_scores=agent_v1_scores,
             v1_required=v1_required, state_probabilities_before=before,
             state_probabilities_after=after, arm_refusal_reasons=arm_refusal_reasons,
-            fold_prediction=prediction,
+            assessment_hashes=assessment_hashes,
+            source_trace_hashes=source_trace_hashes, replay_hash=replay_hash,
+            fold_prediction=prediction, oof_receipt=receipt,
+        )
+
+
+def _validate_oof_calibration_receipt(row: CalibrationRow) -> None:
+    prediction = row.fold_prediction
+    receipt = row.oof_receipt
+    if prediction is None or receipt is None:
+        raise FoldLeakageError("Calibration row lacks a sealed OOF calibration receipt.")
+    fields = _calibration_receipt_fields(
+        subject=row.subject, fusion_hash=row.fusion_hash,
+        assessment_hashes=row.assessment_hashes,
+        agent_v0_scores=row.agent_v0_scores, agent_v1_scores=row.agent_v1_scores,
+        source_trace_hashes=row.source_trace_hashes, replay_hash=row.replay_hash,
+        state_probabilities_before=row.state_probabilities_before,
+        state_probabilities_after=row.state_probabilities_after,
+        v1_required=row.v1_required, arm_refusal_reasons=row.arm_refusal_reasons,
+        prediction=prediction, provenance=receipt.provenance,
+    )
+    if receipt.to_dict(include_id=False) != OOFCalibrationReceipt(
+        **fields, _seal=_CALIBRATION_RECEIPT_SEAL,
+    ).to_dict(include_id=False):
+        raise FoldLeakageError(
+            "Calibration row differs from its sealed OOF calibration receipt."
         )
 
 
@@ -1648,6 +2487,18 @@ class CalibrationConfig:
     def __post_init__(self) -> None:
         if self.optimizer_maxiter < 1:
             raise LearningError("optimizer_maxiter must be positive.")
+
+    @property
+    def recipe_hash(self) -> str:
+        return _digest({
+            "schema_version": LEARNING_SCHEMA_VERSION,
+            "seed": self.seed,
+            "optimizer_maxiter": self.optimizer_maxiter,
+            "prior_coefficients": PRIOR_COEFFICIENTS,
+            "heads_by_task": HEADS_BY_TASK,
+            "calibrated_arms": CALIBRATED_ARMS,
+            "regularization": "unit_l2_to_frozen_prior_nonnegative_evidence",
+        })
 
 
 @dataclass(frozen=True, slots=True)
@@ -1730,10 +2581,20 @@ class JointCalibrators:
     fold_manifest_id: str
     oof_prediction_hashes: tuple[str, ...]
     seed: int
+    dataset_id: str = ""
+    source_version: str = ""
+    channel: str = ""
+    development_manifest_id: str = ""
+    model_recipe_hash: str = ""
+    calibration_recipe_hash: str = ""
+    oof_calibration_receipt_ids: tuple[str, ...] = ()
+    purpose: Literal["analytical", "synthetic_test"] = "synthetic_test"
     artifact_id: str = ""
 
     def __post_init__(self) -> None:
         order = _validate_class_order(self.class_order)
+        if self.purpose not in ("analytical", "synthetic_test"):
+            raise LearningError("Unknown calibrator purpose.")
         expected_heads = set(HEADS_BY_TASK[self.task])
         if set(self.arms) != set(CALIBRATED_ARMS):
             raise LearningError("Calibrator artifact must contain B and all three joint arms.")
@@ -1743,6 +2604,23 @@ class JointCalibrators:
             raise LearningError("Calibrators must bind a fold manifest and OOF predictions.")
         if len(set(self.oof_prediction_hashes)) != len(self.oof_prediction_hashes):
             raise LearningError("OOF prediction hashes must be unique.")
+        binding_values = (
+            self.dataset_id, self.source_version, self.channel,
+            self.development_manifest_id, self.model_recipe_hash,
+            self.calibration_recipe_hash,
+        )
+        if any(binding_values) and not all(binding_values):
+            raise LearningError("Calibrator dataset/development/recipe binding is incomplete.")
+        if self.model_recipe_hash and (
+            len(self.model_recipe_hash) != 64 or len(self.calibration_recipe_hash) != 64
+        ):
+            raise LearningError("Calibrator recipe hashes must be SHA-256.")
+        if self.development_manifest_id and not self.oof_calibration_receipt_ids:
+            raise LearningError("Bound calibrators require sealed OOF calibration receipts.")
+        if len(set(self.oof_calibration_receipt_ids)) != len(
+            self.oof_calibration_receipt_ids
+        ):
+            raise LearningError("OOF calibration receipt IDs must be unique.")
         for heads in (*self.arms.values(), *self.matched_baselines.values()):
             if set(heads) != expected_heads:
                 raise LearningError("Calibrator head set differs from task semantics.")
@@ -1759,6 +2637,13 @@ class JointCalibrators:
             "class_order": list(self.class_order), "seed": self.seed,
             "fold_manifest_id": self.fold_manifest_id,
             "oof_prediction_hashes": list(self.oof_prediction_hashes),
+            "dataset_id": self.dataset_id, "source_version": self.source_version,
+            "channel": self.channel,
+            "development_manifest_id": self.development_manifest_id,
+            "model_recipe_hash": self.model_recipe_hash,
+            "calibration_recipe_hash": self.calibration_recipe_hash,
+            "oof_calibration_receipt_ids": list(self.oof_calibration_receipt_ids),
+            "purpose": self.purpose,
             "arms": {
                 arm: {head: model.to_dict() for head, model in sorted(heads.items())}
                 for arm, heads in sorted(self.arms.items())
@@ -1787,6 +2672,16 @@ class JointCalibrators:
             task=str(data["task"]), class_order=tuple(data["class_order"]), seed=int(data["seed"]),
             fold_manifest_id=str(data["fold_manifest_id"]),
             oof_prediction_hashes=tuple(data["oof_prediction_hashes"]),
+            dataset_id=str(data.get("dataset_id", "")),
+            source_version=str(data.get("source_version", "")),
+            channel=str(data.get("channel", "")),
+            development_manifest_id=str(data.get("development_manifest_id", "")),
+            model_recipe_hash=str(data.get("model_recipe_hash", "")),
+            calibration_recipe_hash=str(data.get("calibration_recipe_hash", "")),
+            oof_calibration_receipt_ids=tuple(
+                data.get("oof_calibration_receipt_ids", ())
+            ),
+            purpose=str(data.get("purpose", "synthetic_test")),
             arms={
                 arm: {head: HeadCalibrator.from_dict(model) for head, model in heads.items()}
                 for arm, heads in data["arms"].items()
@@ -1988,20 +2883,40 @@ def _validate_oof_rows(
     subject_ids = tuple(row.subject.subject_id for row in rows)
     if len(subject_ids) != len(set(subject_ids)):
         raise FoldLeakageError("Every development subject must have exactly one OOF row.")
-    if set(subject_ids) != set(labels):
-        missing = sorted(set(labels) - set(subject_ids))
-        unexpected = sorted(set(subject_ids) - set(labels))
-        raise LearningError(f"OOF rows and development labels differ: missing={missing}, unexpected={unexpected}.")
+    expected_ids = set(fold_manifest.development_subject_ids)
+    if set(subject_ids) != expected_ids or set(labels) != expected_ids:
+        raise FoldLeakageError(
+            "Calibration requires complete sealed development OOF membership in rows and labels."
+        )
     tasks = {row.subject.task for row in rows}
     orders = {row.subject.class_order for row in rows}
     if len(tasks) != 1 or len(orders) != 1:
         raise LearningError("Calibration rows must share one task and class order.")
+    proof = fold_manifest.proofs[0]
     for row in rows:
         if row.subject.partition != "development":
             raise LearningError("Only development OOF rows may fit calibrators.")
         if row.fold_prediction is None:
             raise FoldLeakageError("Calibration rows require a bound FoldPrediction.")
         _verify_oof_prediction(row.fold_prediction, fold_manifest)
+        _validate_oof_calibration_receipt(row)
+        if row.oof_receipt is None:
+            raise FoldLeakageError("Calibration rows require sealed OOF receipts.")
+        if fold_manifest.purpose == "analytical" and row.oof_receipt.provenance != "fusion_record":
+            raise FoldLeakageError(
+                "Analytical calibration rejects synthetic fixture OOF receipt provenance."
+            )
+        subject = row.subject
+        if (
+            subject.dataset_id, subject.source_version, subject.channel,
+            subject.task, subject.class_order,
+        ) != (
+            proof.dataset_id, proof.source_version, proof.channel,
+            proof.task, proof.class_order,
+        ):
+            raise FoldLeakageError(
+                "Calibration row differs from the sealed dataset/source/channel/task/class binding."
+            )
     return next(iter(tasks)), next(iter(orders))
 
 
@@ -2047,7 +2962,17 @@ def fit_joint_calibrators(
             row.fold_prediction.prediction_hash for row in oof_rows
             if row.fold_prediction is not None
         ),
-        seed=config.seed,
+        seed=config.seed, dataset_id=fold_manifest.proofs[0].dataset_id,
+        source_version=fold_manifest.proofs[0].source_version,
+        channel=fold_manifest.proofs[0].channel,
+        development_manifest_id=fold_manifest.development_manifest_id,
+        model_recipe_hash=fold_manifest.recipe_hash,
+        calibration_recipe_hash=config.recipe_hash,
+        oof_calibration_receipt_ids=tuple(
+            row.oof_receipt.receipt_id for row in oof_rows
+            if row.oof_receipt is not None
+        ),
+        purpose=fold_manifest.purpose,
     )
 
 
@@ -2096,21 +3021,128 @@ def combine_head_probabilities(
     return tuple(value / total for value in result)
 
 
-def _score_arm(row: CalibrationRow, calibrators: JointCalibrators, arm: str) -> tuple[float, ...] | None:
+def _score_heads(
+    row: CalibrationRow,
+    heads: Mapping[str, HeadCalibrator],
+    *,
+    feature_arm: str,
+) -> tuple[float, ...] | None:
     probabilities: dict[str, float] = {}
-    for head, model in calibrators.arms[arm].items():
+    for head, model in heads.items():
         if not model.estimable:
             return None
-        features = _features_for_arm(row, arm, head)
+        features = _features_for_arm(row, feature_arm, head)
         if features is None:
             return None
         probabilities[head] = apply_head(
             model, base_log_odds=features[0], agent_value=features[1], state_value=features[2],
         )
     return combine_head_probabilities(
-        calibrators.class_order, impairment=probabilities.get("impairment"),
+        row.subject.class_order, impairment=probabilities.get("impairment"),
         stage=probabilities.get("stage"), binary=probabilities.get("binary"),
     )
+
+
+def _score_arm(row: CalibrationRow, calibrators: JointCalibrators, arm: str) -> tuple[float, ...] | None:
+    return _score_heads(row, calibrators.arms[arm], feature_arm=arm)
+
+
+def _validate_calibrator_row_binding(
+    row: CalibrationRow, calibrators: JointCalibrators,
+) -> None:
+    if row.subject.class_order != calibrators.class_order or row.subject.task != calibrators.task:
+        raise LearningError("Class order or task differs from calibrator artifact.")
+    if calibrators.development_manifest_id:
+        subject = row.subject
+        if (
+            subject.dataset_id, subject.source_version, subject.channel,
+            subject.task, subject.class_order,
+        ) != (
+            calibrators.dataset_id, calibrators.source_version, calibrators.channel,
+            calibrators.task, calibrators.class_order,
+        ):
+            raise FoldLeakageError(
+                "Prediction differs from the calibrator dataset/source/channel/task/class binding."
+            )
+        if row.fold_prediction is not None and (
+            row.fold_prediction.development_manifest_id
+            != calibrators.development_manifest_id
+            or row.fold_prediction.recipe_hash != calibrators.model_recipe_hash
+        ):
+            raise FoldLeakageError(
+                "Prediction differs from the calibrator development manifest or model recipe."
+            )
+        if calibrators.purpose == "analytical":
+            prediction = row.fold_prediction
+            if (
+                prediction is None
+                or not prediction.final_refit
+                or prediction.calibrator_artifact_id != calibrators.artifact_id
+                or prediction.calibration_recipe_hash
+                != calibrators.calibration_recipe_hash
+            ):
+                raise FoldLeakageError(
+                    "Analytical scoring requires the final prediction bound to frozen calibrators."
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class MatchedBaselinePrediction:
+    """Base-only prediction calibrated on one joint arm's exact fit membership."""
+
+    subject: SubjectRow
+    arm: str
+    probabilities: tuple[float, ...] | None
+    predicted: str | None
+    status: Literal["ok", "unavailable"]
+    calibrator_id: str | None
+    trace_ids: tuple[str, ...]
+    unavailable_reason: str | None = None
+
+
+def predict_matched_baselines(
+    fusion_row: FusionRow | CalibrationRow,
+    calibrators: JointCalibrators,
+    *,
+    state_probabilities_before: Sequence[float] | None = None,
+    state_probabilities_after: Sequence[float] | None = None,
+) -> tuple[MatchedBaselinePrediction, ...]:
+    """Apply every matched-fit B calibrator for locked joint-arm comparisons."""
+
+    row = fusion_row if isinstance(fusion_row, CalibrationRow) else CalibrationRow.from_fusion(
+        fusion_row, state_probabilities_before=state_probabilities_before,
+        state_probabilities_after=state_probabilities_after,
+    )
+    _validate_calibrator_row_binding(row, calibrators)
+    results: list[MatchedBaselinePrediction] = []
+    for joint_arm in ("J-A", "J-S", "J-AS"):
+        heads = calibrators.matched_baselines[joint_arm]
+        probabilities = _score_heads(row, heads, feature_arm="B")
+        matched_id = None
+        predicted = None
+        status: Literal["ok", "unavailable"] = "unavailable"
+        reason = "matched_baseline_head_unestimable"
+        if probabilities is not None:
+            matched_id = "matched_" + _digest({
+                "joint_calibrator_id": calibrators.artifact_id,
+                "joint_arm": joint_arm,
+                "head_ids": tuple(
+                    model.calibrator_id for _, model in sorted(heads.items())
+                ),
+            })[:24]
+            predicted = row.subject.class_order[
+                int(np.argmax(np.asarray(probabilities)))
+            ]
+            status = "ok"
+            reason = None
+        results.append(MatchedBaselinePrediction(
+            subject=row.subject, arm=f"B_matched_{joint_arm}",
+            probabilities=probabilities, predicted=predicted, status=status,
+            calibrator_id=matched_id,
+            trace_ids=(row.fusion_hash, calibrators.artifact_id),
+            unavailable_reason=reason,
+        ))
+    return tuple(results)
 
 
 def predict_joint(
@@ -2126,8 +3158,7 @@ def predict_joint(
         fusion_row, state_probabilities_before=state_probabilities_before,
         state_probabilities_after=state_probabilities_after,
     )
-    if row.subject.class_order != calibrators.class_order or row.subject.task != calibrators.task:
-        raise LearningError("Class order or task differs from calibrator artifact.")
+    _validate_calibrator_row_binding(row, calibrators)
     predictions: list[PredictionRow] = []
 
     def prediction(
@@ -2186,14 +3217,18 @@ def predict_joint(
 
 __all__ = [
     "ARMS", "CALIBRATED_ARMS", "EXISTING_FUSION_SYMBOL", "FULL_BASE_PREDICTOR_SYMBOL",
-    "STATE_REPLAY_PREDICTOR_SYMBOL", "CalibrationConfig", "CalibrationRow",
+    "PILOT_PREDICTOR_SCOPE", "STATE_REPLAY_PREDICTOR_SYMBOL", "CalibrationConfig",
+    "CalibrationRow", "FixedPilotBasePredictorAdapter",
+    "FixedPilotReplayPredictorAdapter",
     "FoldArtifact", "FoldArtifactManifest", "FoldArtifactProof", "FoldCaseInput",
     "FoldInputs", "FoldLeakageError", "FoldPrediction",
     "FrozenFoldConfig", "HeadCalibrator", "JointCalibrators", "LearningError",
-    "LinearModelArtifact", "PortableBasePredictorAdapter",
+    "LinearModelArtifact", "MatchedBaselinePrediction", "OOFCalibrationReceipt",
+    "PortableBasePredictorAdapter", "PreparedFeatureProvenance",
     "PortableReplayPredictorAdapter", "PredictorAdapter", "ReplayContext",
     "SyntheticLinearPredictorAdapter", "agent_contrast",
     "apply_head", "combine_head_probabilities", "fit_fold", "fit_joint_calibrators",
-    "head_probability", "model_identity_manifest", "predict_fold", "predict_joint", "refit_full_development",
+    "head_probability", "model_identity_manifest", "predict_fold", "predict_joint",
+    "predict_matched_baselines", "refit_full_development",
     "replay_log_odds_delta", "seal_fold_artifacts",
 ]

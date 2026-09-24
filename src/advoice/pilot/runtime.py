@@ -59,6 +59,10 @@ class RuntimeValidationError(ValueError):
     """Unsafe, stale, malformed, unauthorized, or over-budget runtime input."""
 
 
+class RuntimeIntegrityError(RuntimeValidationError):
+    """Runtime identity or terminal-state corruption that must stop the queue."""
+
+
 class ProviderTransportError(RuntimeError):
     """Retryable provider transport failure."""
 
@@ -117,12 +121,15 @@ def canonical_operation_registry_hash(registry: Mapping[str, str]) -> str:
 def _immutable_registry(executor: ReplayExecutor) -> tuple[Mapping[str, str], str]:
     registry = getattr(executor, "operation_registry", None)
     if type(registry) is not type(MappingProxyType({})):
-        raise RuntimeValidationError(
+        raise RuntimeIntegrityError(
             "Executor operation registry must be an immutable mapping proxy."
         )
-    registry_hash = canonical_operation_registry_hash(registry)
+    try:
+        registry_hash = canonical_operation_registry_hash(registry)
+    except RuntimeValidationError as exc:
+        raise RuntimeIntegrityError("Executor operation registry is invalid.") from exc
     if str(executor.registry_hash) != registry_hash:
-        raise RuntimeValidationError(
+        raise RuntimeIntegrityError(
             "Executor registry hash does not match the exact operation registry."
         )
     return registry, registry_hash
@@ -131,14 +138,19 @@ def _immutable_registry(executor: ReplayExecutor) -> tuple[Mapping[str, str], st
 def _verify_registry_snapshot(executor: ReplayExecutor, packet: CasePacket) -> None:
     current = getattr(executor, "operation_registry", None)
     if current is not packet.operation_registry:
-        raise RuntimeValidationError("Executor operation registry object changed after packet build.")
-    current_hash = canonical_operation_registry_hash(current)
+        raise RuntimeIntegrityError("Executor operation registry object changed after packet build.")
+    try:
+        current_hash = canonical_operation_registry_hash(current)
+    except RuntimeValidationError as exc:
+        raise RuntimeIntegrityError(
+            "Executor operation registry mutated after packet build."
+        ) from exc
     if (
         current_hash != packet.operation_registry_hash
         or str(executor.registry_hash) != packet.operation_registry_hash
         or _plain(current) != _plain(packet.operation_registry_snapshot)
     ):
-        raise RuntimeValidationError("Executor operation registry mutated after packet build.")
+        raise RuntimeIntegrityError("Executor operation registry mutated after packet build.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +424,7 @@ class CasePacket:
     transcript_hash: str
     skill_inventory: tuple[Mapping[str, Any], ...]
     skill_bundle_hash: str
+    snapshot_integrity_hash: str
     ineligible_segment_ids: tuple[str, ...]
     operation_registry: Mapping[str, str]
     operation_registry_snapshot: Mapping[str, str]
@@ -477,6 +490,32 @@ class BudgetSnapshot:
     total_tokens: int
     reported_cost_usd: float
     consecutive_transport_failures: int
+    queue_stopped: bool
+    queue_stop_reason: str | None
+    subject_semantic_calls: Mapping[str, int]
+    cell_semantic_calls: Mapping[str, int]
+
+
+@dataclass(slots=True)
+class _BudgetUsage:
+    semantic_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+    reported_cost_usd: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptReservation:
+    reservation_id: int
+    subject_id: str
+    cell_id: str
+    input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int
+    total_tokens: int
+    reported_cost_usd: float
 
 
 @dataclass(slots=True)
@@ -492,13 +531,32 @@ class RuntimeBudget:
     transport_retry_max: int = 1
     pause_after_consecutive_transport_failures: int = 2
     max_concurrency: int = 2
-    semantic_calls: int = field(default=0, init=False)
+    cancellation_timeout_seconds: float = 5.0
+    max_semantic_calls_per_subject: int = 2
+    max_semantic_calls_per_cell: int = 2
+    max_input_tokens_per_subject: int | None = None
+    max_output_tokens_per_subject: int | None = None
+    max_reasoning_tokens_per_subject: int | None = None
+    max_total_tokens_per_subject: int | None = None
+    max_usd_per_subject: float | None = None
+    max_input_tokens_per_cell: int | None = None
+    max_output_tokens_per_cell: int | None = None
+    max_reasoning_tokens_per_cell: int | None = None
+    max_total_tokens_per_cell: int | None = None
+    max_usd_per_cell: float | None = None
+    max_input_tokens_per_attempt: int | None = None
+    max_output_tokens_per_attempt: int | None = None
+    max_reasoning_tokens_per_attempt: int | None = None
+    max_usd_per_attempt: float | None = None
     attempts: int = field(default=0, init=False)
-    input_tokens: int = field(default=0, init=False)
-    output_tokens: int = field(default=0, init=False)
-    reasoning_tokens: int = field(default=0, init=False)
-    reported_cost_usd: float = field(default=0.0, init=False)
     consecutive_transport_failures: int = field(default=0, init=False)
+    queue_stopped: bool = field(default=False, init=False)
+    queue_stop_reason: str | None = field(default=None, init=False)
+    _global_usage: _BudgetUsage = field(default_factory=_BudgetUsage, init=False, repr=False)
+    _subject_usage: dict[str, _BudgetUsage] = field(default_factory=dict, init=False, repr=False)
+    _cell_usage: dict[str, _BudgetUsage] = field(default_factory=dict, init=False, repr=False)
+    _active_reservations: set[int] = field(default_factory=set, init=False, repr=False)
+    _next_reservation_id: int = field(default=1, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _provider_slots: threading.BoundedSemaphore = field(init=False, repr=False)
 
@@ -519,7 +577,59 @@ class RuntimeBudget:
             raise RuntimeValidationError("Provider concurrency must be one or two.")
         if type(self.max_usd) not in (int, float) or not math.isfinite(self.max_usd) or self.max_usd < 0:
             raise RuntimeValidationError("Runtime cost cap must be finite and nonnegative.")
+        scoped_integer_limits = (
+            self.max_semantic_calls_per_subject, self.max_semantic_calls_per_cell,
+            self.max_input_tokens_per_subject, self.max_output_tokens_per_subject,
+            self.max_reasoning_tokens_per_subject, self.max_total_tokens_per_subject,
+            self.max_input_tokens_per_cell, self.max_output_tokens_per_cell,
+            self.max_reasoning_tokens_per_cell, self.max_total_tokens_per_cell,
+            self.max_input_tokens_per_attempt, self.max_output_tokens_per_attempt,
+            self.max_reasoning_tokens_per_attempt,
+        )
+        if any(
+            value is not None and (type(value) is not int or value < 0)
+            for value in scoped_integer_limits
+        ):
+            raise RuntimeValidationError("Scoped runtime token and call caps must be nonnegative integers.")
+        scoped_cost_limits = (
+            self.max_usd_per_subject, self.max_usd_per_cell, self.max_usd_per_attempt,
+        )
+        if any(
+            value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            )
+            for value in scoped_cost_limits
+        ):
+            raise RuntimeValidationError("Scoped runtime cost caps must be finite and nonnegative.")
+        if (
+            type(self.cancellation_timeout_seconds) not in (int, float)
+            or not math.isfinite(self.cancellation_timeout_seconds)
+            or not 0 < self.cancellation_timeout_seconds <= 30
+        ):
+            raise RuntimeValidationError(
+                "Provider cancellation acknowledgement timeout must be in (0, 30] seconds."
+            )
         self._provider_slots = threading.BoundedSemaphore(self.max_concurrency)
+
+    @property
+    def semantic_calls(self) -> int:
+        return self._global_usage.semantic_calls
+
+    @property
+    def input_tokens(self) -> int:
+        return self._global_usage.input_tokens
+
+    @property
+    def output_tokens(self) -> int:
+        return self._global_usage.output_tokens
+
+    @property
+    def reasoning_tokens(self) -> int:
+        return self._global_usage.reasoning_tokens
+
+    @property
+    def reported_cost_usd(self) -> float:
+        return self._global_usage.reported_cost_usd
 
     @contextmanager
     def provider_slot(self):
@@ -527,70 +637,353 @@ class RuntimeBudget:
         if not acquired:
             raise RuntimeValidationError("Provider concurrency wait exceeded the request timeout.")
         try:
+            with self._lock:
+                queue_reason = self._queue_reason()
+            if queue_reason is not None:
+                raise RuntimeValidationError(queue_reason)
             yield
         finally:
             self._provider_slots.release()
 
-    def reserve_semantic_call(self) -> None:
-        with self._lock:
-            if self._overage_reason() is not None:
-                raise RuntimeValidationError("Semantic call budget exhausted.")
-            if self.semantic_calls >= self.max_semantic_calls:
-                raise RuntimeValidationError("Semantic call budget exhausted.")
-            if self.consecutive_transport_failures >= self.pause_after_consecutive_transport_failures:
-                raise RuntimeValidationError("Provider queue paused by consecutive transport failures.")
-            self.semantic_calls += 1
+    def _subject_limits(self) -> tuple[int, int, int, int, float]:
+        return (
+            self.max_input_tokens if self.max_input_tokens_per_subject is None
+            else self.max_input_tokens_per_subject,
+            self.max_output_tokens if self.max_output_tokens_per_subject is None
+            else self.max_output_tokens_per_subject,
+            self.max_reasoning_tokens if self.max_reasoning_tokens_per_subject is None
+            else self.max_reasoning_tokens_per_subject,
+            self.max_total_tokens if self.max_total_tokens_per_subject is None
+            else self.max_total_tokens_per_subject,
+            self.max_usd if self.max_usd_per_subject is None else float(self.max_usd_per_subject),
+        )
 
-    def reserve_attempt(self) -> int:
+    def _cell_limits(self) -> tuple[int, int, int, int, float]:
+        return (
+            self.max_input_tokens if self.max_input_tokens_per_cell is None
+            else self.max_input_tokens_per_cell,
+            self.max_output_tokens if self.max_output_tokens_per_cell is None
+            else self.max_output_tokens_per_cell,
+            self.max_reasoning_tokens if self.max_reasoning_tokens_per_cell is None
+            else self.max_reasoning_tokens_per_cell,
+            self.max_total_tokens if self.max_total_tokens_per_cell is None
+            else self.max_total_tokens_per_cell,
+            self.max_usd if self.max_usd_per_cell is None else float(self.max_usd_per_cell),
+        )
+
+    def _scope_usage(self, subject_id: str, cell_id: str) -> tuple[_BudgetUsage, _BudgetUsage]:
+        subject = self._subject_usage.setdefault(subject_id, _BudgetUsage())
+        cell = self._cell_usage.setdefault(cell_id, _BudgetUsage())
+        return subject, cell
+
+    def _queue_reason(self) -> str | None:
+        if self.queue_stopped:
+            return f"Provider queue stopped: {self.queue_stop_reason}."
+        if self.consecutive_transport_failures >= self.pause_after_consecutive_transport_failures:
+            return "Provider queue paused by consecutive transport failures."
+        return None
+
+    def _check_call_capacity(
+        self, subject_id: str, cell_id: str, subject: _BudgetUsage, cell: _BudgetUsage,
+    ) -> None:
+        queue_reason = self._queue_reason()
+        if queue_reason is not None:
+            raise RuntimeValidationError(queue_reason)
+        if self._global_usage.semantic_calls >= self.max_semantic_calls:
+            raise RuntimeValidationError("Global semantic call budget exhausted.")
+        if subject.semantic_calls >= self.max_semantic_calls_per_subject:
+            raise RuntimeValidationError("Subject semantic call budget exhausted.")
+        if cell.semantic_calls >= self.max_semantic_calls_per_cell:
+            raise RuntimeValidationError("Cell semantic call budget exhausted.")
+
+    def _resource_scopes(
+        self, subject: _BudgetUsage, cell: _BudgetUsage,
+    ) -> tuple[
+        tuple[str, _BudgetUsage, tuple[int, int, int, int, float]], ...
+    ]:
+        return (
+            (
+                "global", self._global_usage,
+                (
+                    self.max_input_tokens, self.max_output_tokens,
+                    self.max_reasoning_tokens, self.max_total_tokens, float(self.max_usd),
+                ),
+            ),
+            ("subject", subject, self._subject_limits()),
+            ("cell", cell, self._cell_limits()),
+        )
+
+    def _reservation_amount(
+        self,
+        *,
+        configured: int | float | None,
+        resource_index: int,
+        label: str,
+        scopes: tuple[tuple[str, _BudgetUsage, tuple[int, int, int, int, float]], ...],
+    ) -> int | float:
+        attribute = (
+            "input_tokens", "output_tokens", "reasoning_tokens", "total_tokens",
+            "reported_cost_usd",
+        )[resource_index]
+        available = [limits[resource_index] - getattr(usage, attribute)
+                     for _, usage, limits in scopes]
+        amount = min(available) if configured is None else configured
+        for (scope_name, _, _), remaining in zip(scopes, available):
+            if amount <= 0 or amount > remaining:
+                raise RuntimeValidationError(
+                    f"{scope_name.capitalize()} {label} budget exhausted."
+                )
+        return amount
+
+    def _reserve_attempt_locked(
+        self, subject_id: str, cell_id: str, *, include_semantic_call: bool,
+    ) -> _AttemptReservation:
+        subject, cell = self._scope_usage(subject_id, cell_id)
+        if include_semantic_call:
+            self._check_call_capacity(subject_id, cell_id, subject, cell)
+        else:
+            queue_reason = self._queue_reason()
+            if queue_reason is not None:
+                raise RuntimeValidationError(queue_reason)
+        if self.attempts >= self.max_attempts:
+            raise RuntimeValidationError("Global transport attempt budget exhausted.")
+        scopes = self._resource_scopes(subject, cell)
+        input_tokens = int(self._reservation_amount(
+            configured=self.max_input_tokens_per_attempt,
+            resource_index=0,
+            label="input token",
+            scopes=scopes,
+        ))
+        output_tokens = int(self._reservation_amount(
+            configured=self.max_output_tokens_per_attempt,
+            resource_index=1,
+            label="output token",
+            scopes=scopes,
+        ))
+        reasoning_tokens = int(self._reservation_amount(
+            configured=self.max_reasoning_tokens_per_attempt,
+            resource_index=2,
+            label="reasoning token",
+            scopes=scopes,
+        ))
+        total_tokens = input_tokens + output_tokens + reasoning_tokens
+        self._reservation_amount(
+            configured=total_tokens,
+            resource_index=3,
+            label="total token",
+            scopes=scopes,
+        )
+        cost = float(self._reservation_amount(
+            configured=self.max_usd_per_attempt,
+            resource_index=4,
+            label="dollar",
+            scopes=scopes,
+        ))
+        if include_semantic_call:
+            for usage in (self._global_usage, subject, cell):
+                usage.semantic_calls += 1
+        self.attempts += 1
+        for usage in (self._global_usage, subject, cell):
+            usage.input_tokens += input_tokens
+            usage.output_tokens += output_tokens
+            usage.reasoning_tokens += reasoning_tokens
+            usage.total_tokens += total_tokens
+            usage.reported_cost_usd += cost
+        reservation = _AttemptReservation(
+            reservation_id=self._next_reservation_id,
+            subject_id=subject_id,
+            cell_id=cell_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            total_tokens=total_tokens,
+            reported_cost_usd=cost,
+        )
+        self._next_reservation_id += 1
+        self._active_reservations.add(reservation.reservation_id)
+        return reservation
+
+    def reserve_call_attempt(self, *, subject_id: str, cell_id: str) -> _AttemptReservation:
         with self._lock:
-            if self.attempts >= self.max_attempts:
-                raise RuntimeValidationError("Transport attempt budget exhausted.")
-            self.attempts += 1
-            return self.attempts
+            return self._reserve_attempt_locked(
+                subject_id, cell_id, include_semantic_call=True,
+            )
+
+    def reserve_semantic_call(
+        self,
+        *,
+        subject_id: str = "unspecified_subject",
+        cell_id: str = "unspecified_cell",
+    ) -> None:
+        """Compatibility preflight for callers that reserve attempts separately."""
+
+        with self._lock:
+            subject, cell = self._scope_usage(subject_id, cell_id)
+            self._check_call_capacity(subject_id, cell_id, subject, cell)
+            if self.max_attempts <= self.attempts:
+                raise RuntimeValidationError("Global transport attempt budget exhausted.")
+            scopes = self._resource_scopes(subject, cell)
+            token_reservations: list[int] = []
+            for index, label, configured in (
+                (0, "input token", self.max_input_tokens_per_attempt),
+                (1, "output token", self.max_output_tokens_per_attempt),
+                (2, "reasoning token", self.max_reasoning_tokens_per_attempt),
+            ):
+                token_reservations.append(int(self._reservation_amount(
+                    configured=configured,
+                    resource_index=index,
+                    label=label,
+                    scopes=scopes,
+                )))
+            self._reservation_amount(
+                configured=sum(token_reservations),
+                resource_index=3,
+                label="total token",
+                scopes=scopes,
+            )
+            self._reservation_amount(
+                configured=self.max_usd_per_attempt,
+                resource_index=4,
+                label="dollar",
+                scopes=scopes,
+            )
+            self._global_usage.semantic_calls += 1
+            subject.semantic_calls += 1
+            cell.semantic_calls += 1
+
+    def reserve_attempt(
+        self,
+        *,
+        subject_id: str = "unspecified_subject",
+        cell_id: str = "unspecified_cell",
+    ) -> _AttemptReservation:
+        with self._lock:
+            return self._reserve_attempt_locked(
+                subject_id, cell_id, include_semantic_call=False,
+            )
 
     def record_transport_failure(self) -> None:
         with self._lock:
             self.consecutive_transport_failures += 1
+            if (
+                self.consecutive_transport_failures
+                >= self.pause_after_consecutive_transport_failures
+            ):
+                self.queue_stopped = True
+                self.queue_stop_reason = "consecutive_transport_failures"
 
-    def record_response(self, response: ProviderResponse) -> str | None:
+    def stop_queue(self, reason: str) -> None:
         with self._lock:
-            self.consecutive_transport_failures = 0
-            usage = response.usage
-            if usage is not None:
-                self.input_tokens += usage.input_tokens or 0
-                self.output_tokens += usage.output_tokens or 0
-                self.reasoning_tokens += usage.reasoning_tokens or 0
-            if response.reported_cost_usd is not None:
-                self.reported_cost_usd += float(response.reported_cost_usd)
-            return self._overage_reason()
+            if not self.queue_stopped:
+                self.queue_stopped = True
+                self.queue_stop_reason = _coded_reason(reason)
 
-    def _overage_reason(self) -> str | None:
-        total = self.input_tokens + self.output_tokens + self.reasoning_tokens
-        values = (
-            (self.input_tokens, self.max_input_tokens, "input token"),
-            (self.output_tokens, self.max_output_tokens, "output token"),
-            (self.reasoning_tokens, self.max_reasoning_tokens, "reasoning token"),
-            (total, self.max_total_tokens, "total token"),
-        )
-        for actual, maximum, label in values:
-            if actual > maximum:
-                return f"{label.replace(' ', '_')}_budget_exceeded"
-        if self.reported_cost_usd > self.max_usd:
-            return "reported_cost_budget_exceeded"
+    def forfeit_attempt(self, reservation: _AttemptReservation, reason: str) -> None:
+        with self._lock:
+            if reservation.reservation_id not in self._active_reservations:
+                return
+            self._active_reservations.remove(reservation.reservation_id)
+            if not self.queue_stopped:
+                self.queue_stopped = True
+                self.queue_stop_reason = _coded_reason(reason)
+
+    def record_response(
+        self,
+        reservation: _AttemptReservation,
+        response: ProviderResponse,
+        *,
+        transport_succeeded: bool,
+    ) -> str | None:
+        with self._lock:
+            if reservation.reservation_id not in self._active_reservations:
+                raise RuntimeIntegrityError("Provider budget reservation was already settled.")
+            self._active_reservations.remove(reservation.reservation_id)
+            usage = response.usage
+            if (
+                usage is None
+                or usage.input_tokens is None
+                or usage.output_tokens is None
+                or usage.reasoning_tokens is None
+                or response.reported_cost_usd is None
+            ):
+                self.queue_stopped = True
+                self.queue_stop_reason = "missing_provider_telemetry"
+                return "missing_telemetry"
+            actual = (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens,
+                usage.input_tokens + usage.output_tokens + usage.reasoning_tokens,
+                float(response.reported_cost_usd),
+            )
+            reserved = (
+                reservation.input_tokens,
+                reservation.output_tokens,
+                reservation.reasoning_tokens,
+                reservation.total_tokens,
+                reservation.reported_cost_usd,
+            )
+            subject, cell = self._scope_usage(reservation.subject_id, reservation.cell_id)
+            attributes = (
+                "input_tokens", "output_tokens", "reasoning_tokens", "total_tokens",
+                "reported_cost_usd",
+            )
+            for scope_usage in (self._global_usage, subject, cell):
+                for attribute, actual_value, reserved_value in zip(
+                    attributes, actual, reserved,
+                ):
+                    settled = getattr(scope_usage, attribute) + actual_value - reserved_value
+                    if attribute == "reported_cost_usd":
+                        settled = round(float(settled), 12)
+                    setattr(
+                        scope_usage,
+                        attribute,
+                        settled,
+                    )
+            if transport_succeeded:
+                self.consecutive_transport_failures = 0
+            overage = self._overage_reason(reservation.subject_id, reservation.cell_id)
+            if overage is not None:
+                self.queue_stopped = True
+                self.queue_stop_reason = overage
+            return overage
+
+    def _overage_reason(self, subject_id: str, cell_id: str) -> str | None:
+        subject, cell = self._scope_usage(subject_id, cell_id)
+        for scope_name, usage, limits in self._resource_scopes(subject, cell):
+            values = (
+                (usage.input_tokens, limits[0], "input_token"),
+                (usage.output_tokens, limits[1], "output_token"),
+                (usage.reasoning_tokens, limits[2], "reasoning_token"),
+                (usage.total_tokens, limits[3], "total_token"),
+                (usage.reported_cost_usd, limits[4], "reported_cost"),
+            )
+            for actual, maximum, label in values:
+                if actual > maximum:
+                    return f"{scope_name}_{label}_budget_exceeded"
         return None
 
     def snapshot(self) -> BudgetSnapshot:
         with self._lock:
-            total = self.input_tokens + self.output_tokens + self.reasoning_tokens
             return BudgetSnapshot(
                 semantic_calls=self.semantic_calls,
                 attempts=self.attempts,
                 input_tokens=self.input_tokens,
                 output_tokens=self.output_tokens,
                 reasoning_tokens=self.reasoning_tokens,
-                total_tokens=total,
+                total_tokens=self._global_usage.total_tokens,
                 reported_cost_usd=self.reported_cost_usd,
                 consecutive_transport_failures=self.consecutive_transport_failures,
+                queue_stopped=self.queue_stopped,
+                queue_stop_reason=self.queue_stop_reason,
+                subject_semantic_calls=MappingProxyType({
+                    key: value.semantic_calls for key, value in self._subject_usage.items()
+                    if value.semantic_calls
+                }),
+                cell_semantic_calls=MappingProxyType({
+                    key: value.semantic_calls for key, value in self._cell_usage.items()
+                    if value.semantic_calls
+                }),
             )
 
 
@@ -745,15 +1138,23 @@ def _skill_inventory(
 ) -> tuple[SkillBundle, tuple[Mapping[str, Any], ...], str]:
     loader = getattr(executor, "skill_bundle", None)
     if not callable(loader):
-        raise RuntimeValidationError("Analytical skill bundle loader is required.")
-    bundle = loader(snapshot)
+        raise RuntimeIntegrityError("Analytical skill bundle loader is required.")
+    try:
+        bundle = loader(snapshot)
+    except Exception as exc:
+        raise RuntimeIntegrityError("Analytical skill bundle could not be loaded.") from exc
     if not isinstance(bundle, SkillBundle) or not bundle.analytical or not bundle.documents:
-        raise RuntimeValidationError(
+        raise RuntimeIntegrityError(
             "Analytical skill assessment requires an immutable non-empty analytical skill bundle."
         )
-    bundle_hash = canonical_skill_bundle_hash(bundle)
+    try:
+        bundle_hash = canonical_skill_bundle_hash(bundle)
+    except RuntimeValidationError as exc:
+        raise RuntimeIntegrityError("Analytical skill bundle is invalid.") from exc
     if bundle_hash != snapshot.skill_hash:
-        raise RuntimeValidationError("Canonical skill bundle hash does not match snapshot.skill_hash.")
+        raise RuntimeIntegrityError(
+            "Canonical skill bundle hash does not match snapshot.skill_hash."
+        )
     manifest = _freeze({
         "manifest_id": bundle.manifest_id,
         "manifest_version": bundle.manifest_version,
@@ -766,6 +1167,46 @@ def _skill_inventory(
         "content": item.content,
     }) for item in bundle.documents)
     return bundle, (manifest, *documents), bundle_hash
+
+
+def _verify_packet_integrity(
+    snapshot: EvidenceSnapshot,
+    executor: ReplayExecutor,
+    packet: CasePacket,
+) -> None:
+    """Revalidate immutable runtime identities after every untrusted boundary."""
+
+    _verify_registry_snapshot(executor, packet)
+    current_snapshot_integrity = _digest(snapshot.to_dict())
+    if (
+        current_snapshot_integrity != packet.snapshot_integrity_hash
+        or snapshot.snapshot_hash != packet.untrusted_data.get("snapshot_hash")
+    ):
+        raise RuntimeIntegrityError("Evidence snapshot changed after packet build.")
+    current_packet_hash = _digest({
+        "instructions": packet.instructions,
+        "untrusted_case_data": packet.untrusted_data,
+    })
+    if current_packet_hash != packet.content_hash:
+        raise RuntimeIntegrityError("Case packet changed after packet build.")
+    loader = getattr(executor, "skill_bundle", None)
+    if not callable(loader):
+        raise RuntimeIntegrityError("Executor analytical skill bundle loader disappeared.")
+    try:
+        current_bundle = loader(snapshot)
+        valid_bundle = (
+            isinstance(current_bundle, SkillBundle)
+            and current_bundle.analytical
+            and bool(current_bundle.documents)
+            and canonical_skill_bundle_hash(current_bundle) == packet.skill_bundle_hash
+            and packet.skill_bundle_hash == snapshot.skill_hash
+        )
+    except Exception as exc:
+        raise RuntimeIntegrityError(
+            "Executor skill bundle changed after packet build."
+        ) from exc
+    if not valid_bundle:
+        raise RuntimeIntegrityError("Executor skill bundle changed after packet build.")
 
 
 def _evidence_projection(
@@ -987,6 +1428,7 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
         transcript_hash=transcript_hash,
         skill_inventory=tuple(_plain(item) for item in skill_inventory),
         skill_bundle_hash=skill_bundle_hash,
+        snapshot_integrity_hash=_digest(snapshot.to_dict()),
         ineligible_segment_ids=tuple(sorted(ineligible_segment_ids)),
         operation_registry=registry,
         operation_registry_snapshot=registry_snapshot,
@@ -1006,7 +1448,7 @@ def cache_identity(
 ) -> CacheIdentity:
     """Return the complete identity required for provider-response reuse."""
 
-    _verify_registry_snapshot(executor, packet)
+    _verify_packet_integrity(snapshot, executor, packet)
     _require_hash(str(provider.prompt_hash), "provider.prompt_hash")
     _require_hash(str(executor.state_schema_hash), "executor.state_schema_hash")
     operation_rows = [item.to_dict() for item in operations]
@@ -1115,7 +1557,9 @@ def _parse_assessment(
 ) -> tuple[AgentAssessment, Mapping[str, Any]]:
     payload = _decode_payload(payload_value)
     if payload["snapshot_hash"] != snapshot.snapshot_hash or payload["revision"] != revision:
-        raise RuntimeValidationError("Provider assessment is bound to a stale snapshot or round.")
+        raise RuntimeIntegrityError(
+            "Provider assessment is bound to a stale snapshot or round."
+        )
     if payload["status"] != "ok" or payload["failure_reason"] is not None:
         raise RuntimeValidationError("Provider did not return a successful typed assessment.")
     if not isinstance(payload["state_judgments"], (tuple, list)):
@@ -1222,6 +1666,45 @@ class _ProviderInvocation:
     timed_out: bool
 
 
+@dataclass(slots=True)
+class _BoundedCall:
+    completed: threading.Event
+    values: list[Any]
+    errors: list[BaseException]
+    thread: threading.Thread
+
+
+def _start_bounded_call(function: Any) -> _BoundedCall:
+    completed = threading.Event()
+    values: list[Any] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            values.append(function())
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    thread = threading.Thread(
+        target=run,
+        name="advoice-provider-boundary",
+        daemon=True,
+    )
+    thread.start()
+    return _BoundedCall(completed, values, errors, thread)
+
+
+def _bounded_result(call: _BoundedCall, timeout_seconds: float) -> tuple[bool, Any, BaseException | None]:
+    finished = call.completed.wait(timeout_seconds)
+    if not finished:
+        return False, None, None
+    if call.errors:
+        return True, None, call.errors[0]
+    return True, call.values[0] if call.values else None, None
+
+
 def _invoke_provider_cancellable(
     provider: AssessmentProvider,
     request: ProviderRequest,
@@ -1233,17 +1716,53 @@ def _invoke_provider_cancellable(
         deadline = time.monotonic() + budget.timeout_seconds
         attempt = provider.begin_assessment(request, deadline_monotonic=deadline)
         if not isinstance(attempt, ProviderAttempt):
-            raise RuntimeValidationError("Provider must return a cancellable attempt handle.")
-        outcome = attempt.wait_terminal(timeout_seconds=float(budget.timeout_seconds))
-        if outcome is not None:
+            raise RuntimeIntegrityError("Provider must return a cancellable attempt handle.")
+        wait_timeout = float(budget.timeout_seconds)
+        initial_wait = _start_bounded_call(
+            lambda: attempt.wait_terminal(timeout_seconds=wait_timeout)
+        )
+        finished, outcome, error = _bounded_result(
+            initial_wait,
+            wait_timeout + min(0.1, budget.cancellation_timeout_seconds),
+        )
+        if finished and error is None and outcome is not None:
             if not isinstance(outcome, ProviderTerminalOutcome):
-                raise RuntimeValidationError("Provider terminal acknowledgement must be typed.")
+                budget.stop_queue("invalid_terminal_acknowledgement")
+                raise RuntimeIntegrityError("Provider terminal acknowledgement must be typed.")
             return _ProviderInvocation(response=outcome.response, timed_out=False)
 
-        attempt.cancel()
-        outcome = attempt.wait_terminal(timeout_seconds=None)
-        if not isinstance(outcome, ProviderTerminalOutcome):
-            raise RuntimeValidationError(
+        cancel_call = _start_bounded_call(attempt.cancel)
+        cancel_finished, _, cancel_error = _bounded_result(
+            cancel_call, budget.cancellation_timeout_seconds,
+        )
+        if not cancel_finished or cancel_error is not None:
+            budget.stop_queue("cancellation_unacknowledged")
+            raise RuntimeIntegrityError(
+                "Provider cancellation did not produce a terminal acknowledgement."
+            )
+
+        if not finished:
+            finished, outcome, error = _bounded_result(
+                initial_wait, budget.cancellation_timeout_seconds,
+            )
+        else:
+            acknowledgement_wait = _start_bounded_call(
+                lambda: attempt.wait_terminal(
+                    timeout_seconds=budget.cancellation_timeout_seconds,
+                )
+            )
+            finished, outcome, error = _bounded_result(
+                acknowledgement_wait,
+                budget.cancellation_timeout_seconds
+                + min(0.1, budget.cancellation_timeout_seconds),
+            )
+        if (
+            not finished
+            or error is not None
+            or not isinstance(outcome, ProviderTerminalOutcome)
+        ):
+            budget.stop_queue("cancellation_unacknowledged")
+            raise RuntimeIntegrityError(
                 "Provider cancellation did not produce a terminal acknowledgement."
             )
         return _ProviderInvocation(response=outcome.response, timed_out=True)
@@ -1259,15 +1778,25 @@ def _call_assessment(
     revision: Literal["v0", "v1"],
     operations: Sequence[ReviewOperation],
     parent_snapshot_hash: str,
+    budget_cell_id: str,
 ) -> _CallResult:
-    packet = build_case_packet(snapshot, executor)
-    identity = cache_identity(
-        snapshot, packet, provider, executor, revision, operations,
-        parent_snapshot_hash=parent_snapshot_hash,
-    )
+    try:
+        packet = build_case_packet(snapshot, executor)
+        identity = cache_identity(
+            snapshot, packet, provider, executor, revision, operations,
+            parent_snapshot_hash=parent_snapshot_hash,
+        )
+    except RuntimeIntegrityError:
+        budget.stop_queue("runtime_integrity_failure")
+        raise
     cached, cache_event = cache.lookup(identity)
     request_id = "req_" + identity.key[:24]
     if cached is not None:
+        try:
+            _verify_packet_integrity(snapshot, executor, packet)
+        except RuntimeIntegrityError:
+            budget.stop_queue("runtime_integrity_failure")
+            raise
         usage = _usage_row(
             request_id=request_id,
             cache_key=identity.key,
@@ -1286,11 +1815,15 @@ def _call_assessment(
                 cached, snapshot=snapshot, revision=revision, provider=provider, usage=usage,
                 packet=packet,
             )
+        except RuntimeIntegrityError:
+            budget.stop_queue("runtime_integrity_failure")
+            raise
         except (PilotContractError, RuntimeValidationError, TypeError, ValueError) as exc:
-            raise RuntimeValidationError("Validated cache entry no longer matches its identity.") from exc
+            raise RuntimeIntegrityError(
+                "Validated cache entry no longer matches its identity."
+            ) from exc
         return _CallResult(assessment, (usage,), cache_event, packet.prompt_hash, packet)
 
-    budget.reserve_semantic_call()
     all_usage: list[UsageRow] = []
     final_usage: UsageRow | None = None
     final_reason = "provider_failure"
@@ -1298,7 +1831,17 @@ def _call_assessment(
         "disabled" if cache_event.status == "disabled" else "miss"
     )
     for request_attempt in range(1, budget.transport_retry_max + 2):
-        budget.reserve_attempt()
+        reservation = (
+            budget.reserve_call_attempt(
+                subject_id=snapshot.subject.subject_id,
+                cell_id=budget_cell_id,
+            )
+            if request_attempt == 1
+            else budget.reserve_attempt(
+                subject_id=snapshot.subject.subject_id,
+                cell_id=budget_cell_id,
+            )
+        )
         request = ProviderRequest(
             request_id=request_id,
             idempotency_key=request_id,
@@ -1318,11 +1861,25 @@ def _call_assessment(
             elapsed = time.monotonic() - started
             response = invocation.response
             if response is not None and not isinstance(response, ProviderResponse):
-                raise RuntimeValidationError("Provider must return ProviderResponse.")
-            overage_reason = budget.record_response(response) if response is not None else None
+                raise RuntimeIntegrityError("Provider must return ProviderResponse.")
+            if response is None:
+                budget.forfeit_attempt(reservation, "missing_provider_telemetry")
+                overage_reason = "missing_telemetry"
+            else:
+                overage_reason = budget.record_response(
+                    reservation,
+                    response,
+                    transport_succeeded=not invocation.timed_out,
+                )
+            _verify_packet_integrity(snapshot, executor, packet)
             if invocation.timed_out:
                 budget.record_transport_failure()
-                final_reason = "budget_exhausted" if overage_reason is not None else "timeout"
+                if overage_reason == "missing_telemetry":
+                    final_reason = "missing_telemetry"
+                else:
+                    final_reason = (
+                        "budget_exhausted" if overage_reason is not None else "timeout"
+                    )
                 final_usage = _usage_row(
                     request_id=request_id, cache_key=identity.key,
                     cache_status=cache_status, response_status="timeout",
@@ -1336,7 +1893,7 @@ def _call_assessment(
                     missing_reason="cancelled_no_provider_usage",
                 )
                 all_usage.append(final_usage)
-                if overage_reason is not None:
+                if overage_reason is not None or budget.queue_stopped:
                     break
                 if request_attempt > budget.transport_retry_max:
                     break
@@ -1347,9 +1904,16 @@ def _call_assessment(
                     break
                 continue
             if response is None:
-                raise RuntimeValidationError(
-                    "Completed provider attempt omitted its terminal response."
+                final_reason = "missing_telemetry"
+                final_usage = _usage_row(
+                    request_id=request_id, cache_key=identity.key,
+                    cache_status=cache_status, response_status="provider_failure",
+                    attempt=request_attempt, model_id=str(provider.model_id), usage=None,
+                    reported_cost=None, wall_seconds=elapsed, response_id=None,
+                    missing_reason="provider_not_reported",
                 )
+                all_usage.append(final_usage)
+                break
             provisional = _usage_row(
                 request_id=request_id, cache_key=identity.key,
                 cache_status=cache_status, response_status="ok",
@@ -1357,6 +1921,11 @@ def _call_assessment(
                 reported_cost=response.reported_cost_usd, wall_seconds=elapsed,
                 response_id=response.response_id,
             )
+            if overage_reason == "missing_telemetry":
+                final_reason = "missing_telemetry"
+                final_usage = replace(provisional, response_status="provider_failure")
+                all_usage.append(final_usage)
+                break
             if overage_reason is not None:
                 final_reason = "budget_exhausted"
                 final_usage = provisional
@@ -1382,6 +1951,8 @@ def _call_assessment(
                     usage=provisional,
                     packet=packet,
                 )
+            except RuntimeIntegrityError:
+                raise
             except (PilotContractError, RuntimeValidationError, TypeError, ValueError, KeyError):
                 final_reason = "malformed_response"
                 final_usage = replace(provisional, response_status="malformed_response")
@@ -1394,8 +1965,9 @@ def _call_assessment(
             )
         except ProviderTransportError:
             elapsed = time.monotonic() - started
+            budget.forfeit_attempt(reservation, "missing_provider_telemetry")
             budget.record_transport_failure()
-            final_reason = "transport_failure"
+            final_reason = "missing_telemetry"
             final_usage = _usage_row(
                 request_id=request_id, cache_key=identity.key,
                 cache_status=cache_status, response_status="transport_failure",
@@ -1404,14 +1976,21 @@ def _call_assessment(
                 missing_reason="request_failed",
             )
             all_usage.append(final_usage)
+        except RuntimeIntegrityError:
+            budget.stop_queue("runtime_integrity_failure")
+            budget.forfeit_attempt(reservation, "runtime_integrity_failure")
+            raise
         except RuntimeValidationError:
+            budget.forfeit_attempt(reservation, "runtime_validation_failure")
             raise
         except Exception:
             elapsed = time.monotonic() - started
-            final_reason = "provider_failure"
+            budget.forfeit_attempt(reservation, "missing_provider_telemetry")
+            budget.record_transport_failure()
+            final_reason = "missing_telemetry"
             final_usage = _usage_row(
                 request_id=request_id, cache_key=identity.key,
-                cache_status=cache_status, response_status="provider_failure",
+                cache_status=cache_status, response_status="transport_failure",
                 attempt=request_attempt, model_id=str(provider.model_id), usage=None,
                 reported_cost=None, wall_seconds=elapsed, response_id=None,
                 missing_reason="request_failed",
@@ -1421,7 +2000,10 @@ def _call_assessment(
 
         if request_attempt > budget.transport_retry_max:
             break
-        if budget.consecutive_transport_failures >= budget.pause_after_consecutive_transport_failures:
+        if budget.queue_stopped or (
+            budget.consecutive_transport_failures
+            >= budget.pause_after_consecutive_transport_failures
+        ):
             break
 
     if final_usage is None:
@@ -1436,13 +2018,13 @@ def _authorize_operations(
     executor: ReplayExecutor,
     packet: CasePacket,
 ) -> tuple[tuple[ReviewOperation, ...], tuple[RejectedOperation, ...]]:
-    _verify_registry_snapshot(executor, packet)
+    _verify_packet_integrity(snapshot, executor, packet)
     accepted: list[ReviewOperation] = []
     rejected: list[RejectedOperation] = []
     seen: set[str] = set()
     registry = dict(packet.operation_registry_snapshot)
     for operation in operations:
-        _verify_registry_snapshot(executor, packet)
+        _verify_packet_integrity(snapshot, executor, packet)
         fingerprint_body = operation.to_dict()
         fingerprint_body.pop("schema_version", None)
         fingerprint_body.pop("operation_id", None)
@@ -1466,7 +2048,7 @@ def _authorize_operations(
                     raise RuntimeValidationError("Executor authorization must be typed.")
                 if not authorization.accepted:
                     reason = authorization.reason
-                _verify_registry_snapshot(executor, packet)
+                _verify_packet_integrity(snapshot, executor, packet)
             except RuntimeValidationError:
                 raise
             except Exception:
@@ -1488,15 +2070,15 @@ def _run_replay(
     executor: ReplayExecutor,
     packet: CasePacket,
 ) -> ReplayResult:
-    _verify_registry_snapshot(executor, packet)
+    _verify_packet_integrity(snapshot, executor, packet)
     accepted, rejected = _authorize_operations(snapshot, operations, executor, packet)
     if accepted:
         try:
-            _verify_registry_snapshot(executor, packet)
+            _verify_packet_integrity(snapshot, executor, packet)
             execution = executor.replay(snapshot, accepted)
             if not isinstance(execution, ReplayExecution):
                 raise RuntimeValidationError("Executor replay result must be typed.")
-            _verify_registry_snapshot(executor, packet)
+            _verify_packet_integrity(snapshot, executor, packet)
         except RuntimeValidationError:
             raise
         except Exception:
@@ -1701,6 +2283,8 @@ def assess_and_replay(
     executor: ReplayExecutor,
     budget: RuntimeBudget,
     cache: InMemoryAssessmentCache,
+    *,
+    budget_cell_id: str | None = None,
 ) -> RuntimeResult:
     """Run one blind v0 assessment, one bounded replay, and at most one v1."""
 
@@ -1725,10 +2309,19 @@ def assess_and_replay(
     if not re.search(r"\d{4}-\d{2}-\d{2}$", provider.model_id):
         raise RuntimeValidationError("Provider model ID must be exact and dated.")
     _require_hash(str(provider.prompt_hash), "provider.prompt_hash")
+    if budget_cell_id is None:
+        budget_cell_id = "cell_" + _digest({
+            "subject_id": snapshot.subject.subject_id,
+            "model_id": provider.model_id,
+            "provider_settings": _plain(provider.settings),
+        })[:24]
+    elif not isinstance(budget_cell_id, str) or not _TOKEN_RE.fullmatch(budget_cell_id):
+        raise RuntimeValidationError("Budget cell ID must be a coded identifier.")
 
     v0 = _call_assessment(
         snapshot, provider, executor, budget, cache,
         revision="v0", operations=(), parent_snapshot_hash=snapshot.snapshot_hash,
+        budget_cell_id=budget_cell_id,
     )
     usage = list(v0.usage)
     events = [v0.cache_event]
@@ -1740,13 +2333,18 @@ def assess_and_replay(
     )]
 
     if v0.assessment.status == "ok":
-        replay = _run_replay(snapshot, v0.assessment.operations, executor, v0.packet)
+        try:
+            replay = _run_replay(snapshot, v0.assessment.operations, executor, v0.packet)
+        except RuntimeIntegrityError:
+            budget.stop_queue("runtime_integrity_failure")
+            raise
         if replay.valid and replay.accepted_ops and replay.meaningful_change:
             try:
                 v1 = _call_assessment(
                     replay.after, provider, executor, budget, cache,
                     revision="v1", operations=replay.accepted_ops,
                     parent_snapshot_hash=replay.parent_hash,
+                    budget_cell_id=budget_cell_id,
                 )
                 assessment_v1 = v1.assessment
                 usage.extend(v1.usage)

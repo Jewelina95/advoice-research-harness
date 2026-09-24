@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import threading
+import time
 from types import MappingProxyType
 from typing import Any
 
@@ -30,6 +31,7 @@ from advoice.pilot.runtime import (
     ProviderUsage,
     ReplayExecution,
     RuntimeBudget,
+    RuntimeIntegrityError,
     RuntimeValidationError,
     SkillBundle,
     SkillDocument,
@@ -293,12 +295,22 @@ class FakeExecutor:
         )
 
 
-def _response(payload: dict[str, Any], *, usage: ProviderUsage | None = None) -> ProviderResponse:
+_DEFAULT_USAGE = object()
+
+
+def _response(
+    payload: dict[str, Any],
+    *,
+    usage: ProviderUsage | None | object = _DEFAULT_USAGE,
+    reported_cost_usd: float | None = 0.001,
+) -> ProviderResponse:
+    if usage is _DEFAULT_USAGE:
+        usage = ProviderUsage(input_tokens=10, output_tokens=5, reasoning_tokens=2)
     return ProviderResponse(
         payload=payload,
         usage=usage,
         response_id="resp_0",
-        reported_cost_usd=None,
+        reported_cost_usd=reported_cost_usd,
         status="ok",
     )
 
@@ -315,6 +327,11 @@ def _budget(**changes: Any) -> RuntimeBudget:
         "timeout_seconds": 30,
         "transport_retry_max": 1,
         "pause_after_consecutive_transport_failures": 2,
+        "cancellation_timeout_seconds": 1.0,
+        "max_input_tokens_per_attempt": 1000,
+        "max_output_tokens_per_attempt": 1000,
+        "max_reasoning_tokens_per_attempt": 1000,
+        "max_usd_per_attempt": 1.0,
     }
     values.update(changes)
     return RuntimeBudget(**values)
@@ -538,46 +555,84 @@ def test_cache_misses_on_every_identity_or_input_change(mutation: str):
     assert changed.key != base.key
 
 
-def test_failed_attempts_are_accounted_and_missing_usage_is_null_not_zero():
+def test_missing_telemetry_fails_closed_consumes_worst_case_and_stops_retry():
     snapshot = _snapshot()
     provider = FakeProvider([
-        ProviderTransportError("temporary"),
         _response(_payload(snapshot), usage=None),
+        _response(_payload(snapshot)),
     ])
-    budget = _budget()
+    budget = _budget(
+        max_input_tokens_per_attempt=101,
+        max_output_tokens_per_attempt=53,
+        max_reasoning_tokens_per_attempt=29,
+        max_usd_per_attempt=0.75,
+    )
 
     result = assess_and_replay(snapshot, provider, FakeExecutor(), budget, InMemoryAssessmentCache())
 
-    assert len(result.usage) == 2
-    assert result.usage[0].response_status == "transport_failure"
-    assert result.usage[1].response_status == "ok"
-    assert result.usage[1].input_tokens is None
-    assert result.usage[1].cost_usd is None
-    assert result.usage[1].unavailable_reasons["input_tokens"] == "provider_not_reported"
-    assert result.usage[1].unavailable_reasons["cost_usd"] == "provider_not_reported"
-    assert budget.attempts == 2
+    assert result.assessment_v0.status == "failed"
+    assert result.assessment_v0.failure_reason == "missing_telemetry"
+    assert len(provider.calls) == 1
+    assert len(result.usage) == 1
+    assert result.usage[0].response_status == "provider_failure"
+    assert result.usage[0].input_tokens is None
+    assert result.usage[0].unavailable_reasons["input_tokens"] == "provider_not_reported"
+    assert budget.attempts == 1
     assert budget.semantic_calls == 1
+    assert result.budget_snapshot.input_tokens == 101
+    assert result.budget_snapshot.output_tokens == 53
+    assert result.budget_snapshot.reasoning_tokens == 29
+    assert result.budget_snapshot.total_tokens == 183
+    assert result.budget_snapshot.reported_cost_usd == pytest.approx(0.75)
+    assert result.budget_snapshot.queue_stopped is True
+    assert result.budget_snapshot.queue_stop_reason == "missing_provider_telemetry"
+
+    after_stop = FakeProvider([_response(_payload(snapshot))])
+    with pytest.raises(RuntimeValidationError, match="queue stopped"):
+        assess_and_replay(
+            snapshot, after_stop, FakeExecutor(), budget, InMemoryAssessmentCache(),
+        )
+    assert after_stop.calls == []
 
 
-def test_invalid_citation_and_stale_snapshot_fail_without_fabricated_scores():
+def test_invalid_citation_fails_without_fabricated_scores():
     snapshot = _snapshot()
     bad = {**_payload(snapshot), "citations": ["unknown"]}
+
+    result = assess_and_replay(
+        snapshot,
+        FakeProvider([_response(bad)]),
+        FakeExecutor(),
+        _budget(),
+        InMemoryAssessmentCache(),
+    )
+    assert result.assessment_v0.status == "failed"
+    assert result.assessment_v0.ordinal_scores is None
+    assert result.replay is None
+
+
+def test_stale_provider_snapshot_is_a_fatal_run_stop_error():
+    snapshot = _snapshot()
     stale = {**_payload(snapshot), "snapshot_hash": "f" * 64}
 
-    for payload in (bad, stale):
-        result = assess_and_replay(
+    with pytest.raises(RuntimeIntegrityError, match="snapshot or round"):
+        assess_and_replay(
             snapshot,
-            FakeProvider([_response(payload)]),
+            FakeProvider([_response(stale)]),
             FakeExecutor(),
             _budget(),
             InMemoryAssessmentCache(),
         )
-        assert result.assessment_v0.status == "failed"
-        assert result.assessment_v0.ordinal_scores is None
-        assert result.replay is None
 
 
-def test_budget_blocks_provider_before_an_unauthorized_semantic_call():
+@pytest.mark.parametrize(
+    "cap",
+    [
+        "max_semantic_calls", "max_attempts", "max_input_tokens", "max_output_tokens",
+        "max_reasoning_tokens", "max_total_tokens", "max_usd",
+    ],
+)
+def test_zero_budget_caps_admit_zero_provider_calls(cap: str):
     snapshot = _snapshot()
     provider = FakeProvider([_response(_payload(snapshot))])
     with pytest.raises(RuntimeValidationError, match="budget"):
@@ -585,10 +640,120 @@ def test_budget_blocks_provider_before_an_unauthorized_semantic_call():
             snapshot,
             provider,
             FakeExecutor(),
-            _budget(max_semantic_calls=0),
+            _budget(**{cap: 0}),
             InMemoryAssessmentCache(),
         )
     assert provider.calls == []
+
+
+def test_subject_cell_and_global_call_caps_are_independently_enforced():
+    snapshot = _snapshot()
+    budget = _budget(
+        max_semantic_calls=2,
+        max_attempts=2,
+        max_semantic_calls_per_subject=2,
+        max_semantic_calls_per_cell=1,
+    )
+
+    first = FakeProvider([_response(_payload(snapshot))])
+    assess_and_replay(
+        snapshot, first, FakeExecutor(), budget, InMemoryAssessmentCache(enabled=False),
+        budget_cell_id="structured_model_a",
+    )
+
+    same_cell = FakeProvider([_response(_payload(snapshot))])
+    with pytest.raises(RuntimeValidationError, match="Cell semantic call budget"):
+        assess_and_replay(
+            snapshot, same_cell, FakeExecutor(), budget,
+            InMemoryAssessmentCache(enabled=False),
+            budget_cell_id="structured_model_a",
+        )
+    assert same_cell.calls == []
+
+    second_cell = FakeProvider([_response(_payload(snapshot))])
+    assess_and_replay(
+        snapshot, second_cell, FakeExecutor(), budget,
+        InMemoryAssessmentCache(enabled=False),
+        budget_cell_id="structured_model_b",
+    )
+
+    global_excess = FakeProvider([_response(_payload(snapshot))])
+    with pytest.raises(RuntimeValidationError, match="Global semantic call budget"):
+        assess_and_replay(
+            snapshot, global_excess, FakeExecutor(), budget,
+            InMemoryAssessmentCache(enabled=False),
+            budget_cell_id="structured_model_c",
+        )
+    assert global_excess.calls == []
+    assert budget.snapshot().subject_semantic_calls == {
+        snapshot.subject.subject_id: 2,
+    }
+    assert budget.snapshot().cell_semantic_calls == {
+        "structured_model_a": 1,
+        "structured_model_b": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        (
+            {"max_input_tokens": 99, "max_input_tokens_per_attempt": 100},
+            "Global input token budget",
+        ),
+        (
+            {
+                "max_input_tokens": 1000,
+                "max_input_tokens_per_subject": 99,
+                "max_input_tokens_per_attempt": 100,
+            },
+            "Subject input token budget",
+        ),
+        (
+            {
+                "max_input_tokens": 1000,
+                "max_input_tokens_per_cell": 99,
+                "max_input_tokens_per_attempt": 100,
+            },
+            "Cell input token budget",
+        ),
+        (
+            {"max_usd": 0.09, "max_usd_per_attempt": 0.10},
+            "Global dollar budget",
+        ),
+        (
+            {
+                "max_usd": 10.0,
+                "max_usd_per_subject": 0.09,
+                "max_usd_per_attempt": 0.10,
+            },
+            "Subject dollar budget",
+        ),
+        (
+            {
+                "max_usd": 10.0,
+                "max_usd_per_cell": 0.09,
+                "max_usd_per_attempt": 0.10,
+            },
+            "Cell dollar budget",
+        ),
+    ],
+)
+def test_scoped_token_and_dollar_caps_reserve_worst_case_before_dispatch(
+    changes: dict[str, Any], message: str,
+):
+    snapshot = _snapshot()
+    budget = _budget(**changes)
+    provider = FakeProvider([_response(_payload(snapshot))])
+
+    with pytest.raises(RuntimeValidationError, match=message):
+        assess_and_replay(
+            snapshot, provider, FakeExecutor(), budget, InMemoryAssessmentCache(),
+        )
+
+    assert provider.calls == []
+    assert budget.semantic_calls == 0
+    assert budget.attempts == 0
 
 
 def test_runtime_budget_rejects_concurrency_above_frozen_global_limit():
@@ -759,7 +924,12 @@ def test_over_cap_billed_response_preserves_usage_and_returns_budget_failure():
         reported_cost_usd=0.25,
         status="ok",
     )
-    budget = _budget(max_input_tokens=100, max_usd=0.10)
+    budget = _budget(
+        max_input_tokens=100,
+        max_usd=0.10,
+        max_input_tokens_per_attempt=100,
+        max_usd_per_attempt=0.10,
+    )
 
     result = assess_and_replay(
         snapshot,
@@ -806,13 +976,13 @@ def test_provider_ignoring_deadline_is_cancelled_joined_and_fully_accounted_befo
                     owner.max_active = max(owner.max_active, owner.active)
                 cancelled.wait()
                 response.append(ProviderResponse(
-                    payload=None,
+                    payload=_payload(snapshot),
                     usage=ProviderUsage(
                         input_tokens=7, output_tokens=3, reasoning_tokens=1,
                     ),
                     response_id=f"resp_cancelled_{attempt_number}",
                     reported_cost_usd=0.01,
-                    status="provider_failure",
+                    status="ok",
                 ))
                 with owner._lock:
                     owner.active -= 1
@@ -861,6 +1031,113 @@ def test_provider_ignoring_deadline_is_cancelled_joined_and_fully_accounted_befo
     assert result.budget_snapshot.output_tokens == 6
     assert result.budget_snapshot.reasoning_tokens == 2
     assert result.budget_snapshot.reported_cost_usd == pytest.approx(0.02)
+    assert result.budget_snapshot.consecutive_transport_failures == 2
+
+
+def test_hanging_terminal_wait_has_bounded_cancellation_and_stops_queue_without_retry():
+    snapshot = _snapshot()
+
+    class HangingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__([])
+            self.cancelled = threading.Event()
+
+        def begin_assessment(
+            self, request: ProviderRequest, *, deadline_monotonic: float,
+        ):
+            self.calls.append(request)
+            never_terminal = threading.Event()
+            owner = self
+
+            class HangingAttempt:
+                def wait_terminal(self, *, timeout_seconds: float | None):
+                    never_terminal.wait()
+                    raise AssertionError("unreachable")
+
+                def cancel(self):
+                    owner.cancelled.set()
+
+            return HangingAttempt()
+
+    provider = HangingProvider()
+    budget = _budget(
+        timeout_seconds=1,
+        cancellation_timeout_seconds=0.05,
+        transport_retry_max=1,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(RuntimeIntegrityError, match="terminal acknowledgement"):
+        assess_and_replay(
+            snapshot, provider, FakeExecutor(), budget, InMemoryAssessmentCache(),
+        )
+
+    assert time.monotonic() - started < 1.5
+    assert provider.cancelled.is_set()
+    assert len(provider.calls) == 1
+    assert budget.snapshot().queue_stopped is True
+    assert budget.snapshot().queue_stop_reason == "cancellation_unacknowledged"
+
+
+def test_wait_error_is_cancelled_and_acknowledged_before_retry():
+    snapshot = _snapshot()
+
+    class RaisingThenRecoveringProvider(FakeProvider):
+        def __init__(self):
+            super().__init__([])
+            self.cancel_acknowledged = False
+
+        def begin_assessment(
+            self, request: ProviderRequest, *, deadline_monotonic: float,
+        ):
+            assert not self.calls or self.cancel_acknowledged
+            self.calls.append(request)
+            attempt_number = len(self.calls)
+            owner = self
+            cancelled = False
+
+            class RaisingAttempt:
+                def wait_terminal(self, *, timeout_seconds: float | None):
+                    nonlocal cancelled
+                    if attempt_number == 1 and not cancelled:
+                        raise ProviderTransportError("wait failed before terminal state")
+                    if attempt_number == 1:
+                        owner.cancel_acknowledged = True
+                        return ProviderTerminalOutcome(
+                            status="cancelled",
+                            response=ProviderResponse(
+                                payload=None,
+                                usage=ProviderUsage(
+                                    input_tokens=7, output_tokens=3, reasoning_tokens=1,
+                                ),
+                                response_id="resp_cancelled_1",
+                                reported_cost_usd=0.01,
+                                status="provider_failure",
+                            ),
+                        )
+                    return ProviderTerminalOutcome(
+                        status="completed", response=_response(_payload(snapshot)),
+                    )
+
+                def cancel(self):
+                    nonlocal cancelled
+                    cancelled = True
+
+            return RaisingAttempt()
+
+    provider = RaisingThenRecoveringProvider()
+    result = assess_and_replay(
+        snapshot,
+        provider,
+        FakeExecutor(),
+        _budget(timeout_seconds=1, transport_retry_max=1),
+        InMemoryAssessmentCache(),
+    )
+
+    assert result.assessment_v0.status == "ok"
+    assert provider.cancel_acknowledged is True
+    assert len(provider.calls) == 2
+    assert [row.response_status for row in result.usage] == ["timeout", "ok"]
 
 
 def test_provider_without_cancellation_guarantees_fails_analytical_preflight():
@@ -922,11 +1199,55 @@ def test_executor_registry_hash_is_derived_and_mismatch_rejected_before_cache_or
     provider = FakeProvider([_response(_payload(snapshot))])
     cache = InMemoryAssessmentCache()
 
-    with pytest.raises(RuntimeValidationError, match="registry hash"):
+    with pytest.raises(RuntimeIntegrityError, match="registry hash"):
         assess_and_replay(snapshot, provider, executor, _budget(), cache)
 
     assert provider.calls == []
     assert cache._entries == {}
+
+
+def test_skill_bundle_drift_after_packet_build_is_a_fatal_run_stop_error():
+    snapshot = _snapshot()
+    executor = FakeExecutor()
+    changed_document = SkillDocument.from_content(
+        document_id="ad_evidence_skill",
+        content="Changed analytical policy after the provider request started.",
+    )
+    changed_bundle = SkillBundle(
+        manifest_id="ad_evidence_manifest",
+        manifest_version="fixture_v2",
+        documents=(changed_document,),
+        analytical=True,
+    )
+
+    class SkillMutatingProvider(FakeProvider):
+        def begin_assessment(
+            self, request: ProviderRequest, *, deadline_monotonic: float,
+        ):
+            attempt = super().begin_assessment(
+                request, deadline_monotonic=deadline_monotonic,
+            )
+
+            class SkillMutatingAttempt:
+                def wait_terminal(self, *, timeout_seconds: float | None):
+                    executor.bundle = changed_bundle
+                    return attempt.wait_terminal(timeout_seconds=timeout_seconds)
+
+                def cancel(self):
+                    attempt.cancel()
+
+            return SkillMutatingAttempt()
+
+    provider = SkillMutatingProvider([_response(_payload(snapshot))])
+    budget = _budget()
+
+    with pytest.raises(RuntimeIntegrityError, match="skill bundle changed"):
+        assess_and_replay(
+            snapshot, provider, executor, budget, InMemoryAssessmentCache(),
+        )
+
+    assert len(provider.calls) == 1
+    assert budget.snapshot().queue_stopped is True
 
 
 @pytest.mark.parametrize("mutation", ["replace_object", "mutate_content"])
@@ -964,7 +1285,7 @@ def test_registry_mutation_after_packet_build_rejects_before_authorization(mutat
         _response(_payload(snapshot, operations=(_operation(),)))
     ])
 
-    with pytest.raises(RuntimeValidationError, match="registry (object changed|mutated)"):
+    with pytest.raises(RuntimeIntegrityError, match="registry (object changed|mutated)"):
         assess_and_replay(
             snapshot, provider, executor, _budget(), InMemoryAssessmentCache(),
         )

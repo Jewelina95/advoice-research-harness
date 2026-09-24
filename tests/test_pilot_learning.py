@@ -85,83 +85,108 @@ def _fold_fixture(*, leaky_group: bool = False) -> tuple[l.FoldInputs, tuple[str
     config = l.FrozenFoldConfig(
         class_order=("HC", "AD"), base_feature_names=("base_signal", "constant"),
         state_feature_names=("state_signal", "missing"), base_model_id="condition_c_fixture_v1",
-        replay_model_id="state_replay_fixture_v1",
+        replay_model_id="state_replay_fixture_v1", analytical_run=False,
     )
     return l.FoldInputs(cases=cases, labels=labels), tuple(fit_ids), tuple(validation_ids), config
 
 
-def _provenance(subject: c.SubjectRow, index: int) -> l.OOFProvenance:
-    other = f"sub_{(index + 100):016x}"
-    return l.OOFProvenance(
-        fold_artifact_id=f"fold_artifact_{index}", fit_ids=(other,),
-        fit_group_ids=(f"grp_{(index + 100):016x}",), validation_id=subject.subject_id,
-        validation_group_id=subject.source_group_id, excluded_ids=(subject.subject_id,),
+def _actual_oof_predictions(
+    *, task: str, class_order: tuple[str, ...], ordered_labels: tuple[str, ...], count: int,
+) -> tuple[list[l.FoldPrediction], dict[str, str], l.FoldArtifactManifest, l.FoldInputs, l.FrozenFoldConfig]:
+    cases: dict[str, l.FoldCaseInput] = {}
+    labels: dict[str, str] = {}
+    signal = {label: float(index) for index, label in enumerate(class_order)}
+    fold_count = 3 if len(class_order) == 3 else 2
+    for index in range(count):
+        label = ordered_labels[index % len(ordered_labels)]
+        subject = _subject(
+            index, task=task, class_order=class_order,
+            fold_id=f"fold_{(index // len(ordered_labels)) % fold_count}",
+        )
+        cases[subject.subject_id] = l.FoldCaseInput(
+            subject=subject,
+            base_features={"base_signal": signal[label], "base_nonstate": float(index % 2)},
+            state_features={"state_signal": signal[label]},
+            evidence_snapshot=_snapshot(subject),
+        )
+        labels[subject.subject_id] = label
+    inputs = l.FoldInputs(cases=cases, labels=labels)
+    config = l.FrozenFoldConfig(
+        class_order=class_order, base_feature_names=("base_signal", "base_nonstate"),
+        state_feature_names=("state_signal",), base_model_id="synthetic_full_base_v1",
+        replay_model_id="synthetic_state_replay_v1", analytical_run=False,
     )
+    artifacts: list[l.FoldArtifact] = []
+    predictions: list[l.FoldPrediction] = []
+    for fold_index in range(fold_count):
+        validation = tuple(
+            subject_id for subject_id, case in cases.items()
+            if case.subject.fold_id == f"fold_{fold_index}"
+        )
+        fit = tuple(subject_id for subject_id in cases if subject_id not in validation)
+        artifact = l.fit_fold(inputs, fit, validation, config)
+        artifacts.append(artifact)
+        for subject_id in validation:
+            case = cases[subject_id]
+            bound = replace(case, evidence_snapshot=_snapshot(
+                case.subject, reference_fit_id=artifact.reference_fit_id,
+                reference_fit_hash=artifact.reference_fit_hash,
+            ))
+            predictions.append(l.predict_fold(artifact, bound))
+    return predictions, labels, l.seal_fold_artifacts(artifacts), inputs, config
 
 
 def _three_class_rows(
     *,
     uninformative_agent: bool = False,
     invalid_second_pass: int | None = None,
-) -> tuple[list[l.CalibrationRow], dict[str, str]]:
+) -> tuple[list[l.CalibrationRow], dict[str, str], l.FoldArtifactManifest]:
     rows: list[l.CalibrationRow] = []
-    labels: dict[str, str] = {}
-    base = {
-        "HC": (0.72, 0.18, 0.10),
-        "MCI": (0.22, 0.58, 0.20),
-        "AD": (0.12, 0.23, 0.65),
-    }
+    predictions, labels, manifest, _, _ = _actual_oof_predictions(
+        task="hc_mci_ad", class_order=("HC", "MCI", "AD"),
+        ordered_labels=("HC", "MCI", "AD"), count=18,
+    )
     scores = {
         "HC": {"HC": 4, "MCI": 1, "AD": 0},
         "MCI": {"HC": 1, "MCI": 4, "AD": 2},
         "AD": {"HC": 0, "MCI": 2, "AD": 4},
     }
-    after = {
-        "HC": (0.80, 0.14, 0.06),
-        "MCI": (0.15, 0.67, 0.18),
-        "AD": (0.08, 0.20, 0.72),
-    }
-    for index in range(18):
-        label = ("HC", "MCI", "AD")[index % 3]
-        subject = _subject(index, fold_id=f"fold_{index % 3}")
+    for index, prediction in enumerate(predictions):
+        label = labels[prediction.subject.subject_id]
         ordinal = {"HC": 2, "MCI": 2, "AD": 2} if uninformative_agent else scores[label]
         refusal = {"J-A": None, "J-S": None, "J-AS": None}
         v1 = ordinal
         if invalid_second_pass == index:
             refusal["J-AS"] = "v1_failed"
             v1 = None
-        row = l.CalibrationRow(
-            subject=subject, fusion_hash=_hash(f"fusion-{index}"),
-            base_probabilities=base[label], agent_v0_scores=ordinal,
-            agent_v1_scores=v1, v1_required=True, state_probabilities_before=base[label],
-            state_probabilities_after=after[label], arm_refusal_reasons=refusal,
-            oof_provenance=_provenance(subject, index),
+        before = np.asarray(prediction.state_probabilities)
+        target = np.zeros(3)
+        target[("HC", "MCI", "AD").index(label)] = 1.0
+        after = tuple((0.8 * before + 0.2 * target).tolist())
+        row = l.CalibrationRow.from_fold_prediction(
+            prediction, fusion_hash=_hash(f"fusion-{index}"),
+            agent_v0_scores=ordinal, agent_v1_scores=v1, v1_required=True,
+            state_probabilities_after=after, arm_refusal_reasons=refusal,
         )
         rows.append(row)
-        labels[subject.subject_id] = label
-    return rows, labels
+    return rows, labels, manifest
 
 
-def _binary_rows() -> tuple[list[l.CalibrationRow], dict[str, str]]:
+def _binary_rows() -> tuple[list[l.CalibrationRow], dict[str, str], l.FoldArtifactManifest]:
     rows: list[l.CalibrationRow] = []
-    labels: dict[str, str] = {}
-    for index in range(12):
-        label = "HC" if index % 2 == 0 else "AD"
-        subject = _subject(
-            index, task="hc_ad", class_order=("HC", "AD"), fold_id=f"fold_{index % 2}",
-        )
-        probability = (0.75, 0.25) if label == "HC" else (0.20, 0.80)
+    predictions, labels, manifest, _, _ = _actual_oof_predictions(
+        task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
+    )
+    for index, prediction in enumerate(predictions):
+        label = labels[prediction.subject.subject_id]
         scores = {"HC": 3, "AD": 1} if label == "HC" else {"HC": 1, "AD": 3}
-        rows.append(l.CalibrationRow(
-            subject=subject, fusion_hash=_hash(f"binary-fusion-{index}"),
-            base_probabilities=probability, agent_v0_scores=scores, agent_v1_scores=None,
-            v1_required=False,
-            state_probabilities_before=probability, state_probabilities_after=probability,
+        rows.append(l.CalibrationRow.from_fold_prediction(
+            prediction, fusion_hash=_hash(f"binary-fusion-{index}"),
+            agent_v0_scores=scores, agent_v1_scores=None, v1_required=False,
+            state_probabilities_after=prediction.state_probabilities,
             arm_refusal_reasons={"J-A": None, "J-S": None, "J-AS": None},
-            oof_provenance=_provenance(subject, index),
         ))
-        labels[subject.subject_id] = label
-    return rows, labels
+    return rows, labels, manifest
 
 
 def _manual_head(
@@ -192,7 +217,8 @@ def _manual_binary_calibrators() -> l.JointCalibrators:
     }
     return l.JointCalibrators(
         task="hc_ad", class_order=("HC", "AD"), arms=arms,
-        matched_baselines=matched, seed=1,
+        matched_baselines=matched, fold_manifest_id="manual_fixture_manifest",
+        oof_prediction_hashes=("manual_fixture_prediction",), seed=1,
     )
 
 
@@ -206,6 +232,73 @@ def test_real_model_and_fusion_symbols_are_distinct_and_current():
     assert manifest["base"]["symbol"] == l.FULL_BASE_PREDICTOR_SYMBOL
     assert "subject_transcripts" in manifest["base"]["feature_signature"]
     assert manifest["replay"]["feature_signature"][0] == "explicit_state_feature_whitelist"
+
+
+def test_synthetic_adapter_is_typed_persisted_and_blocked_for_analytical_runs():
+    inputs, fit_ids, validation_ids, config = _fold_fixture()
+    assert isinstance(l.SyntheticLinearPredictorAdapter("base"), l.PredictorAdapter)
+    artifact = l.fit_fold(inputs, fit_ids, validation_ids, config)
+    assert artifact.purpose == "synthetic_test"
+    assert artifact.base_model.adapter_implementation.endswith("synthetic_base_linear")
+    assert artifact.replay_model.adapter_implementation.endswith("synthetic_replay_linear")
+    assert artifact.base_model.feature_pipeline_hash != artifact.replay_model.feature_pipeline_hash
+    assert len(artifact.base_model.feature_pipeline_hash) == 64
+    assert l.FULL_BASE_PREDICTOR_SYMBOL not in artifact.base_model.adapter_implementation
+    with pytest.raises(l.LearningError, match="production predictor adapter"):
+        l.fit_fold(inputs, fit_ids, validation_ids, replace(config, analytical_run=True))
+
+
+@pytest.mark.parametrize("partition", ["holdout", "stress"])
+@pytest.mark.parametrize("target", ["fit", "validation"])
+def test_fit_fold_rejects_non_development_fit_and_validation_subjects(partition, target):
+    inputs, fit_ids, validation_ids, config = _fold_fixture()
+    subject_id = fit_ids[0] if target == "fit" else validation_ids[0]
+    original = inputs.cases[subject_id]
+    changed_subject = replace(original.subject, partition=partition)
+    changed_case = replace(
+        original, subject=changed_subject, evidence_snapshot=_snapshot(changed_subject),
+    )
+    changed_cases = dict(inputs.cases)
+    changed_cases[subject_id] = changed_case
+    with pytest.raises(l.FoldLeakageError, match="development subjects"):
+        l.fit_fold(
+            replace(inputs, cases=changed_cases), fit_ids, validation_ids, config,
+        )
+
+
+def test_public_fit_fold_cannot_create_final_refit_artifact():
+    inputs, fit_ids, _, config = _fold_fixture()
+    with pytest.raises(l.LearningError, match="validation_ids"):
+        l.fit_fold(inputs, fit_ids, (), config)
+    with pytest.raises(TypeError):
+        l.FrozenFoldConfig(
+            class_order=("HC", "AD"), base_feature_names=("base",),
+            state_feature_names=("state",), base_model_id="base_v1",
+            replay_model_id="replay_v1", final_refit=True,
+        )
+
+
+def test_private_full_refit_requires_verified_complete_development_oof():
+    predictions, labels, manifest, inputs, config = _actual_oof_predictions(
+        task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
+    )
+    final = l.refit_full_development(
+        inputs, tuple(labels), predictions, manifest, config,
+    )
+    assert final.final_refit
+    assert not final.validation_ids
+
+    subject_id = next(iter(labels))
+    original = inputs.cases[subject_id]
+    holdout_subject = replace(original.subject, partition="holdout")
+    changed_cases = dict(inputs.cases)
+    changed_cases[subject_id] = replace(
+        original, subject=holdout_subject, evidence_snapshot=_snapshot(holdout_subject),
+    )
+    with pytest.raises(l.FoldLeakageError, match="non-development"):
+        l.refit_full_development(
+            replace(inputs, cases=changed_cases), tuple(labels), predictions, manifest, config,
+        )
 
 
 def test_state_only_signature_cannot_masquerade_as_full_base():
@@ -225,17 +318,29 @@ def test_fit_fold_rejects_identity_group_leakage():
 
 def test_holdout_label_mutation_does_not_change_fold_artifact_or_predictions():
     inputs, fit_ids, validation_ids, config = _fold_fixture()
-    first = l.fit_fold(inputs, fit_ids, validation_ids, config)
-    mutated_labels = dict(inputs.labels)
-    for subject_id in validation_ids:
-        mutated_labels[subject_id] = "HC" if mutated_labels[subject_id] == "AD" else "AD"
-    second = l.fit_fold(replace(inputs, labels=mutated_labels), fit_ids, validation_ids, config)
+    holdout = _subject(
+        99, task="hc_ad", class_order=("HC", "AD"), partition="holdout",
+        fold_id="holdout",
+    )
+    cases = dict(inputs.cases)
+    cases[holdout.subject_id] = l.FoldCaseInput(
+        subject=holdout, base_features={"base_signal": 50.0, "constant": 1.0},
+        state_features={"state_signal": 50.0, "missing": None},
+        evidence_snapshot=_snapshot(holdout),
+    )
+    labels = {**inputs.labels, holdout.subject_id: "AD"}
+    with_holdout = l.FoldInputs(cases=cases, labels=labels)
+    first = l.fit_fold(with_holdout, fit_ids, validation_ids, config)
+    mutated_labels = {**labels, holdout.subject_id: "HC"}
+    second = l.fit_fold(
+        replace(with_holdout, labels=mutated_labels), fit_ids, validation_ids, config,
+    )
     assert first.artifact_id == second.artifact_id
     assert first.base_model.to_dict() == second.base_model.to_dict()
     assert first.replay_model.to_dict() == second.replay_model.to_dict()
 
     subject_id = validation_ids[0]
-    case = inputs.cases[subject_id]
+    case = with_holdout.cases[subject_id]
     bound = replace(case, evidence_snapshot=_snapshot(
         case.subject, reference_fit_id=first.reference_fit_id,
         reference_fit_hash=first.reference_fit_hash,
@@ -244,9 +349,9 @@ def test_holdout_label_mutation_does_not_change_fold_artifact_or_predictions():
     prediction_two = l.predict_fold(second, bound)
     assert prediction_one.base_probabilities == prediction_two.base_probabilities
     assert prediction_one.state_probabilities == prediction_two.state_probabilities
-    assert prediction_one.provenance is not None
-    assert subject_id not in prediction_one.provenance.fit_ids
-    assert case.subject.source_group_id not in prediction_one.provenance.fit_group_ids
+    assert not prediction_one.final_refit
+    assert subject_id not in prediction_one.fit_ids
+    assert case.subject.source_group_id not in prediction_one.fit_group_ids
 
 
 def test_fold_preprocessing_is_fit_only_and_constant_or_missing_features_are_finite():
@@ -277,16 +382,49 @@ def test_full_refit_is_blocked_until_oof_is_complete():
             reference_fit_hash=artifact.reference_fit_hash,
         ))
         predictions.append(l.predict_fold(artifact, bound))
+    manifest = l.seal_fold_artifacts((artifact,))
     with pytest.raises(l.LearningError, match="exactly one OOF"):
-        l.refit_full_development(inputs, fit_ids + validation_ids, predictions, config)
+        l.refit_full_development(
+            inputs, fit_ids + validation_ids, predictions, manifest, config,
+        )
 
 
-def test_oof_duplicate_and_final_fit_provenance_are_rejected():
-    rows, labels = _three_class_rows()
+def test_oof_duplicate_and_fabricated_fold_binding_are_rejected():
+    rows, labels, manifest = _three_class_rows()
+    with pytest.raises(l.LearningError, match="seal_fold_artifacts"):
+        l.FoldArtifactManifest(manifest.proofs)
     with pytest.raises(l.FoldLeakageError, match="exactly one"):
-        l.fit_joint_calibrators(rows + [rows[0]], labels, l.CalibrationConfig())
-    with pytest.raises(l.FoldLeakageError, match="Final-refit"):
-        replace(rows[0].oof_provenance, final_fit=True)
+        l.fit_joint_calibrators(
+            rows + [rows[0]], labels, l.CalibrationConfig(), manifest,
+        )
+    fabricated_prediction = replace(
+        rows[0].fold_prediction, fold_artifact_id="fold_fabricated", prediction_hash="",
+    )
+    fabricated_row = replace(rows[0], fold_prediction=fabricated_prediction)
+    with pytest.raises(l.FoldLeakageError, match="sealed fold artifact"):
+        l.fit_joint_calibrators(
+            [fabricated_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
+        )
+
+
+def test_oof_binding_retains_and_verifies_resolved_fold_artifact_fields():
+    rows, labels, manifest = _three_class_rows()
+    prediction = rows[0].fold_prediction
+    proof = manifest.resolve(prediction.fold_artifact_id)
+    assert prediction.base_fit_hash == proof.base_model_artifact_hash
+    assert prediction.reference_fit_id == proof.reference_fit_id
+    assert prediction.reference_fit_hash == proof.reference_fit_hash
+    assert prediction.fold_id == proof.fold_id
+    assert prediction.excluded_ids == proof.excluded_ids
+    assert prediction.validation_id in prediction.excluded_ids
+    assert prediction.validation_group_id not in prediction.fit_group_ids
+
+    tampered = replace(prediction, base_fit_hash="model_fabricated", prediction_hash="")
+    tampered_row = replace(rows[0], fold_prediction=tampered)
+    with pytest.raises(l.FoldLeakageError, match="resolved sealed fold artifact"):
+        l.fit_joint_calibrators(
+            [tampered_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
+        )
 
 
 def test_prior_coefficients_reconstruct_raw_base_log_odds():
@@ -297,8 +435,8 @@ def test_prior_coefficients_reconstruct_raw_base_log_odds():
 
 
 def test_uninformative_agent_has_no_forced_positive_coefficient():
-    rows, labels = _three_class_rows(uninformative_agent=True)
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _three_class_rows(uninformative_agent=True)
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     for head in fitted.arms["J-A"].values():
         assert head.estimable
         assert head.coefficients is not None
@@ -341,8 +479,8 @@ def math_is_finite(value: float) -> bool:
 
 
 def test_binary_task_has_one_head_and_never_fabricates_mci():
-    rows, labels = _binary_rows()
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _binary_rows()
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     assert set(fitted.arms["B"]) == {"binary"}
     predictions = l.predict_joint(rows[0], fitted)
     assert {item.arm for item in predictions} == set(l.ARMS)
@@ -352,8 +490,8 @@ def test_binary_task_has_one_head_and_never_fabricates_mci():
 
 
 def test_invalid_second_pass_falls_back_directly_to_frozen_b():
-    rows, labels = _three_class_rows(invalid_second_pass=0)
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _three_class_rows(invalid_second_pass=0)
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     predictions = {item.arm: item for item in l.predict_joint(rows[0], fitted)}
     assert predictions["J-AS"].status == "fallback"
     assert predictions["J-AS"].fallback_reason == "v1_failed"
@@ -365,8 +503,8 @@ def test_three_class_head_combination_and_probability_sum():
     result = l.combine_head_probabilities(("HC", "MCI", "AD"), impairment=0.7, stage=0.25)
     assert result == pytest.approx((0.3, 0.525, 0.175))
     assert sum(result) == pytest.approx(1.0)
-    rows, labels = _three_class_rows()
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _three_class_rows()
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     predictions = l.predict_joint(rows[1], fitted)
     assert tuple(item.arm for item in predictions) == l.ARMS
     for prediction in predictions:
@@ -377,7 +515,9 @@ def test_three_class_head_combination_and_probability_sum():
 
 def test_model_class_permutation_round_trip():
     artifact = l.LinearModelArtifact(
-        model_id="permuted_fixture", source_symbol="fixture.full_base",
+        model_id="permuted_fixture", adapter_implementation="fixture.full_base",
+        adapter_version="v1", feature_pipeline_hash="a" * 64,
+        analytical_capable=False,
         class_order=("HC", "MCI", "AD"), feature_names=("x",), impute_values=(0.0,),
         means=(0.0,), scales=(1.0,), learned_classes=("AD", "HC", "MCI"),
         coefficients=((2.0,), (-2.0,), (0.0,)), intercepts=(0.0, 0.0, 0.0),
@@ -398,7 +538,7 @@ def test_clipping_is_finite_at_probability_extremes():
 
 
 def test_optimizer_failure_blocks_heads_without_invented_coefficients(monkeypatch):
-    rows, labels = _binary_rows()
+    rows, labels, manifest = _binary_rows()
 
     class Failed:
         success = False
@@ -406,7 +546,7 @@ def test_optimizer_failure_blocks_heads_without_invented_coefficients(monkeypatc
         x = np.asarray(l.PRIOR_COEFFICIENTS)
 
     monkeypatch.setattr(l, "minimize", lambda *args, **kwargs: Failed())
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     for heads in fitted.arms.values():
         assert not heads["binary"].estimable
         assert heads["binary"].refusal_reason == "optimizer_failure"
@@ -427,16 +567,16 @@ def test_zero_state_replay_delta_is_neutral():
 
 
 def test_labels_are_not_mutated_or_reassigned_to_improve_fit():
-    rows, labels = _three_class_rows()
+    rows, labels, manifest = _three_class_rows()
     original = dict(labels)
-    l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     assert labels == original
     assert [labels[row.subject.subject_id] for row in rows].count("MCI") == 6
 
 
 def test_matched_fit_baselines_use_exact_joint_fit_ids():
-    rows, labels = _three_class_rows(invalid_second_pass=0)
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _three_class_rows(invalid_second_pass=0)
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     for head in ("impairment", "stage"):
         assert (
             fitted.matched_baselines["J-AS"][head].fit_ids
@@ -446,8 +586,8 @@ def test_matched_fit_baselines_use_exact_joint_fit_ids():
 
 
 def test_calibrator_serialization_preserves_predictions_within_tolerance():
-    rows, labels = _three_class_rows()
-    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig())
+    rows, labels, manifest = _three_class_rows()
+    fitted = l.fit_joint_calibrators(rows, labels, l.CalibrationConfig(), manifest)
     restored = l.JointCalibrators.from_json(fitted.to_json())
     before = l.predict_joint(rows[5], fitted)
     after = l.predict_joint(rows[5], restored)
@@ -473,11 +613,11 @@ def test_missing_agent_or_replay_inputs_are_not_treated_as_healthy_evidence():
 
 
 def test_absent_stage_training_class_is_explicitly_unestimable():
-    rows, labels = _three_class_rows()
+    rows, labels, manifest = _three_class_rows()
     no_ad_labels = {
         subject_id: ("MCI" if label == "AD" else label) for subject_id, label in labels.items()
     }
-    fitted = l.fit_joint_calibrators(rows, no_ad_labels, l.CalibrationConfig())
+    fitted = l.fit_joint_calibrators(rows, no_ad_labels, l.CalibrationConfig(), manifest)
     assert not fitted.arms["B"]["stage"].estimable
     assert fitted.arms["B"]["stage"].refusal_reason == "absent_training_class"
     predictions = {item.arm: item for item in l.predict_joint(rows[0], fitted)}

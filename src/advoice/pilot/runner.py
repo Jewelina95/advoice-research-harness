@@ -25,7 +25,8 @@ from .contracts import EvidenceSnapshot, PilotContractError, SubjectRow
 from .runtime import CacheEvent, CacheIdentity, InMemoryAssessmentCache
 
 
-RUNNER_VERSION = "advoice.pilot.runner.v1"
+RUNNER_VERSION = "advoice.pilot.runner.v2"
+PREDICTION_LOCK_SCHEMA = "advoice.pilot.prediction-lock.v1"
 STAGES = (
     "inventory", "split", "canary", "fit-oof", "assess-oof", "fit-fusion",
     "fit-final", "predict-holdout", "stress", "model-comparison", "score", "render",
@@ -52,6 +53,30 @@ LABEL_CAPABILITIES: dict[str, frozenset[str]] = {
     "stress": frozenset(), "model-comparison": frozenset({"development"}),
     "score": frozenset({"holdout", "stress"}), "render": frozenset(),
 }
+_SCORING_ARMS = ("B_raw", "B", "B_matched", "J-A", "J-S", "J-AS")
+_REQUIRED_ARMS = ("B_raw", "B", "J-A", "J-S", "J-AS")
+_ARTIFACT_NAMES = {
+    "split_manifest": "split_manifest.csv",
+    "cohort_status": "cohort_status.csv",
+    "prepared_cases": "prepared_cases.jsonl",
+    "development_labels": "development_labels.jsonl",
+    "holdout_labels": "sealed_holdout_labels.jsonl",
+    "stress_labels": "sealed_stress_labels.jsonl",
+}
+_STAGE_ARTIFACTS: dict[str, frozenset[str]] = {
+    "inventory": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "split": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "canary": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "fit-oof": frozenset({"split_manifest", "cohort_status", "prepared_cases", "development_labels"}),
+    "assess-oof": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "fit-fusion": frozenset({"split_manifest", "cohort_status", "prepared_cases", "development_labels"}),
+    "fit-final": frozenset({"split_manifest", "cohort_status", "prepared_cases", "development_labels"}),
+    "predict-holdout": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "stress": frozenset({"split_manifest", "cohort_status", "prepared_cases"}),
+    "model-comparison": frozenset({"split_manifest", "cohort_status", "prepared_cases", "development_labels"}),
+    "score": frozenset({"split_manifest", "holdout_labels", "stress_labels"}),
+    "render": frozenset(),
+}
 
 
 class RunnerError(RuntimeError):
@@ -63,8 +88,20 @@ class PreflightError(RunnerError):
 
 
 def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                       allow_nan=False).encode("utf-8")
+
+
+def _plain(value: Any) -> Any:
+    """Turn immutable mapping views into the canonical JSON value they represent."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_plain(item) for item in value)
+    return value
 
 
 def _hash(value: Any) -> str:
@@ -111,7 +148,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _git_sha() -> str:
     try:
         return subprocess.check_output(
-            ("git", "rev-parse", "HEAD"), text=True, stderr=subprocess.DEVNULL,
+            ("git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "HEAD"),
+            text=True, stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.SubprocessError):
         return "unavailable"
@@ -123,20 +161,13 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     return value
 
 
-def _artifact_paths(config: Mapping[str, Any]) -> dict[str, Path]:
+def _artifact_paths(config: Mapping[str, Any], names: Sequence[str]) -> dict[str, Path]:
     raw_artifacts = config.get("artifacts", {})
     artifacts = _mapping(raw_artifacts, "artifacts")
-    required = {
-        "split_manifest": "split_manifest.csv",
-        "cohort_status": "cohort_status.csv",
-        "prepared_cases": "prepared_cases.jsonl",
-        "development_labels": "development_labels.jsonl",
-        "holdout_labels": "sealed_holdout_labels.jsonl",
-        "stress_labels": "sealed_stress_labels.jsonl",
-    }
     result: dict[str, Path] = {}
     missing: list[str] = []
-    for key, expected_name in required.items():
+    for key in names:
+        expected_name = _ARTIFACT_NAMES[key]
         raw = artifacts.get(key)
         if not isinstance(raw, str) or not raw:
             missing.append(f"artifacts.{key} ({expected_name})")
@@ -287,16 +318,21 @@ def _metric(truth: Sequence[str], probabilities: np.ndarray, class_order: Sequen
         else:
             rows[f"recall_{label}"] = true_positive / support
         if predicted_positive == 0:
-            rows[f"precision_{label}"] = None
-            rows[f"precision_{label}_reason"] = "predicted_class_missing"
+            # A class present in truth but never predicted has F1=0, not an
+            # undefined score. This is distinct from absent truth support.
+            rows[f"precision_{label}"] = 0.0 if support else None
+            if not support:
+                rows[f"precision_{label}_reason"] = "class_support_missing"
         else:
             rows[f"precision_{label}"] = true_positive / predicted_positive
         precision, recall = rows[f"precision_{label}"], rows[f"recall_{label}"]
-        if isinstance(precision, float) and isinstance(recall, float) and precision + recall:
-            rows[f"f1_{label}"] = 2 * precision * recall / (precision + recall)
-        else:
+        if support == 0:
             rows[f"f1_{label}"] = None
-            rows[f"f1_{label}_reason"] = "precision_or_recall_undefined"
+            rows[f"f1_{label}_reason"] = "class_support_missing"
+        elif isinstance(precision, float) and isinstance(recall, float):
+            rows[f"f1_{label}"] = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        else:
+            raise RunnerError("Defined class support must produce defined precision and recall.")
         positives = np.asarray([item == label for item in truth], dtype=bool)
         if positives.all() or not positives.any():
             rows[f"auroc_{label}"] = None
@@ -354,6 +390,14 @@ def paired_accuracy_summary(
     helped = sum(not base and arm for base, arm in zip(base_correct, arm_correct, strict=True))
     harmed = sum(base and not arm for base, arm in zip(base_correct, arm_correct, strict=True))
     discordant = helped + harmed
+    per_class = {}
+    for label in sorted(set(truth)):
+        indices = [index for index, item in enumerate(truth) if item == label]
+        per_class[label] = {
+            "n": len(indices),
+            "helped": sum(not base_correct[index] and arm_correct[index] for index in indices),
+            "harmed": sum(base_correct[index] and not arm_correct[index] for index in indices),
+        }
     return {
         "n": len(truth), "helped": helped, "harmed": harmed,
         "unchanged_correct": sum(base and arm for base, arm in zip(base_correct, arm_correct, strict=True)),
@@ -363,13 +407,60 @@ def paired_accuracy_summary(
             "base_wrong_arm_right": helped, "base_right_arm_wrong": harmed,
             "p_value": float(binomtest(min(helped, harmed), n=discordant, p=0.5).pvalue) if discordant else 1.0,
         },
+        "per_class": per_class,
     }
+
+
+def prediction_lock(rows: Sequence[Mapping[str, Any]], assigned_subjects: Mapping[str, Sequence[str]]) -> dict[str, str]:
+    """Create the immutable lock consumed by the score stage.
+
+    The caller persists this alongside the frozen predictions before opening a
+    label file. It deliberately contains hashes only, never labels.
+    """
+
+    return {
+        "schema_version": PREDICTION_LOCK_SCHEMA,
+        "status": "locked",
+        "rows_hash": _hash([_plain(row) for row in rows]),
+        "assigned_subjects_hash": _hash(_plain(assigned_subjects)),
+    }
+
+
+def _validate_prediction_lock(
+    rows: Sequence[Mapping[str, Any]], assigned_subjects: Mapping[str, Sequence[str]], lock: Mapping[str, Any] | None,
+) -> None:
+    if not isinstance(lock, Mapping):
+        raise RunnerError("Score requires a locked prediction manifest.")
+    expected = prediction_lock(rows, assigned_subjects)
+    for field, value in expected.items():
+        if lock.get(field) != value:
+            raise RunnerError(f"Prediction lock {field} mismatch.")
 
 
 def score_locked_predictions(
     rows: Sequence[Mapping[str, Any]], labels: Mapping[str, str], *, seed: int,
+    assigned_subjects: Mapping[str, Sequence[str]], lock: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Score immutable predictions. Callers must supply labels only at score stage."""
+
+    if not isinstance(labels, Mapping) or not isinstance(assigned_subjects, Mapping):
+        raise RunnerError("Score labels and frozen assigned subjects must be mappings.")
+    _validate_prediction_lock(rows, assigned_subjects, lock)
+    assigned_by_dataset: dict[str, tuple[str, ...]] = {}
+    assigned_all: set[str] = set()
+    for dataset, values in assigned_subjects.items():
+        if not isinstance(dataset, str) or not dataset or isinstance(values, (str, bytes)):
+            raise RunnerError("Frozen assigned subjects are malformed.")
+        subject_ids = tuple(str(item) for item in values)
+        if not subject_ids or len(set(subject_ids)) != len(subject_ids):
+            raise RunnerError("Frozen assigned subjects contain an empty or duplicate denominator.")
+        overlap = assigned_all.intersection(subject_ids)
+        if overlap:
+            raise RunnerError("Frozen assigned subjects occur in more than one dataset.")
+        assigned_all.update(subject_ids)
+        assigned_by_dataset[dataset] = subject_ids
+    if set(labels) != assigned_all:
+        raise RunnerError("Scoring labels do not exactly match the frozen assigned denominator.")
 
     grouped: dict[tuple[str, str, tuple[str, ...]], list[Mapping[str, Any]]] = {}
     for row in rows:
@@ -381,17 +472,29 @@ def score_locked_predictions(
             probabilities = tuple(float(item) for item in row["probabilities"])
         except (KeyError, TypeError, ValueError) as exc:
             raise RunnerError("Malformed locked prediction row.") from exc
-        if arm not in {"B_raw", "B", "J-A", "J-S", "J-AS"} or len(order) != len(probabilities):
+        if arm not in _SCORING_ARMS or not order or len(set(order)) != len(order) or len(order) != len(probabilities):
             raise RunnerError("Locked prediction arm or class order is invalid.")
-        if subject_id not in labels:
-            raise RunnerError(f"Scorer has no authorized label for subject: {subject_id}.")
-        grouped.setdefault((str(row.get("dataset_id", "unspecified")), arm, order), []).append(row)
+        if not all(np.isfinite(item) and item >= 0.0 for item in probabilities) or not np.isclose(sum(probabilities), 1.0, atol=1e-9):
+            raise RunnerError("Locked prediction probabilities must be finite, non-negative, and sum to one.")
+        dataset = str(row.get("dataset_id", ""))
+        if dataset not in assigned_by_dataset or subject_id not in assigned_by_dataset[dataset]:
+            raise RunnerError("Prediction row is outside the frozen assigned denominator.")
+        if labels[subject_id] not in order:
+            raise RunnerError("Scoring label is not represented by the locked class order.")
+        predicted = order[int(np.argmax(np.asarray(probabilities)))]
+        if "predicted" in row and str(row["predicted"]) != predicted:
+            raise RunnerError("Locked prediction contradicts its probabilities.")
+        grouped.setdefault((dataset, arm, order), []).append(row)
     output: dict[str, Any] = {"metrics": [], "paired": []}
     by_dataset_subject: dict[str, dict[str, dict[str, Mapping[str, Any]]]] = {}
     for (dataset, arm, order), group in sorted(grouped.items()):
         subject_ids = [str(item["subject_id"]) for item in group]
         if len(set(subject_ids)) != len(subject_ids):
             raise RunnerError("Locked predictions duplicate an assigned subject within an arm.")
+        if set(subject_ids) != set(assigned_by_dataset[dataset]):
+            raise RunnerError("Locked predictions omit or add an assigned subject within an arm.")
+        group = sorted(group, key=lambda item: str(item["subject_id"]))
+        subject_ids = [str(item["subject_id"]) for item in group]
         truth = [labels[item] for item in subject_ids]
         probabilities = np.asarray([item["probabilities"] for item in group], dtype=float)
         metrics = _metric(truth, probabilities, order)
@@ -406,14 +509,30 @@ def score_locked_predictions(
         for row in group:
             by_dataset_subject.setdefault(dataset, {}).setdefault(str(row["subject_id"]), {})[arm] = row
     for dataset, subjects in sorted(by_dataset_subject.items()):
+        actual_arms = {arm for arms in subjects.values() for arm in arms}
+        missing_arms = set(_REQUIRED_ARMS) - actual_arms
+        if missing_arms:
+            raise RunnerError("Locked predictions are missing required arms: " + ", ".join(sorted(missing_arms)))
         for arm in ("J-A", "J-S", "J-AS"):
-            ids = sorted(subject_id for subject_id, arms in subjects.items() if "B" in arms and arm in arms)
-            if not ids:
-                continue
+            baseline_arm = "B_matched" if "B_matched" in actual_arms else "B"
+            ids = sorted(subject_id for subject_id, arms in subjects.items() if baseline_arm in arms and arm in arms)
+            if set(ids) != set(assigned_by_dataset[dataset]):
+                raise RunnerError("Paired rows must cover every frozen assigned subject.")
             truth = [labels[subject_id] for subject_id in ids]
-            base = [str(subjects[subject_id]["B"]["predicted"]) for subject_id in ids]
-            candidate = [str(subjects[subject_id][arm]["predicted"]) for subject_id in ids]
-            output["paired"].append({"dataset_id": dataset, "arm": arm, **paired_accuracy_summary(truth, base, candidate, seed=seed)})
+            base = [
+                tuple(str(item) for item in subjects[subject_id][baseline_arm]["class_order"])[
+                    int(np.argmax(np.asarray(subjects[subject_id][baseline_arm]["probabilities"], dtype=float)))
+                ] for subject_id in ids
+            ]
+            candidate = [
+                tuple(str(item) for item in subjects[subject_id][arm]["class_order"])[
+                    int(np.argmax(np.asarray(subjects[subject_id][arm]["probabilities"], dtype=float)))
+                ] for subject_id in ids
+            ]
+            output["paired"].append({
+                "dataset_id": dataset, "arm": arm, "baseline_arm": baseline_arm,
+                **paired_accuracy_summary(truth, base, candidate, seed=seed),
+            })
     return output
 
 
@@ -436,6 +555,8 @@ class PilotRunner:
             raise PreflightError("--allow-paid requires the configured provider.")
         if not self.dry_run and not self.allow_paid:
             raise PreflightError("Analytical execution is disabled by default; pass --allow-paid after review.")
+        if self.allow_paid and self.config.get("paid_execution") is not True:
+            raise PreflightError("--allow-paid requires paid_execution: true in the resolved config.")
 
     @property
     def records_dir(self) -> Path:
@@ -445,36 +566,75 @@ class PilotRunner:
         return self.records_dir / f"{stage}.json"
 
     def _input_hash(self, stage: str) -> str:
-        config = dict(self.config)
-        artifacts = config.get("artifacts", {})
-        artifact_hashes = {}
-        if isinstance(artifacts, Mapping):
-            for name, raw in sorted(artifacts.items()):
+        artifact_hashes: dict[str, str | None] = {}
+        if not self.dry_run:
+            raw_artifacts = self.config.get("artifacts", {})
+            artifacts = _mapping(raw_artifacts, "artifacts")
+            for name in sorted(_STAGE_ARTIFACTS[stage]):
+                raw = artifacts.get(name)
                 path = Path(raw).expanduser() if isinstance(raw, str) else None
-                artifact_hashes[str(name)] = _file_hash(path) if path is not None and path.is_file() else None
-        dependency_hashes = {}
+                artifact_hashes[name] = _file_hash(path) if path is not None and path.is_file() else None
+        dependency_hashes: dict[str, str | None] = {}
         for dependency in STAGE_DEPENDENCIES[stage]:
             record = self.record_path(dependency)
             dependency_hashes[dependency] = _file_hash(record) if record.is_file() else None
-        return _hash({"runner_version": RUNNER_VERSION, "stage": stage, "config": config,
+        return _hash({"runner_version": RUNNER_VERSION, "stage": stage, "config": _plain(self.config),
                       "artifacts": artifact_hashes, "dependencies": dependency_hashes,
                       "provider": self.provider, "dry_run": self.dry_run})
 
-    def _require_dependencies(self, stage: str) -> None:
-        missing = []
+    def _dependency_snapshot(self, stage: str) -> dict[str, dict[str, Any]]:
+        snapshot: dict[str, dict[str, Any]] = {}
         for dependency in STAGE_DEPENDENCIES[stage]:
             path = self.record_path(dependency)
             if not path.is_file():
-                missing.append(dependency)
+                snapshot[dependency] = {"status": "missing"}
                 continue
             record = _read_json(path)
-            if record.get("status") not in {"succeeded", "dry_run"}:
-                missing.append(dependency)
-        if missing:
-            raise RunnerError(f"Stage {stage} requires completed dependencies: {', '.join(missing)}.")
+            snapshot[dependency] = {
+                "status": record.get("status"), "output_hash": record.get("output_hash"),
+                "code_sha": record.get("code_sha"), "config_hash": record.get("config_hash"),
+                "execution_mode": record.get("execution_mode"),
+            }
+        return snapshot
+
+    def _dependency_blockers(self, stage: str) -> list[str]:
+        blockers: list[str] = []
+        required_status = "dry_run" if self.dry_run else "succeeded"
+        required_mode = "dry_run" if self.dry_run else "real"
+        for dependency, record in self._dependency_snapshot(stage).items():
+            if record.get("status") != required_status or record.get("execution_mode") != required_mode:
+                blockers.append(dependency)
+        return blockers
+
+    def _config_hash(self) -> str:
+        return _hash(_plain(self.config))
+
+    def _require_t7_gate(self) -> dict[str, Any]:
+        raw = self.config.get("t7_preflight_gate")
+        if not isinstance(raw, str) or not raw:
+            raise PreflightError("Real execution requires a t7_preflight_gate artifact path.")
+        gate_path = Path(raw).expanduser()
+        gate = _read_json(gate_path)
+        if gate.get("verdict") != "ACCEPT":
+            raise PreflightError("T7 preflight gate is not ACCEPT.")
+        if gate.get("code_sha") != _git_sha():
+            raise PreflightError("T7 preflight gate code SHA does not match this runner.")
+        if gate.get("config_hash") != self._config_hash():
+            raise PreflightError("T7 preflight gate config hash does not match the resolved config.")
+        return {"path": str(gate_path), "sha256": _file_hash(gate_path), "verdict": "ACCEPT"}
 
     def _preflight(self, stage: str) -> dict[str, Any]:
-        paths = _artifact_paths(self.config)
+        names = _STAGE_ARTIFACTS[stage]
+        paths = _artifact_paths(self.config, sorted(names))
+        if not self.dry_run:
+            t7_gate = self._require_t7_gate()
+        else:
+            t7_gate = None
+        if stage == "render":
+            return {"artifacts": {}, "t7_gate": t7_gate}
+        required = {"split_manifest", "cohort_status", "prepared_cases"}
+        if not required.issubset(paths):
+            return {"artifacts": {name: _file_hash(path) for name, path in paths.items()}, "t7_gate": t7_gate}
         cases = load_prepared_cases(paths["prepared_cases"])
         with paths["split_manifest"].open(newline="", encoding="utf-8") as handle:
             manifest = list(csv.DictReader(handle))
@@ -510,7 +670,13 @@ class PilotRunner:
                 "Prepared FoldCaseInput metadata differs from split manifest: " + ", ".join(sorted(mismatched))
             )
         with paths["cohort_status"].open(newline="", encoding="utf-8") as handle:
-            statuses = {str(row.get("cohort_id")): row for row in csv.DictReader(handle)}
+            status_rows = list(csv.DictReader(handle))
+        status_ids = [str(row.get("cohort_id", "")) for row in status_rows]
+        if not status_ids or any(not cohort_id for cohort_id in status_ids):
+            raise PreflightError("cohort_status.csv contains an empty cohort ID.")
+        if len(set(status_ids)) != len(status_ids):
+            raise PreflightError("cohort_status.csv contains duplicate cohort statuses; blocked status cannot be overwritten.")
+        statuses = {str(row["cohort_id"]): row for row in status_rows}
         datasets = {case.subject.dataset_id for case in cases.values()}
         unavailable = sorted(dataset for dataset in datasets if dataset not in statuses)
         if unavailable:
@@ -529,34 +695,54 @@ class PilotRunner:
         if stage in {"canary", "assess-oof", "predict-holdout", "stress"}:
             if self.provider == "configured" and not self.allow_paid:
                 raise PreflightError("Configured provider calls require --allow-paid.")
-        return {"artifacts": {name: _file_hash(path) for name, path in paths.items()},
+        return {"artifacts": {name: _file_hash(path) for name, path in paths.items()}, "t7_gate": t7_gate,
                 "prepared_case_count": len(cases), "manifest_subject_count": len(manifest),
                 "ready_cohorts": ready, "blocked_cohorts": blocked}
 
     def _run_actual_stage(self, stage: str) -> Mapping[str, Any]:
         preflight = self._preflight(stage)
-        # Phase A intentionally provides no configured provider construction. The
-        # following artifact validation is useful before T7, while an actual call
-        # remains impossible without T7's reviewed, injected provider adapter.
-        if stage in {"canary", "assess-oof"}:
-            raise PreflightError(
-                "Configured provider adapter is not constructed by Phase A; T7 gate and a reviewed adapter are required."
-            )
-        return {"preflight": preflight, "analytical_output": "not_materialized"}
+        # This worktree has no injected predictor/provider orchestration. Do not
+        # claim successful analysis merely because immutable inputs passed checks.
+        return {
+            "stage_status": "blocked", "reason": "no_reviewed_stage_adapter",
+            "preflight": preflight, "analytical": False,
+        }
+
+    def _validate_resume_record(self, stage: str, record: Mapping[str, Any], input_hash: str) -> None:
+        expected_mode = "dry_run" if self.dry_run else "real"
+        if record.get("schema_version") != RUNNER_VERSION or record.get("stage") != stage:
+            raise RunnerError(f"Resume record schema or stage mismatch for {stage}.")
+        if record.get("status") not in {"succeeded", "dry_run"}:
+            raise RunnerError(f"Resume record for {stage} is not a completed stage.")
+        if record.get("execution_mode") != expected_mode or record.get("provider") != self.provider:
+            raise RunnerError(f"Resume dependency modality mismatch for stage {stage}.")
+        if record.get("code_sha") != _git_sha() or record.get("config_hash") != self._config_hash():
+            raise RunnerError(f"Resume code/config SHA mismatch for stage {stage}.")
+        output = record.get("output")
+        if not isinstance(output, Mapping) or record.get("output_hash") != _hash(output):
+            raise RunnerError(f"Resume output hash mismatch for stage {stage}.")
+        if record.get("dependencies") != self._dependency_snapshot(stage):
+            raise RunnerError(f"Resume dependency modality mismatch for stage {stage}.")
+        if record.get("input_hash") != input_hash:
+            raise RunnerError(f"Resume hash mismatch for stage {stage}; refuse stale output reuse.")
 
     def run_stage(self, stage: str) -> dict[str, Any]:
         if stage not in STAGES:
             raise RunnerError(f"Unknown pilot stage: {stage}.")
-        self._require_dependencies(stage)
         input_hash = self._input_hash(stage)
         existing_path = self.record_path(stage)
         if existing_path.is_file() and self.resume:
             existing = _read_json(existing_path)
-            if existing.get("status") in {"succeeded", "dry_run"}:
-                if existing.get("input_hash") != input_hash:
-                    raise RunnerError(f"Resume hash mismatch for stage {stage}; refuse stale output reuse.")
-                return existing
+            self._validate_resume_record(stage, existing, input_hash)
+            return existing
         started = _utc_now()
+        blockers = self._dependency_blockers(stage)
+        if blockers:
+            record = self._stage_record(stage, input_hash, started, "blocked", {
+                "stage_status": "blocked", "reason": "dependencies_incomplete", "dependencies": blockers,
+            })
+            _atomic_json(existing_path, record)
+            return record
         status = "dry_run" if self.dry_run else "failed"
         output: Mapping[str, Any]
         try:
@@ -568,7 +754,11 @@ class PilotRunner:
                 }
             else:
                 output = self._run_actual_stage(stage)
-                status = "succeeded"
+                status = str(output.get("stage_status", "failed"))
+                if status == "succeeded" and output.get("analytical") is not True:
+                    raise RunnerError("A real stage may succeed only with materialized analytical output.")
+                if status not in {"succeeded", "blocked", "incomplete"}:
+                    raise RunnerError("Real stage returned an invalid completion status.")
         except Exception as exc:
             output = {"error": type(exc).__name__, "detail": str(exc)}
             record = self._stage_record(stage, input_hash, started, "failed", output)
@@ -584,7 +774,10 @@ class PilotRunner:
             "schema_version": RUNNER_VERSION, "stage": stage, "status": status,
             "input_hash": input_hash, "output_hash": _hash(output), "code_sha": _git_sha(),
             "started_at": started, "ended_at": _utc_now(), "row_counts": {},
-            "label_capabilities": sorted(LABEL_CAPABILITIES[stage]), "output": dict(output),
+            "config_hash": self._config_hash(), "provider": self.provider,
+            "execution_mode": "dry_run" if self.dry_run else "real",
+            "dependencies": self._dependency_snapshot(stage),
+            "label_capabilities": sorted(LABEL_CAPABILITIES[stage]), "output": _plain(output),
         }
 
     def run(self, stage: str = "all") -> list[dict[str, Any]]:
@@ -600,6 +793,7 @@ def run_stage(stage: str, resolved_config: Mapping[str, Any], run_dir: str | Pat
 
 __all__ = [
     "DiskAssessmentCache", "LABEL_CAPABILITIES", "PilotRunner", "PreparedCase", "PreflightError",
-    "RUNNER_VERSION", "RunnerError", "STAGES", "STAGE_DEPENDENCIES", "load_prepared_cases",
-    "paired_accuracy_summary", "paired_bootstrap", "run_stage", "score_locked_predictions",
+    "PREDICTION_LOCK_SCHEMA", "RUNNER_VERSION", "RunnerError", "STAGES", "STAGE_DEPENDENCIES",
+    "load_prepared_cases", "paired_accuracy_summary", "paired_bootstrap", "prediction_lock", "run_stage",
+    "score_locked_predictions",
 ]

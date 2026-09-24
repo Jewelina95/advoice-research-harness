@@ -42,6 +42,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.allow_paid and args.dry_run:
+            raise RunnerError("--allow-paid and --dry-run cannot be combined.")
         runner = PilotRunner(
             _config(args.config), args.run_dir, provider=args.provider,
             allow_paid=args.allow_paid, dry_run=args.dry_run, resume=args.resume,
@@ -50,7 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     except RunnerError as exc:
         print(f"pilot runner: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"run_dir": str(args.run_dir), "stages": [
+    print(json.dumps({"run_dir": str(args.run_dir), "code_sha": records[0]["code_sha"],
+                      "config_hash": records[0]["config_hash"], "stages": [
         {"stage": record["stage"], "status": record["status"], "output_hash": record["output_hash"]}
         for record in records
     ]}, sort_keys=True))

@@ -1,0 +1,58 @@
+# Disabled scaffold, not a resolved run. Supply manifests, routes and hashes
+# from real artifacts before constructing ResolvedConfig. No raw data paths.
+schema_version: advoice.pilot.v1
+paid_execution: false
+dataset_manifests: []
+routes: []
+provider: null
+model_id: null
+skill_hash: null
+prompt_hash: null
+seed: 20260923
+pricing:
+  schema_version: advoice.pilot.v1
+  source: null
+  date: null
+  input_usd_per_million: null
+  output_usd_per_million: null
+  reasoning_usd_per_million: null
+fusion:
+  schema_version: advoice.pilot.v1
+  family: regularized_two_head_logit_stacking
+  loss: mean_cross_entropy
+  l2_lambda: 1.0
+  prior: [1.0, 0.0, 0.0, 0.0]
+  non_intercept_nonnegative: true
+  base_log_odds_scaling: none
+  other_features_scaling: development_only
+  hyperparameter_search: false
+  optimizer: constrained
+  probability_clip: [0.000001, 0.999999]
+  contrast_definitions:
+    impaired: (MCI+AD)/2-HC
+    stage: AD-MCI
+    binary: AD-HC
+  feature_order: [base_log_odds, agent_contrast, replay_log_odds_delta, intercept]
+cache:
+  schema_version: advoice.pilot.v1
+  enabled: true
+  namespace: evidence_state_v1
+limits:
+  schema_version: advoice.pilot.v1
+  concurrency: 2
+  request_timeout_seconds: 180
+  semantic_retry_max: 1
+  pause_after_consecutive_transport_failures: 2
+  core_call_cap: 742
+  comparison_call_cap: 144
+  canary_call_cap: 24
+  total_call_cap: 910
+  comparison_structured_cell_max_calls: 2
+  comparison_flat_cell_max_calls: 1
+  comparison_subject_max_calls: 6
+  max_calls: 0
+  max_input_tokens: 0
+  max_output_tokens: 0
+  max_reasoning_tokens: 0
+  max_total_tokens: 0
+  max_usd: 0.0

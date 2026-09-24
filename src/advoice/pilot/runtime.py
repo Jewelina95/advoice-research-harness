@@ -13,9 +13,11 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
+import queue
 import re
 import threading
 import time
+import unicodedata
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -101,6 +103,22 @@ def _coded_reason(value: str) -> str:
     return normalized[:96] or "runtime_failure"
 
 
+def canonical_operation_registry_hash(registry: Mapping[str, str]) -> str:
+    """Bind executor identity to the exact bounded action implementation map."""
+
+    if not isinstance(registry, Mapping) or set(registry) != _ALLOWED_OPERATIONS:
+        raise RuntimeValidationError(
+            "Executor registry must expose exactly the four bounded operations."
+        )
+    normalized: dict[str, str] = {}
+    for action, method_hash in sorted(registry.items()):
+        if action not in _ALLOWED_OPERATIONS:
+            raise RuntimeValidationError("Executor registry contains an unbounded operation.")
+        _require_hash(str(method_hash), f"executor.operation_registry[{action}]")
+        normalized[str(action)] = str(method_hash)
+    return _digest(normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptSpan:
     segment_id: str
@@ -120,6 +138,93 @@ class TranscriptSpan:
             raise RuntimeValidationError("TranscriptSpan requires segment and task IDs.")
         if any(not isinstance(value, str) or not value.strip() for value in self.public_names):
             raise RuntimeValidationError("TranscriptSpan public names must be non-empty strings.")
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDocument:
+    document_id: str
+    sha256: str
+    content: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.document_id, str) or not _TOKEN_RE.fullmatch(self.document_id):
+            raise RuntimeValidationError("Skill document IDs must be coded identifiers, not paths.")
+        if not isinstance(self.content, str) or not self.content.strip():
+            raise RuntimeValidationError("Skill document content must be non-empty text.")
+        _require_hash(self.sha256, "skill document hash")
+        expected = hashlib.sha256(self.content.encode("utf-8")).hexdigest()
+        if self.sha256 != expected:
+            raise RuntimeValidationError("Skill document hash does not match its exact content.")
+
+    @classmethod
+    def from_content(cls, *, document_id: str, content: str) -> "SkillDocument":
+        return cls(
+            document_id=document_id,
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            content=content,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkillBundle:
+    manifest_id: str
+    manifest_version: str
+    documents: tuple[SkillDocument, ...]
+    analytical: bool
+    declared_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.manifest_id, self.manifest_version):
+            if not isinstance(value, str) or not _TOKEN_RE.fullmatch(value):
+                raise RuntimeValidationError("Skill manifest identifiers must be coded values.")
+        if type(self.documents) is not tuple or any(
+            type(item) is not SkillDocument for item in self.documents
+        ):
+            raise RuntimeValidationError("Skill documents must be an immutable typed tuple.")
+        identifiers = tuple(item.document_id for item in self.documents)
+        if len(identifiers) != len(set(identifiers)):
+            raise RuntimeValidationError("Skill document IDs must be unique.")
+        if self.analytical:
+            if not self.documents or self.declared_hash is not None:
+                raise RuntimeValidationError(
+                    "Analytical skill bundles require non-empty exact documents."
+                )
+        else:
+            if self.documents or self.declared_hash is None:
+                raise RuntimeValidationError(
+                    "Hash-only skill bundles must be explicitly non-analytical."
+                )
+            _require_hash(self.declared_hash, "declared skill bundle hash")
+
+    @classmethod
+    def hash_only(
+        cls, *, manifest_id: str, manifest_version: str, declared_hash: str,
+    ) -> "SkillBundle":
+        return cls(
+            manifest_id=manifest_id,
+            manifest_version=manifest_version,
+            documents=(),
+            analytical=False,
+            declared_hash=declared_hash,
+        )
+
+
+def canonical_skill_bundle_hash(bundle: SkillBundle) -> str:
+    if not isinstance(bundle, SkillBundle):
+        raise RuntimeValidationError("Executor skill bundle must be typed and immutable.")
+    if not bundle.analytical:
+        if bundle.declared_hash is None:
+            raise RuntimeValidationError("Non-analytical skill bundle has no declared hash.")
+        return bundle.declared_hash
+    return _digest({
+        "manifest_id": bundle.manifest_id,
+        "manifest_version": bundle.manifest_version,
+        "documents": [{
+            "document_id": item.document_id,
+            "sha256": item.sha256,
+            "content": item.content,
+        } for item in bundle.documents],
+    })
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +269,14 @@ class ProviderRequest:
     parent_snapshot_hash: str
     operations_hash: str
     prompt_hash: str
-    case_packet: Mapping[str, Any]
+    instructions: Mapping[str, Any]
+    untrusted_case_data: Mapping[str, Any]
+
+    @property
+    def case_packet(self) -> Mapping[str, Any]:
+        """Compatibility view containing data only, never instruction text."""
+
+        return self.untrusted_case_data
 
 
 @runtime_checkable
@@ -211,6 +323,8 @@ class ReplayExecutor(Protocol):
     state_schema_hash: str
     operation_registry: Mapping[str, str]
 
+    def skill_bundle(self, snapshot: EvidenceSnapshot) -> SkillBundle: ...
+
     def transcript_spans(self, snapshot: EvidenceSnapshot) -> Sequence[TranscriptSpan]: ...
 
     def authorize_operation(
@@ -225,10 +339,14 @@ class ReplayExecutor(Protocol):
 @dataclass(frozen=True, slots=True)
 class CasePacket:
     payload: Mapping[str, Any]
+    instructions: Mapping[str, Any]
+    untrusted_data: Mapping[str, Any]
     content_hash: str
     prompt_hash: str
     transcript_hash: str
     skill_inventory: tuple[Mapping[str, Any], ...]
+    skill_bundle_hash: str
+    ineligible_segment_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +464,8 @@ class RuntimeBudget:
 
     def reserve_semantic_call(self) -> None:
         with self._lock:
+            if self._overage_reason() is not None:
+                raise RuntimeValidationError("Semantic call budget exhausted.")
             if self.semantic_calls >= self.max_semantic_calls:
                 raise RuntimeValidationError("Semantic call budget exhausted.")
             if self.consecutive_transport_failures >= self.pause_after_consecutive_transport_failures:
@@ -363,7 +483,7 @@ class RuntimeBudget:
         with self._lock:
             self.consecutive_transport_failures += 1
 
-    def record_response(self, response: ProviderResponse) -> None:
+    def record_response(self, response: ProviderResponse) -> str | None:
         with self._lock:
             self.consecutive_transport_failures = 0
             usage = response.usage
@@ -373,9 +493,9 @@ class RuntimeBudget:
                 self.reasoning_tokens += usage.reasoning_tokens or 0
             if response.reported_cost_usd is not None:
                 self.reported_cost_usd += float(response.reported_cost_usd)
-            self._check_totals()
+            return self._overage_reason()
 
-    def _check_totals(self) -> None:
+    def _overage_reason(self) -> str | None:
         total = self.input_tokens + self.output_tokens + self.reasoning_tokens
         values = (
             (self.input_tokens, self.max_input_tokens, "input token"),
@@ -385,9 +505,10 @@ class RuntimeBudget:
         )
         for actual, maximum, label in values:
             if actual > maximum:
-                raise RuntimeValidationError(f"Runtime {label} budget exceeded.")
+                return f"{label.replace(' ', '_')}_budget_exceeded"
         if self.reported_cost_usd > self.max_usd:
-            raise RuntimeValidationError("Runtime reported cost budget exceeded.")
+            return "reported_cost_budget_exceeded"
+        return None
 
     def snapshot(self) -> BudgetSnapshot:
         with self._lock:
@@ -412,6 +533,18 @@ class StrengthSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSpanTrace:
+    segment_id: str
+    source_asset_id: str
+    source_hash: str
+    task_id: str
+    role: Literal["participant", "examiner", "other", "unknown"]
+    start_seconds: float
+    end_seconds: float
+    prediction_eligible: bool
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceTrace:
     trace_id: str
     evidence_id: str
@@ -419,6 +552,9 @@ class EvidenceTrace:
     support_unit_id: str
     source_segment_ids: tuple[str, ...]
     source_hashes: tuple[str, ...]
+    source_spans: tuple[SourceSpanTrace, ...]
+    snapshot_hash: str
+    state_version: str
     legal_for_inference: bool
     reportable: bool
     shared_with_supervised: bool
@@ -432,6 +568,12 @@ class ClaimTrace:
     claim_id: str
     revision: Literal["v0", "v1"]
     score: int
+    assessment_hash: str
+    model_id: str
+    provider_prompt_hash: str
+    packet_hash: str
+    snapshot_hash: str
+    state_version: str
     state_ids: tuple[str, ...]
     evidence_ids: tuple[str, ...]
 
@@ -461,7 +603,7 @@ class RuntimeResult:
 
 def _sanitize_transcript(
     span: TranscriptSpan, *, language: str,
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, tuple[str, ...]]:
     text = clean_model_transcript(span.text)
     text = "".join(character if character >= " " or character in "\n\t" else " "
                    for character in text)
@@ -478,14 +620,6 @@ def _sanitize_transcript(
         "[redacted-path]",
         text,
     )
-    injection_patterns = (
-        r"ignore\s+(?:all\s+|any\s+)?previous\s+instructions?",
-        r"disregard\s+(?:the\s+)?(?:system|developer|previous)\s+(?:message|instructions?)",
-        r"reveal\s+(?:the\s+)?(?:system|developer|hidden)\s+(?:prompt|instructions?)",
-        r"you\s+are\s+now\s+(?:a|an)\b",
-    )
-    for pattern in injection_patterns:
-        text = re.sub(pattern, "[redacted-untrusted-instruction]", text, flags=re.IGNORECASE)
     text = re.sub(r"[ \t]+", " ", text).strip()
     screened = sanitize_segment_payload({
         "text": text,
@@ -493,41 +627,81 @@ def _sanitize_transcript(
         "speaker_role": span.role,
         "prediction_eligible": True,
     })
+    screened_text = str(screened["text"])
+    suspicion_codes = _suspicious_instruction_codes(screened_text)
     return (
-        str(screened["text"]),
+        screened_text,
         str(screened["diagnostic_disclosure"]),
-        bool(screened["prediction_eligible"]),
+        bool(screened["prediction_eligible"]) and not suspicion_codes,
+        suspicion_codes,
     )
 
 
-def _skill_inventory(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> tuple[Mapping[str, Any], ...]:
-    raw = getattr(executor, "skill_documents", None)
-    documents = raw(snapshot) if callable(raw) else None
-    if documents is None:
-        return (_freeze({
-            "document_id": "snapshot_skill_bundle",
-            "sha256": snapshot.skill_hash,
-            "content": None,
-            "availability": "hash_bound_external_bundle",
-        }),)
-    if not isinstance(documents, Mapping) or not documents:
-        raise RuntimeValidationError("Applicable skill documents must be a non-empty mapping.")
-    inventory: list[Mapping[str, Any]] = []
-    for document_id, content in sorted(documents.items()):
-        if not isinstance(document_id, str) or not _TOKEN_RE.fullmatch(document_id):
-            raise RuntimeValidationError("Skill document IDs must be coded identifiers, not paths.")
-        if not isinstance(content, str):
-            raise RuntimeValidationError("Skill document content must be text.")
-        inventory.append(_freeze({
-            "document_id": document_id,
-            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            "content": content,
-            "availability": "loaded",
-        }))
-    return tuple(inventory)
+def _suspicious_instruction_codes(text: str) -> tuple[str, ...]:
+    """Classify instruction-like transcript data without interpreting intent."""
+
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    tokens = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+    codes: set[str] = set()
+    if re.search(r"\b(?:system|developer|assistant)\s+(?:message|prompt|instruction)s?\b", tokens):
+        codes.add("role_message_marker")
+    if re.search(
+        r"\b(?:ignore|disregard|forget|override|bypass|skip|omit)\b.{0,80}"
+        r"\b(?:previous|preceding|prior|earlier|above|system|developer|instruction|"
+        r"instructions|direction|directions|rule|rules|message|prompt|policy)\b",
+        tokens,
+    ):
+        codes.add("instruction_override")
+    if re.search(
+        r"\b(?:new|updated|replacement)\s+(?:system|developer|assistant|instruction|instructions)\b",
+        tokens,
+    ):
+        codes.add("instruction_replacement")
+    if re.search(
+        r"\b(?:classify|label|diagnose|predict|score|return|output|respond|answer)\b.{0,80}"
+        r"\b(?:patient|participant|subject|case|class|label|ad|mci|hc|impaired)\b",
+        tokens,
+    ):
+        codes.add("classification_directive")
+    if re.search(
+        r"\b(?:follow|obey|execute)\b.{0,50}\b(?:instruction|instructions|command|commands)\b",
+        tokens,
+    ):
+        codes.add("instruction_execution")
+    return tuple(sorted(codes))
 
 
-def _evidence_projection(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
+def _skill_inventory(
+    snapshot: EvidenceSnapshot, executor: ReplayExecutor,
+) -> tuple[SkillBundle, tuple[Mapping[str, Any], ...], str]:
+    loader = getattr(executor, "skill_bundle", None)
+    if not callable(loader):
+        raise RuntimeValidationError("Analytical skill bundle loader is required.")
+    bundle = loader(snapshot)
+    if not isinstance(bundle, SkillBundle) or not bundle.analytical or not bundle.documents:
+        raise RuntimeValidationError(
+            "Analytical skill assessment requires an immutable non-empty analytical skill bundle."
+        )
+    bundle_hash = canonical_skill_bundle_hash(bundle)
+    if bundle_hash != snapshot.skill_hash:
+        raise RuntimeValidationError("Canonical skill bundle hash does not match snapshot.skill_hash.")
+    manifest = _freeze({
+        "manifest_id": bundle.manifest_id,
+        "manifest_version": bundle.manifest_version,
+        "bundle_hash": bundle_hash,
+        "document_ids": [item.document_id for item in bundle.documents],
+    })
+    documents = tuple(_freeze({
+        "document_id": item.document_id,
+        "sha256": item.sha256,
+        "content": item.content,
+    }) for item in bundle.documents)
+    return bundle, (manifest, *documents), bundle_hash
+
+
+def _evidence_projection(
+    snapshot: EvidenceSnapshot, ineligible_segment_ids: set[str],
+) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     for wrapped in snapshot.evidence:
         item = wrapped.body
@@ -535,18 +709,24 @@ def _evidence_projection(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
         if permissions["inference"] is not True:
             raise RuntimeValidationError("Evidence without inference permission cannot enter the case packet.")
         provenance = item["provenance"]
+        suspicious_source = bool(
+            set(provenance["source_segment_ids"]) & ineligible_segment_ids
+        )
         projected.append({
             "evidence_id": item["evidence_id"],
             "metric_id": item["metric_id"],
             "metric_instance_id": item["metric_instance_id"],
             "state_id": item["state_id"],
             "task_id": item["task_id"],
-            "value": item["value"],
+            "value": None if suspicious_source else item["value"],
             "unit": item["unit"],
             "source_modality": item["source_modality"],
-            "direction": item["direction"],
-            "observable": item["observable"],
-            "unavailable_reason": item["unavailable_reason"],
+            "direction": 0 if suspicious_source else item["direction"],
+            "observable": False if suspicious_source else item["observable"],
+            "unavailable_reason": (
+                "suspicious_instruction_source" if suspicious_source
+                else item["unavailable_reason"]
+            ),
             "reference": {
                 "median": item["reference"]["median"],
                 "scale": item["reference"]["scale"],
@@ -555,7 +735,8 @@ def _evidence_projection(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
             },
             "reliability": dict(item["reliability_components"]),
             "confounds": dict(item["confounds"]),
-            "legal_for_inference": True,
+            "legal_for_inference": not suspicious_source,
+            "prediction_eligible": not suspicious_source,
             "reportable": permissions["report"],
             "consumed_by_supervised": item["consumed_by_supervised"],
             "shared_evidence_notice": (
@@ -573,15 +754,23 @@ def _evidence_projection(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
     return projected
 
 
-def _state_projection(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
-    return [{
-        "state_id": card.state_id,
-        "state_z": card.state_z,
-        "available": card.available,
-        "supporting_evidence_ids": list(card.supporting_evidence_ids),
-        "counter_evidence_ids": list(card.counter_evidence_ids),
-        "observability": snapshot.observability[card.state_id].to_dict(),
-    } for card in snapshot.state_cards]
+def _state_projection(
+    snapshot: EvidenceSnapshot, ineligible_evidence_ids: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for card in snapshot.state_cards:
+        linked = set(card.supporting_evidence_ids + card.counter_evidence_ids)
+        eligible = not bool(linked & ineligible_evidence_ids)
+        rows.append({
+            "state_id": card.state_id,
+            "state_z": card.state_z if eligible else None,
+            "available": card.available if eligible else False,
+            "prediction_eligible": eligible,
+            "supporting_evidence_ids": list(card.supporting_evidence_ids),
+            "counter_evidence_ids": list(card.counter_evidence_ids),
+            "observability": snapshot.observability[card.state_id].to_dict(),
+        })
+    return rows
 
 
 def _reject_leakage(value: Any) -> None:
@@ -604,12 +793,12 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
     for field_name in ("registry_hash", "state_schema_hash"):
         _require_hash(str(getattr(executor, field_name, "")), f"executor.{field_name}")
     registry = getattr(executor, "operation_registry", None)
-    if not isinstance(registry, Mapping) or set(registry) != _ALLOWED_OPERATIONS:
-        raise RuntimeValidationError("Executor registry must expose exactly the four bounded operations.")
-    for action, method_hash in registry.items():
-        if action not in _ALLOWED_OPERATIONS:
-            raise RuntimeValidationError("Executor registry contains an unbounded operation.")
-        _require_hash(str(method_hash), f"executor.operation_registry[{action}]")
+    derived_registry_hash = canonical_operation_registry_hash(registry)
+    if str(executor.registry_hash) != derived_registry_hash:
+        raise RuntimeValidationError(
+            "Executor registry hash does not match the exact operation registry."
+        )
+    _, skill_inventory, skill_bundle_hash = _skill_inventory(snapshot, executor)
 
     source_segments = {item.segment_id: item for item in snapshot.source_segments}
     raw_spans = executor.transcript_spans(snapshot)
@@ -628,7 +817,7 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
             raise RuntimeValidationError("TranscriptSpan role does not match source provenance.")
         if span.task_id not in snapshot.subject.task_ids:
             raise RuntimeValidationError("TranscriptSpan task is not applicable to this subject route.")
-        text, disclosure, prediction_eligible = _sanitize_transcript(
+        text, disclosure, prediction_eligible, suspicion_codes = _sanitize_transcript(
             span, language=snapshot.subject.language,
         )
         spans.append({
@@ -640,12 +829,20 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
             "text": text,
             "content_class": "untrusted_transcript",
             "disclosure_status": disclosure,
+            "suspicious_instruction": bool(suspicion_codes),
+            "suspicion_codes": list(suspicion_codes),
             "prediction_eligible": prediction_eligible,
         })
 
-    skill_inventory = _skill_inventory(snapshot, executor)
+    ineligible_segment_ids = {
+        str(item["segment_id"]) for item in spans if not item["prediction_eligible"]
+    }
+    evidence_rows = _evidence_projection(snapshot, ineligible_segment_ids)
+    ineligible_evidence_ids = {
+        str(item["evidence_id"]) for item in evidence_rows if not item["prediction_eligible"]
+    }
     transcript_hash = _digest(spans)
-    payload = {
+    instructions = {
         "runtime_version": RUNTIME_VERSION,
         "route_id": CORRELATED_FUSION_ROUTE,
         "assessment_contract": {
@@ -658,7 +855,17 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
             ),
             "shared_evidence_policy": "citeable_correlated_not_independent",
             "report_policy": "no_long_clinician_report",
+            "quarantine_policy": (
+                "prediction_ineligible transcript spans and descendants cannot be cited or used"
+            ),
         },
+        "skill_bundle_hash": skill_bundle_hash,
+        "applicable_skills": [_plain(item) for item in skill_inventory],
+    }
+    untrusted_data = {
+        "runtime_version": RUNTIME_VERSION,
+        "route_id": CORRELATED_FUSION_ROUTE,
+        "content_class": "untrusted_case_data",
         "case_id": snapshot.case_id,
         "snapshot_hash": snapshot.snapshot_hash,
         "reference_fit_id": snapshot.reference_fit_id,
@@ -673,23 +880,30 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
             "class_order": list(snapshot.subject.class_order),
         },
         "transcript_spans": spans,
-        "metric_evidence": _evidence_projection(snapshot),
-        "state_cards": _state_projection(snapshot),
+        "metric_evidence": evidence_rows,
+        "state_cards": _state_projection(snapshot, ineligible_evidence_ids),
         "confounds": {key: list(values) for key, values in snapshot.confounds.items()},
         "modalities_present": sorted({
             item.body["source_modality"] for item in snapshot.evidence
             if item.body["source_modality"]
         }),
-        "applicable_skills": [_plain(item) for item in skill_inventory],
     }
-    _reject_leakage(payload)
-    content_hash = _digest(payload)
+    _reject_leakage(instructions)
+    _reject_leakage(untrusted_data)
+    content_hash = _digest({
+        "instructions": instructions,
+        "untrusted_case_data": untrusted_data,
+    })
     return CasePacket(
-        payload=_plain(payload),
+        payload=_plain(untrusted_data),
+        instructions=_plain(instructions),
+        untrusted_data=_plain(untrusted_data),
         content_hash=content_hash,
         prompt_hash=content_hash,
         transcript_hash=transcript_hash,
         skill_inventory=tuple(_plain(item) for item in skill_inventory),
+        skill_bundle_hash=skill_bundle_hash,
+        ineligible_segment_ids=tuple(sorted(ineligible_segment_ids)),
     )
 
 
@@ -717,7 +931,9 @@ def cache_identity(
         "reference_fit_id": snapshot.reference_fit_id,
         "reference_fit_hash": snapshot.reference_fit_hash,
         "replay_model_id": str(executor.replay_model_id),
-        "executor_registry_hash": str(executor.registry_hash),
+        "executor_registry_hash": canonical_operation_registry_hash(
+            executor.operation_registry
+        ),
         "task": snapshot.subject.task,
         "task_ids": list(snapshot.subject.task_ids),
         "role": snapshot.subject.role,
@@ -725,6 +941,8 @@ def cache_identity(
         "state_schema_hash": str(executor.state_schema_hash),
         "state_version": snapshot.state_version,
         "skill_hash": snapshot.skill_hash,
+        "skill_bundle_hash": packet.skill_bundle_hash,
+        "skill_inventory_hash": _digest(packet.skill_inventory),
         "prompt_hash": str(provider.prompt_hash),
         "provider_model_id": str(provider.model_id),
         "provider_settings": _plain(provider.settings),
@@ -807,6 +1025,7 @@ def _parse_assessment(
     revision: Literal["v0", "v1"],
     provider: AssessmentProvider,
     usage: UsageRow,
+    packet: CasePacket,
 ) -> tuple[AgentAssessment, Mapping[str, Any]]:
     payload = _decode_payload(payload_value)
     if payload["snapshot_hash"] != snapshot.snapshot_hash or payload["revision"] != revision:
@@ -852,10 +1071,27 @@ def _parse_assessment(
     )
     assessment.validate_snapshot(snapshot)
     evidence_by_id = {item.body["evidence_id"]: item.body for item in snapshot.evidence}
+    ineligible_states = {
+        str(item["state_id"])
+        for item in packet.untrusted_data["state_cards"]
+        if not item["prediction_eligible"]
+    }
+    if any(
+        judgment.state_id in ineligible_states and judgment.status == "observed"
+        for judgment in assessment.state_judgments
+    ):
+        raise RuntimeValidationError(
+            "Assessment used a state quarantined by prediction-ineligible source data."
+        )
     for evidence_id in assessment.citations:
         task_id = evidence_by_id[evidence_id]["task_id"]
         if task_id is not None and task_id not in snapshot.subject.task_ids:
             raise RuntimeValidationError("Assessment cited evidence outside the applicable task route.")
+        source_segments = set(evidence_by_id[evidence_id]["provenance"]["source_segment_ids"])
+        if source_segments & set(packet.ineligible_segment_ids):
+            raise RuntimeValidationError(
+                "Assessment cited evidence derived from a prediction-ineligible transcript span."
+            )
     return assessment, _freeze(payload)
 
 
@@ -891,6 +1127,41 @@ class _CallResult:
     usage: tuple[UsageRow, ...]
     cache_event: CacheEvent
     prompt_hash: str
+    packet: CasePacket
+
+
+def _invoke_provider_bounded(
+    provider: AssessmentProvider,
+    request: ProviderRequest,
+    budget: RuntimeBudget,
+) -> ProviderResponse:
+    """Run a synchronous provider behind a daemon boundary with a hard wait cap."""
+
+    results: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            with budget.provider_slot():
+                value = provider.assess(request, timeout_seconds=budget.timeout_seconds)
+            results.put((True, value), block=False)
+        except Exception as exc:
+            results.put((False, exc), block=False)
+
+    thread = threading.Thread(
+        target=worker,
+        name=f"pilot-provider-{request.request_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        succeeded, value = results.get(timeout=budget.timeout_seconds)
+    except queue.Empty as exc:
+        raise ProviderTimeoutError("Provider exceeded the wall-clock timeout.") from exc
+    if succeeded:
+        return value
+    if isinstance(value, RuntimeValidationError) and "concurrency" in str(value).lower():
+        raise ProviderTimeoutError("Provider queue wait exceeded the wall-clock timeout.") from value
+    raise value
 
 
 def _call_assessment(
@@ -928,10 +1199,11 @@ def _call_assessment(
         try:
             assessment, _ = _parse_assessment(
                 cached, snapshot=snapshot, revision=revision, provider=provider, usage=usage,
+                packet=packet,
             )
         except (PilotContractError, RuntimeValidationError, TypeError, ValueError) as exc:
             raise RuntimeValidationError("Validated cache entry no longer matches its identity.") from exc
-        return _CallResult(assessment, (usage,), cache_event, packet.prompt_hash)
+        return _CallResult(assessment, (usage,), cache_event, packet.prompt_hash, packet)
 
     budget.reserve_semantic_call()
     all_usage: list[UsageRow] = []
@@ -952,16 +1224,28 @@ def _call_assessment(
             parent_snapshot_hash=parent_snapshot_hash,
             operations_hash=identity.fields["operations_hash"],
             prompt_hash=packet.prompt_hash,
-            case_packet=packet.payload,
+            instructions=_plain(packet.instructions),
+            untrusted_case_data=_plain(packet.untrusted_data),
         )
         started = time.monotonic()
         try:
-            with budget.provider_slot():
-                response = provider.assess(request, timeout_seconds=budget.timeout_seconds)
+            response = _invoke_provider_bounded(provider, request, budget)
             elapsed = time.monotonic() - started
             if not isinstance(response, ProviderResponse):
                 raise RuntimeValidationError("Provider must return ProviderResponse.")
-            budget.record_response(response)
+            overage_reason = budget.record_response(response)
+            provisional = _usage_row(
+                request_id=request_id, cache_key=identity.key,
+                cache_status=cache_status, response_status="ok",
+                attempt=request_attempt, model_id=str(provider.model_id), usage=response.usage,
+                reported_cost=response.reported_cost_usd, wall_seconds=elapsed,
+                response_id=response.response_id,
+            )
+            if overage_reason is not None:
+                final_reason = "budget_exhausted"
+                final_usage = provisional
+                all_usage.append(final_usage)
+                break
             if response.status != "ok":
                 final_reason = "provider_failure"
                 final_usage = _usage_row(
@@ -973,13 +1257,6 @@ def _call_assessment(
                 )
                 all_usage.append(final_usage)
                 break
-            provisional = _usage_row(
-                request_id=request_id, cache_key=identity.key,
-                cache_status=cache_status, response_status="ok",
-                attempt=request_attempt, model_id=str(provider.model_id), usage=response.usage,
-                reported_cost=response.reported_cost_usd, wall_seconds=elapsed,
-                response_id=response.response_id,
-            )
             try:
                 assessment, validated_payload = _parse_assessment(
                     response.payload,
@@ -987,6 +1264,7 @@ def _call_assessment(
                     revision=revision,
                     provider=provider,
                     usage=provisional,
+                    packet=packet,
                 )
             except (PilotContractError, RuntimeValidationError, TypeError, ValueError, KeyError):
                 final_reason = "malformed_response"
@@ -995,7 +1273,9 @@ def _call_assessment(
                 break
             all_usage.append(provisional)
             cache.store(identity, validated_payload)
-            return _CallResult(assessment, tuple(all_usage), cache_event, packet.prompt_hash)
+            return _CallResult(
+                assessment, tuple(all_usage), cache_event, packet.prompt_hash, packet,
+            )
         except ProviderTimeoutError:
             elapsed = time.monotonic() - started
             budget.record_transport_failure()
@@ -1043,7 +1323,7 @@ def _call_assessment(
     if final_usage is None:
         raise RuntimeValidationError("Provider failed without an auditable usage attempt.")
     failed = _failed_assessment(snapshot, revision, provider, final_usage, final_reason)
-    return _CallResult(failed, tuple(all_usage), cache_event, packet.prompt_hash)
+    return _CallResult(failed, tuple(all_usage), cache_event, packet.prompt_hash, packet)
 
 
 def _authorize_operations(
@@ -1147,7 +1427,9 @@ def _run_replay(
             state_delta=state_delta,
             replay_model_id=str(executor.replay_model_id),
             repair_batch_id=execution.repair_batch_id,
-            executor_registry_hash=str(executor.registry_hash),
+            executor_registry_hash=canonical_operation_registry_hash(
+                executor.operation_registry
+            ),
             authorized_operations={item.operation_id: item.content_hash for item in accepted},
             valid=execution.valid,
             reason=execution.reason,
@@ -1190,26 +1472,45 @@ def assessment_strength(
 
 
 def _source_trace(
-    assessments: Sequence[tuple[AgentAssessment, EvidenceSnapshot]],
+    assessments: Sequence[tuple[AgentAssessment, EvidenceSnapshot, CasePacket, str]],
 ) -> SourceTrace:
     claims: list[ClaimTrace] = []
     evidence_rows: dict[tuple[str, str], EvidenceTrace] = {}
     unsupported: set[str] = set()
-    for assessment, snapshot in assessments:
+    for assessment, snapshot, packet, provider_prompt_hash in assessments:
         if assessment.status != "ok" or assessment.ordinal_scores is None:
             continue
         evidence = {item.body["evidence_id"]: item.body for item in snapshot.evidence}
+        source_segments = {item.segment_id: item for item in snapshot.source_segments}
+        transcript_spans = {
+            str(item["segment_id"]): item
+            for item in packet.untrusted_data["transcript_spans"]
+        }
         cited_states = tuple(sorted({evidence[item]["state_id"] for item in assessment.citations}))
         for class_name, score in assessment.ordinal_scores.items():
             claim_id = f"{assessment.revision}.class.{class_name}"
+            trace_binding = {
+                "claim": claim_id,
+                "ordinal_score": score,
+                "assessment_hash": assessment.content_hash,
+                "model_id": assessment.model_id,
+                "provider_prompt_hash": provider_prompt_hash,
+                "packet_hash": packet.content_hash,
+                "snapshot_hash": snapshot.snapshot_hash,
+                "state_version": snapshot.state_version,
+                "citations": list(assessment.citations),
+            }
             claims.append(ClaimTrace(
-                trace_id="trace_" + _digest({
-                    "claim": claim_id, "snapshot": snapshot.snapshot_hash,
-                    "citations": list(assessment.citations),
-                })[:24],
+                trace_id="trace_" + _digest(trace_binding)[:24],
                 claim_id=claim_id,
                 revision=assessment.revision,
                 score=score,
+                assessment_hash=assessment.content_hash,
+                model_id=assessment.model_id,
+                provider_prompt_hash=provider_prompt_hash,
+                packet_hash=packet.content_hash,
+                snapshot_hash=snapshot.snapshot_hash,
+                state_version=snapshot.state_version,
                 state_ids=cited_states,
                 evidence_ids=assessment.citations,
             ))
@@ -1222,6 +1523,27 @@ def _source_trace(
                 (snapshot.subject.raw_hashes[asset_id],)
                 if asset_id in snapshot.subject.raw_hashes else ()
             )
+            resolved_spans: list[SourceSpanTrace] = []
+            for segment_id in provenance["source_segment_ids"]:
+                source = source_segments[segment_id]
+                packet_span = transcript_spans.get(segment_id)
+                source_hash = snapshot.subject.raw_hashes[source.source_asset_id]
+                resolved_spans.append(SourceSpanTrace(
+                    segment_id=segment_id,
+                    source_asset_id=source.source_asset_id,
+                    source_hash=source_hash,
+                    task_id=(
+                        str(packet_span["task_id"]) if packet_span is not None
+                        else str(item["task_id"] or "unknown")
+                    ),
+                    role=source.role,
+                    start_seconds=source.start_seconds,
+                    end_seconds=source.end_seconds,
+                    prediction_eligible=(
+                        bool(packet_span["prediction_eligible"])
+                        if packet_span is not None else True
+                    ),
+                ))
             opaque = "embedding" in (
                 str(item["metric_id"]) + " " + str(item["source_modality"])
             ).lower()
@@ -1231,14 +1553,24 @@ def _source_trace(
             key = (snapshot.snapshot_hash, evidence_id)
             evidence_rows[key] = EvidenceTrace(
                 trace_id="trace_" + _digest({
-                    "snapshot": snapshot.snapshot_hash, "evidence": evidence_id,
+                    "snapshot": snapshot.snapshot_hash,
+                    "state_version": snapshot.state_version,
+                    "evidence": evidence_id,
+                    "packet_hash": packet.content_hash,
+                    "source_spans": [item.segment_id for item in resolved_spans],
                 })[:24],
                 evidence_id=evidence_id,
                 state_id=item["state_id"],
                 support_unit_id=_measurement_identity(item),
                 source_segment_ids=tuple(provenance["source_segment_ids"]),
                 source_hashes=source_hashes,
-                legal_for_inference=bool(item["permissions"]["inference"]),
+                source_spans=tuple(resolved_spans),
+                snapshot_hash=snapshot.snapshot_hash,
+                state_version=snapshot.state_version,
+                legal_for_inference=(
+                    bool(item["permissions"]["inference"])
+                    and all(span.prediction_eligible for span in resolved_spans)
+                ),
                 reportable=bool(item["permissions"]["report"]),
                 shared_with_supervised=bool(item["consumed_by_supervised"]),
                 opaque=opaque,
@@ -1281,7 +1613,9 @@ def assess_and_replay(
     prompt_hashes = [v0.prompt_hash]
     assessment_v1: AgentAssessment | None = None
     replay: ReplayResult | None = None
-    trace_inputs: list[tuple[AgentAssessment, EvidenceSnapshot]] = [(v0.assessment, snapshot)]
+    trace_inputs: list[tuple[AgentAssessment, EvidenceSnapshot, CasePacket, str]] = [(
+        v0.assessment, snapshot, v0.packet, str(provider.prompt_hash),
+    )]
 
     if v0.assessment.status == "ok":
         replay = _run_replay(snapshot, v0.assessment.operations, executor)
@@ -1296,7 +1630,9 @@ def assess_and_replay(
                 usage.extend(v1.usage)
                 events.append(v1.cache_event)
                 prompt_hashes.append(v1.prompt_hash)
-                trace_inputs.append((assessment_v1, replay.after))
+                trace_inputs.append((
+                    assessment_v1, replay.after, v1.packet, str(provider.prompt_hash),
+                ))
             except RuntimeValidationError as exc:
                 # Initial budget exhaustion is a caller error.  A required v1
                 # that cannot be called is represented as missing, never by v0.

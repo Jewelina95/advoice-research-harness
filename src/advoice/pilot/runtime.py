@@ -13,7 +13,6 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
-import queue
 import re
 import threading
 import time
@@ -62,10 +61,6 @@ class RuntimeValidationError(ValueError):
 
 class ProviderTransportError(RuntimeError):
     """Retryable provider transport failure."""
-
-
-class ProviderTimeoutError(ProviderTransportError):
-    """Retryable provider timeout."""
 
 
 def _canonical(value: Any) -> str:
@@ -117,6 +112,33 @@ def canonical_operation_registry_hash(registry: Mapping[str, str]) -> str:
         _require_hash(str(method_hash), f"executor.operation_registry[{action}]")
         normalized[str(action)] = str(method_hash)
     return _digest(normalized)
+
+
+def _immutable_registry(executor: ReplayExecutor) -> tuple[Mapping[str, str], str]:
+    registry = getattr(executor, "operation_registry", None)
+    if type(registry) is not type(MappingProxyType({})):
+        raise RuntimeValidationError(
+            "Executor operation registry must be an immutable mapping proxy."
+        )
+    registry_hash = canonical_operation_registry_hash(registry)
+    if str(executor.registry_hash) != registry_hash:
+        raise RuntimeValidationError(
+            "Executor registry hash does not match the exact operation registry."
+        )
+    return registry, registry_hash
+
+
+def _verify_registry_snapshot(executor: ReplayExecutor, packet: CasePacket) -> None:
+    current = getattr(executor, "operation_registry", None)
+    if current is not packet.operation_registry:
+        raise RuntimeValidationError("Executor operation registry object changed after packet build.")
+    current_hash = canonical_operation_registry_hash(current)
+    if (
+        current_hash != packet.operation_registry_hash
+        or str(executor.registry_hash) != packet.operation_registry_hash
+        or _plain(current) != _plain(packet.operation_registry_snapshot)
+    ):
+        raise RuntimeValidationError("Executor operation registry mutated after packet build.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +281,38 @@ class ProviderResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """Transport guarantees required before an analytical provider may run."""
+
+    hard_transport_cancellation: bool
+    deadline_enforced: bool
+    terminal_acknowledgement: bool
+
+    def supports_analytical_runtime(self) -> bool:
+        return (
+            self.hard_transport_cancellation is True
+            and self.deadline_enforced is True
+            and self.terminal_acknowledgement is True
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderTerminalOutcome:
+    """Acknowledged terminal transport state, optionally with billed response data."""
+
+    status: Literal["completed", "cancelled"]
+    response: ProviderResponse | None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"completed", "cancelled"}:
+            raise RuntimeValidationError("Provider terminal status is unsupported.")
+        if self.status == "completed" and not isinstance(self.response, ProviderResponse):
+            raise RuntimeValidationError("Completed provider attempts require a typed response.")
+        if self.response is not None and not isinstance(self.response, ProviderResponse):
+            raise RuntimeValidationError("Provider terminal response must be typed.")
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderRequest:
     request_id: str
     idempotency_key: str
@@ -280,12 +334,24 @@ class ProviderRequest:
 
 
 @runtime_checkable
+class ProviderAttempt(Protocol):
+    def wait_terminal(
+        self, *, timeout_seconds: float | None,
+    ) -> ProviderTerminalOutcome | None: ...
+
+    def cancel(self) -> None: ...
+
+
+@runtime_checkable
 class AssessmentProvider(Protocol):
     model_id: str
     settings: Mapping[str, Any]
     prompt_hash: str
+    capabilities: ProviderCapabilities
 
-    def assess(self, request: ProviderRequest, *, timeout_seconds: int) -> ProviderResponse: ...
+    def begin_assessment(
+        self, request: ProviderRequest, *, deadline_monotonic: float,
+    ) -> ProviderAttempt: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +413,9 @@ class CasePacket:
     skill_inventory: tuple[Mapping[str, Any], ...]
     skill_bundle_hash: str
     ineligible_segment_ids: tuple[str, ...]
+    operation_registry: Mapping[str, str]
+    operation_registry_snapshot: Mapping[str, str]
+    operation_registry_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -755,17 +824,34 @@ def _evidence_projection(
 
 
 def _state_projection(
-    snapshot: EvidenceSnapshot, ineligible_evidence_ids: set[str],
+    snapshot: EvidenceSnapshot,
+    ineligible_evidence_ids: set[str],
+    ineligible_segment_ids: set[str],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for card in snapshot.state_cards:
         linked = set(card.supporting_evidence_ids + card.counter_evidence_ids)
-        eligible = not bool(linked & ineligible_evidence_ids)
+        provenance_segments: set[str] = set()
+        provenance_trace = card.body.get("provenance_trace", ())
+        if not isinstance(provenance_trace, (tuple, list)):
+            raise RuntimeValidationError("StateCard provenance_trace must be an array.")
+        for trace in provenance_trace:
+            if not isinstance(trace, Mapping):
+                raise RuntimeValidationError("StateCard provenance entries must be objects.")
+            segment_ids = trace.get("source_segment_ids", ())
+            if not isinstance(segment_ids, (tuple, list)):
+                raise RuntimeValidationError("StateCard provenance source segments must be an array.")
+            provenance_segments.update(str(segment_id) for segment_id in segment_ids)
+        eligible = not bool(
+            linked & ineligible_evidence_ids
+            or provenance_segments & ineligible_segment_ids
+        )
         rows.append({
             "state_id": card.state_id,
             "state_z": card.state_z if eligible else None,
             "available": card.available if eligible else False,
             "prediction_eligible": eligible,
+            "provenance_source_segment_ids": sorted(provenance_segments),
             "supporting_evidence_ids": list(card.supporting_evidence_ids),
             "counter_evidence_ids": list(card.counter_evidence_ids),
             "observability": snapshot.observability[card.state_id].to_dict(),
@@ -792,12 +878,8 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
         raise TypeError("build_case_packet requires EvidenceSnapshot.")
     for field_name in ("registry_hash", "state_schema_hash"):
         _require_hash(str(getattr(executor, field_name, "")), f"executor.{field_name}")
-    registry = getattr(executor, "operation_registry", None)
-    derived_registry_hash = canonical_operation_registry_hash(registry)
-    if str(executor.registry_hash) != derived_registry_hash:
-        raise RuntimeValidationError(
-            "Executor registry hash does not match the exact operation registry."
-        )
+    registry, derived_registry_hash = _immutable_registry(executor)
+    registry_snapshot = _freeze(_plain(registry))
     _, skill_inventory, skill_bundle_hash = _skill_inventory(snapshot, executor)
 
     source_segments = {item.segment_id: item for item in snapshot.source_segments}
@@ -881,7 +963,9 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
         },
         "transcript_spans": spans,
         "metric_evidence": evidence_rows,
-        "state_cards": _state_projection(snapshot, ineligible_evidence_ids),
+        "state_cards": _state_projection(
+            snapshot, ineligible_evidence_ids, ineligible_segment_ids,
+        ),
         "confounds": {key: list(values) for key, values in snapshot.confounds.items()},
         "modalities_present": sorted({
             item.body["source_modality"] for item in snapshot.evidence
@@ -904,6 +988,9 @@ def build_case_packet(snapshot: EvidenceSnapshot, executor: ReplayExecutor) -> C
         skill_inventory=tuple(_plain(item) for item in skill_inventory),
         skill_bundle_hash=skill_bundle_hash,
         ineligible_segment_ids=tuple(sorted(ineligible_segment_ids)),
+        operation_registry=registry,
+        operation_registry_snapshot=registry_snapshot,
+        operation_registry_hash=derived_registry_hash,
     )
 
 
@@ -919,6 +1006,7 @@ def cache_identity(
 ) -> CacheIdentity:
     """Return the complete identity required for provider-response reuse."""
 
+    _verify_registry_snapshot(executor, packet)
     _require_hash(str(provider.prompt_hash), "provider.prompt_hash")
     _require_hash(str(executor.state_schema_hash), "executor.state_schema_hash")
     operation_rows = [item.to_dict() for item in operations]
@@ -931,9 +1019,7 @@ def cache_identity(
         "reference_fit_id": snapshot.reference_fit_id,
         "reference_fit_hash": snapshot.reference_fit_hash,
         "replay_model_id": str(executor.replay_model_id),
-        "executor_registry_hash": canonical_operation_registry_hash(
-            executor.operation_registry
-        ),
+        "executor_registry_hash": packet.operation_registry_hash,
         "task": snapshot.subject.task,
         "task_ids": list(snapshot.subject.task_ids),
         "role": snapshot.subject.role,
@@ -1130,38 +1216,37 @@ class _CallResult:
     packet: CasePacket
 
 
-def _invoke_provider_bounded(
+@dataclass(frozen=True, slots=True)
+class _ProviderInvocation:
+    response: ProviderResponse | None
+    timed_out: bool
+
+
+def _invoke_provider_cancellable(
     provider: AssessmentProvider,
     request: ProviderRequest,
     budget: RuntimeBudget,
-) -> ProviderResponse:
-    """Run a synchronous provider behind a daemon boundary with a hard wait cap."""
+) -> _ProviderInvocation:
+    """Wait through cancellation acknowledgement; never abandon an in-flight attempt."""
 
-    results: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+    with budget.provider_slot():
+        deadline = time.monotonic() + budget.timeout_seconds
+        attempt = provider.begin_assessment(request, deadline_monotonic=deadline)
+        if not isinstance(attempt, ProviderAttempt):
+            raise RuntimeValidationError("Provider must return a cancellable attempt handle.")
+        outcome = attempt.wait_terminal(timeout_seconds=float(budget.timeout_seconds))
+        if outcome is not None:
+            if not isinstance(outcome, ProviderTerminalOutcome):
+                raise RuntimeValidationError("Provider terminal acknowledgement must be typed.")
+            return _ProviderInvocation(response=outcome.response, timed_out=False)
 
-    def worker() -> None:
-        try:
-            with budget.provider_slot():
-                value = provider.assess(request, timeout_seconds=budget.timeout_seconds)
-            results.put((True, value), block=False)
-        except Exception as exc:
-            results.put((False, exc), block=False)
-
-    thread = threading.Thread(
-        target=worker,
-        name=f"pilot-provider-{request.request_id}",
-        daemon=True,
-    )
-    thread.start()
-    try:
-        succeeded, value = results.get(timeout=budget.timeout_seconds)
-    except queue.Empty as exc:
-        raise ProviderTimeoutError("Provider exceeded the wall-clock timeout.") from exc
-    if succeeded:
-        return value
-    if isinstance(value, RuntimeValidationError) and "concurrency" in str(value).lower():
-        raise ProviderTimeoutError("Provider queue wait exceeded the wall-clock timeout.") from value
-    raise value
+        attempt.cancel()
+        outcome = attempt.wait_terminal(timeout_seconds=None)
+        if not isinstance(outcome, ProviderTerminalOutcome):
+            raise RuntimeValidationError(
+                "Provider cancellation did not produce a terminal acknowledgement."
+            )
+        return _ProviderInvocation(response=outcome.response, timed_out=True)
 
 
 def _call_assessment(
@@ -1229,11 +1314,42 @@ def _call_assessment(
         )
         started = time.monotonic()
         try:
-            response = _invoke_provider_bounded(provider, request, budget)
+            invocation = _invoke_provider_cancellable(provider, request, budget)
             elapsed = time.monotonic() - started
-            if not isinstance(response, ProviderResponse):
+            response = invocation.response
+            if response is not None and not isinstance(response, ProviderResponse):
                 raise RuntimeValidationError("Provider must return ProviderResponse.")
-            overage_reason = budget.record_response(response)
+            overage_reason = budget.record_response(response) if response is not None else None
+            if invocation.timed_out:
+                budget.record_transport_failure()
+                final_reason = "budget_exhausted" if overage_reason is not None else "timeout"
+                final_usage = _usage_row(
+                    request_id=request_id, cache_key=identity.key,
+                    cache_status=cache_status, response_status="timeout",
+                    attempt=request_attempt, model_id=str(provider.model_id),
+                    usage=response.usage if response is not None else None,
+                    reported_cost=(
+                        response.reported_cost_usd if response is not None else None
+                    ),
+                    wall_seconds=elapsed,
+                    response_id=response.response_id if response is not None else None,
+                    missing_reason="cancelled_no_provider_usage",
+                )
+                all_usage.append(final_usage)
+                if overage_reason is not None:
+                    break
+                if request_attempt > budget.transport_retry_max:
+                    break
+                if (
+                    budget.consecutive_transport_failures
+                    >= budget.pause_after_consecutive_transport_failures
+                ):
+                    break
+                continue
+            if response is None:
+                raise RuntimeValidationError(
+                    "Completed provider attempt omitted its terminal response."
+                )
             provisional = _usage_row(
                 request_id=request_id, cache_key=identity.key,
                 cache_status=cache_status, response_status="ok",
@@ -1276,18 +1392,6 @@ def _call_assessment(
             return _CallResult(
                 assessment, tuple(all_usage), cache_event, packet.prompt_hash, packet,
             )
-        except ProviderTimeoutError:
-            elapsed = time.monotonic() - started
-            budget.record_transport_failure()
-            final_reason = "timeout"
-            final_usage = _usage_row(
-                request_id=request_id, cache_key=identity.key,
-                cache_status=cache_status, response_status="timeout",
-                attempt=request_attempt, model_id=str(provider.model_id), usage=None,
-                reported_cost=None, wall_seconds=elapsed, response_id=None,
-                missing_reason="request_failed",
-            )
-            all_usage.append(final_usage)
         except ProviderTransportError:
             elapsed = time.monotonic() - started
             budget.record_transport_failure()
@@ -1330,12 +1434,15 @@ def _authorize_operations(
     snapshot: EvidenceSnapshot,
     operations: Sequence[ReviewOperation],
     executor: ReplayExecutor,
+    packet: CasePacket,
 ) -> tuple[tuple[ReviewOperation, ...], tuple[RejectedOperation, ...]]:
+    _verify_registry_snapshot(executor, packet)
     accepted: list[ReviewOperation] = []
     rejected: list[RejectedOperation] = []
     seen: set[str] = set()
-    registry = dict(executor.operation_registry)
+    registry = dict(packet.operation_registry_snapshot)
     for operation in operations:
+        _verify_registry_snapshot(executor, packet)
         fingerprint_body = operation.to_dict()
         fingerprint_body.pop("schema_version", None)
         fingerprint_body.pop("operation_id", None)
@@ -1359,6 +1466,7 @@ def _authorize_operations(
                     raise RuntimeValidationError("Executor authorization must be typed.")
                 if not authorization.accepted:
                     reason = authorization.reason
+                _verify_registry_snapshot(executor, packet)
             except RuntimeValidationError:
                 raise
             except Exception:
@@ -1378,13 +1486,19 @@ def _run_replay(
     snapshot: EvidenceSnapshot,
     operations: Sequence[ReviewOperation],
     executor: ReplayExecutor,
+    packet: CasePacket,
 ) -> ReplayResult:
-    accepted, rejected = _authorize_operations(snapshot, operations, executor)
+    _verify_registry_snapshot(executor, packet)
+    accepted, rejected = _authorize_operations(snapshot, operations, executor, packet)
     if accepted:
         try:
+            _verify_registry_snapshot(executor, packet)
             execution = executor.replay(snapshot, accepted)
             if not isinstance(execution, ReplayExecution):
                 raise RuntimeValidationError("Executor replay result must be typed.")
+            _verify_registry_snapshot(executor, packet)
+        except RuntimeValidationError:
+            raise
         except Exception:
             execution = ReplayExecution(
                 after=snapshot,
@@ -1427,9 +1541,7 @@ def _run_replay(
             state_delta=state_delta,
             replay_model_id=str(executor.replay_model_id),
             repair_batch_id=execution.repair_batch_id,
-            executor_registry_hash=canonical_operation_registry_hash(
-                executor.operation_registry
-            ),
+            executor_registry_hash=packet.operation_registry_hash,
             authorized_operations={item.operation_id: item.content_hash for item in accepted},
             valid=execution.valid,
             reason=execution.reason,
@@ -1598,6 +1710,16 @@ def assess_and_replay(
         raise TypeError("assess_and_replay requires RuntimeBudget.")
     if not isinstance(cache, InMemoryAssessmentCache):
         raise TypeError("assess_and_replay requires InMemoryAssessmentCache.")
+    capabilities = getattr(provider, "capabilities", None)
+    if (
+        not isinstance(capabilities, ProviderCapabilities)
+        or not capabilities.supports_analytical_runtime()
+        or not callable(getattr(provider, "begin_assessment", None))
+    ):
+        raise RuntimeValidationError(
+            "Analytical providers require hard transport cancellation, deadline enforcement, "
+            "and terminal acknowledgement."
+        )
     if not isinstance(provider.model_id, str) or not provider.model_id:
         raise RuntimeValidationError("Provider requires an exact model ID.")
     if not re.search(r"\d{4}-\d{2}-\d{2}$", provider.model_id):
@@ -1618,7 +1740,7 @@ def assess_and_replay(
     )]
 
     if v0.assessment.status == "ok":
-        replay = _run_replay(snapshot, v0.assessment.operations, executor)
+        replay = _run_replay(snapshot, v0.assessment.operations, executor, v0.packet)
         if replay.valid and replay.accepted_ops and replay.meaningful_change:
             try:
                 v1 = _call_assessment(

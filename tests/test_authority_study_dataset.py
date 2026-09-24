@@ -147,6 +147,8 @@ def _process_like_frozen(states_config: dict[str, Any]) -> Any:
                 metric_id="pause",
                 metric_instance_id=f"pause:{task_id}",
                 subject_id=subject_id,
+                session_id=f"{subject_id}:{task_id}",
+                case_id=subject_id,
                 state_id="S01",
                 task_id=task_id,
                 value=value,

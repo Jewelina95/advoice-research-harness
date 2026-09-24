@@ -59,6 +59,27 @@ def test_structured_task_audio_preserves_non_picture_multitask_family() -> None:
     assert decision.observation_route.family == "structured_cognitive_multitask"
 
 
+@pytest.mark.parametrize(
+    ("channel", "expected_family"),
+    [
+        ("neuropsychological_multitask", "structured_cognitive_multitask"),
+        ("spontaneous_multilingual_audio", "spontaneous_speech"),
+    ],
+)
+def test_dataset_route_aliases_preserve_measurement_family(
+    channel: str, expected_family: str
+) -> None:
+    decision = route_case({
+        "channel": channel,
+        "task_type": "dataset_specific_task",
+        "language": "en",
+        "target": "diagnosis",
+    })
+
+    assert decision.observation_route.id == channel
+    assert decision.observation_route.family == expected_family
+
+
 def test_progression_requires_paired_visits_and_interval() -> None:
     with pytest.raises(RouteValidationError, match="paired visits"):
         route_case({"channel": "picture_description", "target": "progression", "visit_ids": ["v1"]})

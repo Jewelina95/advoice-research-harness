@@ -19,6 +19,43 @@ OPENAI_RETRY_DELAYS_SECONDS = (0, 20, 60)
 OPENAI_MAX_OUTPUT_TOKENS = 4096
 
 
+def _provider_schema(value: Any) -> Any:
+    """Remove JSON Schema keywords rejected by strict structured-output APIs."""
+    if isinstance(value, dict):
+        unsupported = {"$schema", "$id", "uniqueItems"}
+        return {
+            key: _provider_schema(item)
+            for key, item in value.items()
+            if key not in unsupported
+        }
+    if isinstance(value, list):
+        return [_provider_schema(item) for item in value]
+    return value
+
+
+def _codex_event_error(event: Any) -> str | None:
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            return str(item.get("message") or "") or None
+    if event.get("type") in {"error", "turn.failed"}:
+        error = event.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or "") or None
+        return str(event.get("message") or "") or None
+    return None
+
+
+def _diagnostic_hash(value: Any) -> str:
+    return hashlib.sha256(str(value).encode("utf-8", errors="replace")).hexdigest()
+
+
+def _provider_runtime_error(category: str) -> RuntimeError:
+    return RuntimeError(f"Agent provider request failed [{category}].")
+
+
 def _usage_counts(value: Any) -> dict[str, Any] | None:
     if hasattr(value, "model_dump"):
         value = value.model_dump()
@@ -117,6 +154,11 @@ def run_codex_batch(
         raise RuntimeError(
             "Codex CLI was not found on PATH. Install it or expose the codex executable before running agent stages."
         )
+    provider_schema_path = schema_path.with_name(f"{schema_path.stem}.codex.json")
+    json_dump(
+        _provider_schema(json.loads(schema_path.read_text(encoding="utf-8"))),
+        provider_schema_path,
+    )
     command = [
         codex_binary,
         "exec",
@@ -125,12 +167,18 @@ def run_codex_batch(
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.skill_search=false",
+        "-c",
+        "features.apps=false",
         "-s",
         "read-only",
         "-m",
         model,
         "--output-schema",
-        str(schema_path),
+        str(provider_schema_path),
         "-o",
         str(output_path),
         "-",
@@ -140,17 +188,27 @@ def run_codex_batch(
                 "prompt_chars": len(prompt), "schema_bytes": schema_path.stat().st_size,
                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
     _call_event(output_path, event="request_started", **metadata)
+    environment = os.environ.copy()
+    isolated_home = environment.get("ADVOICE_CODEX_HOME")
+    if isolated_home:
+        environment["CODEX_HOME"] = isolated_home
+        # Codex also discovers user-level skills and plugins through HOME.
+        # Keep clinical inference stateless and avoid unrelated context injection.
+        environment["HOME"] = isolated_home
     try:
         result = subprocess.run(
             command, input=prompt, text=True, cwd=root,
-            capture_output=True, timeout=1200, check=False,
+            capture_output=True, timeout=1200, check=False, env=environment,
         )
     except Exception as error:
+        category = "codex_transport_failed"
         _call_event(output_path, event="request_failed", **metadata,
                     elapsed_seconds=time.monotonic() - started,
-                    error_type=type(error).__name__, usage=None)
-        raise
+                    error_type=type(error).__name__, error_category=category,
+                    error_sha256=_diagnostic_hash(error), usage=None)
+        raise _provider_runtime_error(category) from None
     usages = []
+    provider_errors = []
     for line in result.stdout.splitlines():
         try:
             event = json.loads(line)
@@ -160,12 +218,22 @@ def run_codex_batch(
             counts = _usage_counts(event.get("usage"))
             if counts:
                 usages.append(counts)
+        provider_error = _codex_event_error(event)
+        if provider_error:
+            provider_errors.append(provider_error)
+    failure_fields: dict[str, Any] = {}
+    if result.returncode != 0:
+        diagnostic = " | ".join(provider_errors) or result.stderr
+        failure_fields = {
+            "error_category": "codex_process_failed",
+            "error_sha256": _diagnostic_hash(diagnostic),
+        }
     _call_event(output_path, event="request_finished", **metadata,
                 elapsed_seconds=time.monotonic() - started,
                 returncode=result.returncode, turn_usage=usages,
-                usage_available=bool(usages))
+                usage_available=bool(usages), **failure_fields)
     if result.returncode != 0:
-        raise RuntimeError(f"Codex agent failed: {result.stderr[-4000:]}")
+        raise _provider_runtime_error("codex_process_failed")
     return json.loads(output_path.read_text(encoding="utf-8"))
 
 
@@ -181,21 +249,7 @@ def run_openai_batch(
         raise RuntimeError("OPENAI_API_KEY is required for the openai_api provider.")
     from openai import OpenAI
 
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-
-    def api_schema(value: Any) -> Any:
-        if isinstance(value, dict):
-            unsupported = {"$schema", "$id", "uniqueItems"}
-            return {
-                key: api_schema(item)
-                for key, item in value.items()
-                if key not in unsupported
-            }
-        if isinstance(value, list):
-            return [api_schema(item) for item in value]
-        return value
-
-    schema = api_schema(schema)
+    schema = _provider_schema(json.loads(schema_path.read_text(encoding="utf-8")))
     # Retry only here: SDK retries multiplied the five outer attempts by three.
     client = OpenAI(max_retries=0)
     response = None
@@ -232,9 +286,12 @@ def run_openai_batch(
         except Exception as error:
             status_code = getattr(error, "status_code", None)
             error_name = type(error).__name__
+            category = "openai_request_failed"
             _call_event(output_path, event="request_failed", attempt=attempt, **metadata,
                         elapsed_seconds=time.monotonic() - started,
-                        error_type=error_name, status_code=status_code, usage=None)
+                        error_type=error_name, status_code=status_code,
+                        error_category=category,
+                        error_sha256=_diagnostic_hash(error), usage=None)
             transient_transport = error_name in {
                 "APIConnectionError", "APITimeoutError", "TimeoutError",
             }
@@ -242,13 +299,21 @@ def run_openai_batch(
                 isinstance(status_code, int) and 500 <= status_code < 600
             )
             if not (transient_transport or transient_status) or attempt == len(retry_delays):
-                raise
+                raise _provider_runtime_error(category) from None
     if response is None:
         raise RuntimeError("OpenAI agent request exhausted its rate-limit retries.")
     if response.status != "completed" or not response.output_text:
-        raise RuntimeError(
-            f"OpenAI agent failed with status={response.status}: {response.error}"
+        category = "openai_response_failed"
+        _call_event(
+            output_path,
+            event="response_rejected",
+            **metadata,
+            status=str(response.status),
+            error_category=category,
+            error_sha256=_diagnostic_hash(getattr(response, "error", None)),
+            usage=None,
         )
+        raise _provider_runtime_error(category)
     raw_path = output_path.with_name(f"{output_path.name}.raw.txt")
     raw_path.write_text(response.output_text, encoding="utf-8")
     payload = json.loads(response.output_text)

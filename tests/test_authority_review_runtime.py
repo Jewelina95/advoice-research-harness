@@ -16,6 +16,7 @@ from advoice.authority_review_runtime import (
     REVIEW_MODE_LEGACY_TWO_PASS,
     REVIEW_MODE_SINGLE_BLIND,
     REVIEW_PROVIDER_ERROR,
+    SCHEMA_VERSION,
     agent_evidence_strength,
     agent_staging_evidence_strength,
     build_blind_payload,
@@ -24,11 +25,43 @@ from advoice.authority_review_runtime import (
 )
 from advoice.conditional_authority import PreparedAuthorityCase
 from advoice.decision_lock import canonical_json, hash_artifact
-from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2
+from advoice.evidence import (
+    EvidencePermissions,
+    EvidenceProvenance,
+    MetricEvidenceV2,
+    ReliabilityComponents,
+)
 from advoice.routing import ObservationRoute, RouteDecision, TargetRoute
 
 
 LABELS = ("HC", "AD")
+STRICT_POLICY = "strict_independent_v1"
+SHARED_AWARE_POLICY = "shared_aware_correlated_fusion_v1"
+
+
+def _family_identity_hash(family_ids: dict[str, str]) -> str:
+    return hash_artifact({
+        "schema_version": "advoice.evidence_family_identity.v1",
+        "evidence_family_ids": family_ids,
+    })
+
+
+def _bind_evidence_families(
+    prepared: PreparedAuthorityCase,
+    family_ids: dict[str, str],
+) -> PreparedAuthorityCase:
+    packet_artifact = {
+        **prepared.pre_packet_artifact,
+        "evidence_family_identity_hash": _family_identity_hash(family_ids),
+    }
+    packet_hash = hash_artifact(packet_artifact)
+    return replace(
+        prepared,
+        evidence_family_ids=family_ids,
+        pre_packet_artifact=packet_artifact,
+        reviewed_packet_hash=packet_hash,
+        advisor_packet_hash=packet_hash,
+    )
 
 
 def _prepared() -> PreparedAuthorityCase:
@@ -62,9 +95,11 @@ def _prepared() -> PreparedAuthorityCase:
     evidence_artifact = {"evidence": ["frozen"]}
     state_artifact = {"evidence_hash": "e" * 64, "state_cards": ["frozen"]}
     state_hash = hash_artifact(state_artifact)
+    family_ids = {evidence.evidence_id: "metric:pause_rate"}
     packet_artifact = {
         "state_graph_hash": state_hash,
         "evidence_snapshot_hash": hash_artifact(evidence_artifact),
+        "evidence_family_identity_hash": _family_identity_hash(family_ids),
         "packet": {"frozen": True},
     }
     packet_hash = hash_artifact(packet_artifact)
@@ -96,7 +131,26 @@ def _prepared() -> PreparedAuthorityCase:
         reviewed_state_graph_hash=state_hash,
         reviewed_packet_hash=packet_hash,
         advisor_packet_hash=packet_hash,
+        evidence_family_ids=family_ids,
     )
+
+
+def _with_incremental_authority(
+    prepared: PreparedAuthorityCase,
+    *,
+    family_id: str = "metric:pause_rate",
+) -> PreparedAuthorityCase:
+    evidence = replace(
+        prepared.evidence[0],
+        consumed_by_supervised=False,
+        incremental_for_agent=True,
+    )
+    return _bind_evidence_families(replace(
+        prepared,
+        evidence=(evidence,),
+        module_a_evidence=(),
+        incremental_evidence=(evidence,),
+    ), {evidence.evidence_id: family_id})
 
 
 def _skill(tmp_path: Path) -> Path:
@@ -155,6 +209,28 @@ def _advisor(prepared: PreparedAuthorityCase) -> dict[str, object]:
 
 def _payload_from_prompt(prompt: str) -> dict[str, object]:
     return json.loads(prompt.split("\n", 1)[1])
+
+
+def test_exact_duplicate_likelihood_citation_is_idempotently_normalized() -> None:
+    prepared = _prepared()
+    response = _blind(prepared)
+    response["likelihood_evidence"].append(deepcopy(response["likelihood_evidence"][0]))
+
+    parsed = _parse_blind(response, prepared)
+
+    assert len(parsed.likelihood_evidence) == 2
+
+
+def test_authority_runtime_uses_v5_correlated_fusion_schema() -> None:
+    prepared = _prepared()
+    assessment = _parse_blind(_blind(prepared), prepared)
+    payload = build_blind_payload(
+        prepared, policy_documents={"skill.md": "typed evidence"},
+    )
+
+    assert SCHEMA_VERSION == "advoice.authority_review_runtime.v5-correlated-fusion"
+    assert assessment.schema_version == SCHEMA_VERSION
+    assert payload["schema_version"] == SCHEMA_VERSION
 
 
 def _keys(value: object) -> set[str]:
@@ -236,7 +312,20 @@ def test_blind_review_rejects_retain_unknown_state_and_cross_state_citations() -
     second_evidence = replace(
         prepared.evidence[0], evidence_id="metric:other", state_id="S02"
     )
-    cross_state = replace(prepared, evidence=prepared.evidence + (second_evidence,))
+    family_ids = {
+        **prepared.evidence_family_ids,
+        second_evidence.evidence_id: prepared.evidence_family_ids[
+            prepared.evidence[0].evidence_id
+        ],
+    }
+    cross_state = _bind_evidence_families(
+        replace(
+            prepared,
+            evidence=prepared.evidence + (second_evidence,),
+            evidence_family_ids=family_ids,
+        ),
+        family_ids,
+    )
     response = _blind(cross_state)
     response["state_actions"][0]["cited_metric_evidence_ids"] = ["metric:other"]
     with pytest.raises(AuthorityReviewValidationError, match="outside the reviewed state"):
@@ -291,7 +380,7 @@ def test_agent_likelihood_requires_directional_class_citations() -> None:
 
 
 def test_agent_evidence_strength_is_citation_bound_not_uncertainty_bound() -> None:
-    prepared = _prepared()
+    prepared = _with_incremental_authority(_prepared())
     response = _blind(prepared)
     response["ordinal_scores"] = {"HC": 0, "AD": 4}
     assessment = _parse_blind(response, prepared)
@@ -299,12 +388,52 @@ def test_agent_evidence_strength_is_citation_bound_not_uncertainty_bound() -> No
     assert agent_evidence_strength(prepared, assessment) == pytest.approx(0.5)
 
 
-def test_agent_evidence_strength_does_not_double_count_one_metric_across_states() -> None:
+def test_agent_evidence_strength_has_explicit_strict_and_shared_aware_policies() -> None:
     prepared = _prepared()
+    assessment = _parse_blind(_blind(prepared), prepared)
+
+    assert agent_evidence_strength(
+        prepared, assessment, policy=STRICT_POLICY,
+    ) == 0.0
+    assert agent_evidence_strength(
+        prepared, assessment, policy=SHARED_AWARE_POLICY,
+    ) == pytest.approx(0.5)
+    assert agent_evidence_strength(
+        prepared,
+        replace(assessment, likelihood_evidence=()),
+        policy=SHARED_AWARE_POLICY,
+    ) == 0.0
+
+
+def test_agent_evidence_strength_defaults_legacy_assessment_to_strict_policy() -> None:
+    prepared = _with_incremental_authority(_prepared())
+    assessment = _parse_blind(_blind(prepared), prepared)
+    legacy_assessment = SimpleNamespace(
+        likelihood_evidence=assessment.likelihood_evidence,
+    )
+
+    assert agent_evidence_strength(prepared, legacy_assessment) == pytest.approx(0.5)
+    assert agent_evidence_strength(
+        SimpleNamespace(),
+        SimpleNamespace(ordinal_scores={"HC": 1, "AD": 1}),
+    ) == 0.0
+
+
+def test_agent_evidence_strength_does_not_double_count_one_metric_across_states() -> None:
+    prepared = _with_incremental_authority(_prepared())
     duplicate_family = replace(
         prepared.evidence[0], evidence_id="metric:pause:s02", state_id="S02"
     )
-    prepared = replace(prepared, evidence=prepared.evidence + (duplicate_family,))
+    family_ids = {
+        "metric:pause": "shared:pause_burden",
+        "metric:pause:s02": "shared:pause_burden",
+    }
+    prepared = _bind_evidence_families(replace(
+        prepared,
+        evidence=prepared.evidence + (duplicate_family,),
+        incremental_evidence=prepared.incremental_evidence + (duplicate_family,),
+        evidence_family_ids=family_ids,
+    ), family_ids)
     assessment = _parse_blind(_blind(_prepared()), _prepared())
     assessment = replace(
         assessment,
@@ -321,8 +450,69 @@ def test_agent_evidence_strength_does_not_double_count_one_metric_across_states(
     assert agent_evidence_strength(prepared, assessment) == pytest.approx(0.5)
 
 
+def test_agent_evidence_strength_aggregates_reliability_once_per_family() -> None:
+    prepared = _with_incremental_authority(_prepared())
+    duplicate = replace(
+        prepared.evidence[0], evidence_id="metric:pause:s02", state_id="S02"
+    )
+    distinct = replace(
+        prepared.evidence[0],
+        evidence_id="metric:semantic:s03",
+        metric_id="semantic_rate",
+        state_id="S03",
+        reliability_components=ReliabilityComponents(measurement_stability=0.5),
+    )
+    family_ids = {
+        "metric:pause": "correlation:pause_burden",
+        "metric:semantic:s03": "correlation:semantic_burden",
+    }
+    without_duplicate = _bind_evidence_families(replace(
+        prepared,
+        evidence=(prepared.evidence[0], distinct),
+        incremental_evidence=(prepared.evidence[0], distinct),
+        evidence_family_ids=family_ids,
+    ), family_ids)
+    duplicate_family_ids = {
+        **without_duplicate.evidence_family_ids,
+        "metric:pause:s02": "correlation:pause_burden",
+    }
+    with_duplicate = _bind_evidence_families(replace(
+        without_duplicate,
+        evidence=without_duplicate.evidence + (duplicate,),
+        incremental_evidence=without_duplicate.incremental_evidence + (duplicate,),
+        evidence_family_ids=duplicate_family_ids,
+    ), duplicate_family_ids)
+    assessment = _parse_blind(_blind(_prepared()), _prepared())
+    base_citations = (
+        LikelihoodEvidenceCitation(
+            class_label="AD", state_id="S01", relation="support",
+            cited_metric_evidence_ids=("metric:pause",),
+        ),
+        LikelihoodEvidenceCitation(
+            class_label="HC", state_id="S03", relation="counter",
+            cited_metric_evidence_ids=("metric:semantic:s03",),
+        ),
+    )
+    base_assessment = replace(assessment, likelihood_evidence=base_citations)
+    duplicate_assessment = replace(
+        assessment,
+        likelihood_evidence=base_citations + (
+            LikelihoodEvidenceCitation(
+                class_label="AD", state_id="S02", relation="support",
+                cited_metric_evidence_ids=("metric:pause:s02",),
+            ),
+        ),
+    )
+
+    baseline = agent_evidence_strength(without_duplicate, base_assessment)
+    duplicated = agent_evidence_strength(with_duplicate, duplicate_assessment)
+
+    assert baseline == pytest.approx(0.75)
+    assert duplicated == pytest.approx(baseline)
+
+
 def test_mci_ad_stage_preference_requires_direct_two_sided_citations() -> None:
-    prepared = _prepared()
+    prepared = _with_incremental_authority(_prepared())
     target = replace(prepared.route.target_route, labels=("HC", "MCI", "AD"))
     prepared = replace(prepared, route=replace(prepared.route, target_route=target))
     response = _blind(prepared)
@@ -342,12 +532,32 @@ def test_mci_ad_stage_preference_requires_direct_two_sided_citations() -> None:
     assert agent_staging_evidence_strength(prepared, assessment) == pytest.approx(0.5)
 
 
+def test_agent_evidence_strength_excludes_module_a_evidence() -> None:
+    prepared = _prepared()
+    assessment = _parse_blind(_blind(prepared), prepared)
+
+    assert agent_evidence_strength(prepared, assessment) == 0.0
+
+
 def test_reconciliation_rejects_cross_state_amendment_citations() -> None:
     prepared = _prepared()
     second_evidence = replace(
         prepared.evidence[0], evidence_id="metric:other", state_id="S02"
     )
-    prepared = replace(prepared, evidence=prepared.evidence + (second_evidence,))
+    family_ids = {
+        **prepared.evidence_family_ids,
+        second_evidence.evidence_id: prepared.evidence_family_ids[
+            prepared.evidence[0].evidence_id
+        ],
+    }
+    prepared = _bind_evidence_families(
+        replace(
+            prepared,
+            evidence=prepared.evidence + (second_evidence,),
+            evidence_family_ids=family_ids,
+        ),
+        family_ids,
+    )
     blind = _parse_blind(_blind(prepared), prepared)
     response = _advisor(prepared)
     response["amendments"][0]["cited_metric_evidence_ids"] = ["metric:other"]
@@ -397,15 +607,25 @@ def test_runtime_schema_binds_each_action_to_same_state_evidence(
     second_evidence = replace(
         prepared.evidence[0], evidence_id="metric:other", state_id="S02"
     )
-    prepared = replace(
-        prepared,
-        evidence=prepared.evidence + (second_evidence,),
-        pre_state_cards=prepared.pre_state_cards + ({
-            **prepared.pre_state_cards[0],
-            "state_card_id": "S02:cookie:0",
-            "state_id": "S02",
-            "supporting_evidence_ids": ["metric:other"],
-        },),
+    family_ids = {
+        **prepared.evidence_family_ids,
+        second_evidence.evidence_id: prepared.evidence_family_ids[
+            prepared.evidence[0].evidence_id
+        ],
+    }
+    prepared = _bind_evidence_families(
+        replace(
+            prepared,
+            evidence=prepared.evidence + (second_evidence,),
+            evidence_family_ids=family_ids,
+            pre_state_cards=prepared.pre_state_cards + ({
+                **prepared.pre_state_cards[0],
+                "state_card_id": "S02:cookie:0",
+                "state_id": "S02",
+                "supporting_evidence_ids": ["metric:other"],
+            },),
+        ),
+        family_ids,
     )
     schemas: list[dict[str, object]] = []
 
@@ -481,6 +701,20 @@ def test_payload_strips_leakage_and_chat_residue_without_mutating_input(tmp_path
     assert "described the cookie" in transcript_payload["text"]
     assert "/private/raw" not in rendered
     assert not {"truth", "split", "subject_id", "source_path", "raw_test_answer", "diagnosis"} & _keys(payload)
+    assert payload["evidence_family_identity_hash"] == prepared.evidence_family_identity_hash
+
+
+def test_replacing_family_mapping_without_rehashing_is_rejected(tmp_path: Path) -> None:
+    prepared = _prepared()
+    substituted = replace(
+        prepared,
+        evidence_family_ids={"metric:pause": "correlation:substituted"},
+    )
+
+    with pytest.raises(AuthorityReviewValidationError, match="evidence-family identity"):
+        AuthorityReviewRuntime(
+            root=tmp_path, provider="disabled", skill_path=_skill(tmp_path),
+        ).review(substituted)
 
 
 def test_provider_leakage_and_stale_hashes_are_rejected(monkeypatch, tmp_path: Path) -> None:
@@ -577,3 +811,36 @@ def test_request_hashes_change_when_provider_contract_or_policy_changes(monkeypa
     assert len({result.blind_request_hash for result in results}) == len(results)
     assert len({result.reconciliation_request_hash for result in results}) == len(results)
     assert len(set(output_paths)) == len(output_paths)
+
+
+def test_request_identity_binds_versioned_evidence_strength_policy(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    payloads: list[dict[str, object]] = []
+
+    def provider(root, prompt, schema_path, output_path, model, provider_name):
+        payloads.append(_payload_from_prompt(prompt))
+        return _blind(prepared)
+
+    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    skill = _skill(tmp_path)
+    strict = AuthorityReviewRuntime(
+        root=tmp_path,
+        provider="openai_api",
+        model="test",
+        skill_path=skill,
+        evidence_strength_policy=STRICT_POLICY,
+    ).review(prepared)
+    shared = AuthorityReviewRuntime(
+        root=tmp_path,
+        provider="openai_api",
+        model="test",
+        skill_path=skill,
+        evidence_strength_policy=SHARED_AWARE_POLICY,
+    ).review(prepared)
+
+    assert strict.blind_request_hash != shared.blind_request_hash
+    assert [
+        payload["review_contract"]["evidence_strength_policy"] for payload in payloads
+    ] == [STRICT_POLICY, SHARED_AWARE_POLICY]

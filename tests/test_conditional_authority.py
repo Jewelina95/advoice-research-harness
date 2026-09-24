@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import pandas as pd
 
+from advoice.authority_review_runtime import (
+    EVIDENCE_STRENGTH_POLICY_SHARED_AWARE,
+    LikelihoodEvidenceCitation,
+    agent_evidence_strength,
+)
 from advoice.conditional_authority import (
     AgentAuthorityDecision,
     AuthorityValidation,
     ConditionalAuthorityError,
     ConditionalAuthorityExecutor,
+    PreparedAuthorityCase,
     StaleAuthorityError,
+    evidence_family_identity_hash,
+    validate_prepared_evidence_family_identity,
 )
 from advoice.decision_lock import hash_artifact
 from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2, ReferenceMetadata
@@ -108,6 +117,7 @@ def _evidence(*, incremental: bool = False) -> tuple[MetricEvidenceV2, ...]:
     reference = ReferenceMetadata(median=0.0, scale=1.0, sample_size=40)
     common = {
         "subject_id": "case-1",
+        "case_id": "case-1",
         "session_id": "session-1",
         "state_id": "S01",
         "task_id": "cookie",
@@ -136,6 +146,25 @@ def _evidence(*, incremental: bool = False) -> tuple[MetricEvidenceV2, ...]:
             incremental_for_agent=True, **common,
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"case_id": "case-2"}, "case_id"),
+        ({"session_id": ""}, "session_id"),
+        ({"task_id": ""}, "task_id"),
+    ],
+)
+def test_prepare_case_rejects_evidence_outside_the_case_scope(
+    changes: dict[str, object], message: str,
+) -> None:
+    executor = _executor()
+    evidence = _evidence()
+    invalid = (replace(evidence[0], **changes), evidence[1])
+
+    with pytest.raises(ConditionalAuthorityError, match=message):
+        executor.prepare_case(case_metadata=CASE, evidence=invalid)
 
 
 def _require_bound_state_cards(executor: ConditionalAuthorityExecutor, evidence: tuple[MetricEvidenceV2, ...]) -> None:
@@ -176,7 +205,15 @@ def _prepared_decision(
     pre_cards = executor._state_cards(case_id=case_id, replay=pre, revision_hash=pre.audit.revision_hash)
     pre_state_hash = hash_artifact(executor._state_artifact(case_id, pre, pre_cards))
     pre_packet_hash = hash_artifact(
-        executor._packet_artifact(case_id, pre.packet, evidence_lock_hash=pre_evidence_hash, state_lock_hash=pre_state_hash)
+        executor._packet_artifact(
+            case_id,
+            pre.packet,
+            evidence_lock_hash=pre_evidence_hash,
+            state_lock_hash=pre_state_hash,
+            evidence_family_identity_hash=evidence_family_identity_hash(
+                executor._evidence_family_ids(evidence, executor.correlation_config)
+            ),
+        )
     )
     proposed_revision = (
         revision
@@ -320,6 +357,95 @@ def _multi_evidence() -> tuple[MetricEvidenceV2, ...]:
             evidence_id="metric:semantic-a", metric_id="semantic_a", value=4.0, state_id="S02", **common
         ),
     )
+
+
+def test_prepare_case_builds_state_independent_evidence_family_identity() -> None:
+    states = {
+        "states": [
+            {"id": "S01", "metrics": ["shared_pause"], "weights": [1.0]},
+            {"id": "S02", "metrics": ["shared_pause"], "weights": [1.0]},
+        ]
+    }
+    common = {
+        "subject_id": "case-1",
+        "case_id": "case-1",
+        "session_id": "session-1",
+        "task_id": "cookie",
+        "metric_id": "shared_pause",
+        "value": 1.0,
+        "direction": 1,
+        "permissions": EvidencePermissions(inference=True, report=True),
+        "consumed_by_supervised": True,
+    }
+    evidence = (
+        MetricEvidenceV2(evidence_id="metric:shared:s01", state_id="S01", **common),
+        MetricEvidenceV2(evidence_id="metric:shared:s02", state_id="S02", **common),
+    )
+
+    def build(correlation_config=None, *, evidence_items=evidence):
+        return ConditionalAuthorityExecutor(
+            states_config=states,
+            module_a=_multi_expert(),
+            module_b=_module_b(),
+            module_a_state_feature_whitelist=("state_S01", "state_S02"),
+            correlation_config=correlation_config,
+        ).prepare_case(case_metadata=MULTI_CASE, evidence=evidence_items)
+
+    fallback = build()
+    assert set(fallback.evidence_family_ids.values()) == {"metric:shared_pause"}
+    assert (
+        fallback.pre_packet_artifact["evidence_family_identity_hash"]
+        == fallback.evidence_family_identity_hash
+    )
+    assert hash_artifact(fallback.pre_packet_artifact) == fallback.reviewed_packet_hash
+    with pytest.raises(TypeError):
+        fallback.evidence_family_ids["metric:shared:s01"] = "replacement"
+    with pytest.raises(ConditionalAuthorityError, match="exactly match all prepared evidence IDs"):
+        replace(
+            fallback,
+            evidence_family_ids={"metric:shared:s01": "metric:shared_pause"},
+        )
+
+    same_family_config = {
+        "states": {
+            "S01": {"families": [{"id": "shared_burden", "metrics": ["shared_pause"]}]},
+            "S02": {"families": [{"id": "shared_burden", "metrics": ["shared_pause"]}]},
+        }
+    }
+    same_family = build(same_family_config)
+    assessment = SimpleNamespace(
+        evidence_strength_policy=EVIDENCE_STRENGTH_POLICY_SHARED_AWARE,
+        likelihood_evidence=(
+            LikelihoodEvidenceCitation(
+                class_label="AD", state_id="S01", relation="support",
+                cited_metric_evidence_ids=("metric:shared:s01",),
+            ),
+            LikelihoodEvidenceCitation(
+                class_label="HC", state_id="S02", relation="counter",
+                cited_metric_evidence_ids=("metric:shared:s02",),
+            ),
+        ),
+    )
+    assert agent_evidence_strength(same_family, assessment) == pytest.approx(0.5)
+
+    conflicting_config = {
+        "states": {
+            "S01": {"families": [{"id": "shared_burden", "metrics": ["shared_pause"]}]},
+            "S02": {"families": [{"id": "distinct_timing", "metrics": ["shared_pause"]}]},
+        }
+    }
+    with pytest.raises(ConditionalAuthorityError, match="conflicting correlation families"):
+        build(conflicting_config)
+
+    distinct_instances = (
+        replace(evidence[0], metric_instance_id="shared_pause:s01"),
+        replace(evidence[1], metric_instance_id="shared_pause:s02"),
+    )
+    configured = build(conflicting_config, evidence_items=distinct_instances)
+    assert configured.evidence_family_ids == {
+        "metric:shared:s01": "correlation:shared_burden",
+        "metric:shared:s02": "correlation:distinct_timing",
+    }
 
 
 def _revision_transaction(evidence: tuple[MetricEvidenceV2, ...]) -> EvidenceRevisionTransaction:
@@ -638,6 +764,86 @@ def test_prepare_case_freezes_every_hash_required_by_agent_decision() -> None:
     assert len(prepared.reviewed_evidence_hash) == 64
     assert len(prepared.reviewed_state_graph_hash) == 64
     assert prepared.reviewed_packet_hash == prepared.advisor_packet_hash
+
+
+def test_legacy_prepared_case_derives_and_binds_complete_family_identity() -> None:
+    current = _executor().prepare_case(case_metadata=CASE, evidence=_evidence())
+    legacy_packet_artifact = dict(current.pre_packet_artifact)
+    legacy_packet_artifact.pop("evidence_family_identity_hash")
+    legacy_packet_hash = hash_artifact(legacy_packet_artifact)
+
+    legacy = PreparedAuthorityCase(
+        case_id=current.case_id,
+        route=current.route,
+        case_metadata=current.case_metadata,
+        case_context=current.case_context,
+        evidence=current.evidence,
+        module_a_evidence=current.module_a_evidence,
+        incremental_evidence=current.incremental_evidence,
+        pre_replay=current.pre_replay,
+        pre_state_cards=current.pre_state_cards,
+        pre_evidence_artifact=current.pre_evidence_artifact,
+        pre_state_artifact=current.pre_state_artifact,
+        pre_packet_artifact=legacy_packet_artifact,
+        reviewed_evidence_hash=current.reviewed_evidence_hash,
+        reviewed_state_graph_hash=current.reviewed_state_graph_hash,
+        reviewed_packet_hash=legacy_packet_hash,
+        advisor_packet_hash=legacy_packet_hash,
+    )
+
+    assert legacy.evidence_family_ids == {
+        "metric:pause-a": "metric:pause_a",
+        "metric:pause-b": "metric:pause_b",
+    }
+    assert (
+        legacy.pre_packet_artifact["evidence_family_identity_hash"]
+        == legacy.evidence_family_identity_hash
+    )
+    assert hash_artifact(legacy.pre_packet_artifact) == legacy.reviewed_packet_hash
+    assert legacy.advisor_packet_hash == legacy.reviewed_packet_hash
+    assert validate_prepared_evidence_family_identity(legacy) == (
+        legacy.evidence_family_identity_hash
+    )
+    with pytest.raises(TypeError):
+        legacy.evidence_family_ids["metric:pause-a"] = "replacement"
+
+    with pytest.raises(ConditionalAuthorityError, match="exactly match all prepared evidence IDs"):
+        replace(
+            legacy,
+            evidence_family_ids={"metric:pause-a": "metric:pause_a"},
+        )
+
+    stale = replace(
+        legacy,
+        pre_packet_artifact={
+            **legacy.pre_packet_artifact,
+            "evidence_family_identity_hash": "0" * 64,
+        },
+    )
+    with pytest.raises(StaleAuthorityError, match="evidence-family identity"):
+        validate_prepared_evidence_family_identity(stale)
+
+
+def test_finalize_rejects_tampered_family_mapping_under_unchanged_packet_hash() -> None:
+    executor = _executor()
+    evidence = _evidence()
+    prepared = executor.prepare_case(case_metadata=CASE, evidence=evidence)
+    decision = _prepared_decision(executor, evidence)
+    tampered = replace(
+        prepared,
+        evidence_family_ids={
+            evidence_id: f"tampered:{family_id}"
+            for evidence_id, family_id in prepared.evidence_family_ids.items()
+        },
+    )
+
+    with pytest.raises(StaleAuthorityError, match="evidence-family identity"):
+        executor.finalize_case(
+            prepared=tampered,
+            agent_decision=decision,
+            validator=_validation(decision),
+            segments=_segments(),
+        )
 
 
 def test_rejected_revision_cannot_replay_or_change_module_a() -> None:

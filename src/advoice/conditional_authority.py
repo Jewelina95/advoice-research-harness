@@ -12,7 +12,7 @@ A, or emit a report without a DecisionLock.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -48,6 +48,60 @@ class ConditionalAuthorityError(ValueError):
 
 class StaleAuthorityError(ConditionalAuthorityError):
     """Raised when a decision, advisor, validator, or packet is stale."""
+
+
+EVIDENCE_FAMILY_IDENTITY_VERSION = "advoice.evidence_family_identity.v1"
+
+
+def evidence_family_identity_hash(evidence_family_ids: Mapping[str, str]) -> str:
+    """Return the deterministic identity for evidence-correlation families."""
+
+    return hash_artifact({
+        "schema_version": EVIDENCE_FAMILY_IDENTITY_VERSION,
+        "evidence_family_ids": {
+            str(key): str(value)
+            for key, value in sorted(evidence_family_ids.items())
+        },
+    })
+
+
+def _measurement_identity(item: MetricEvidenceV2) -> str:
+    return str(item.metric_instance_id or item.metric_id)
+
+
+def _fallback_evidence_family_ids(
+    evidence: Sequence[MetricEvidenceV2],
+) -> dict[str, str]:
+    return {
+        item.evidence_id: f"metric:{_measurement_identity(item)}"
+        for item in sorted(evidence, key=lambda candidate: candidate.evidence_id)
+    }
+
+
+def _validate_evidence_family_assignments(
+    evidence: Sequence[MetricEvidenceV2],
+    evidence_family_ids: Mapping[str, str],
+) -> None:
+    families_by_measurement: dict[str, set[str]] = {}
+    for item in evidence:
+        measurement_id = _measurement_identity(item)
+        family_id = evidence_family_ids.get(
+            item.evidence_id, f"metric:{measurement_id}"
+        )
+        families_by_measurement.setdefault(measurement_id, set()).add(family_id)
+    conflicts = {
+        measurement_id: sorted(family_ids)
+        for measurement_id, family_ids in families_by_measurement.items()
+        if len(family_ids) > 1
+    }
+    if conflicts:
+        raise ConditionalAuthorityError(
+            "Measurement instances have conflicting correlation families across states: "
+            + ", ".join(
+                f"{measurement_id!r}={family_ids}"
+                for measurement_id, family_ids in sorted(conflicts.items())
+            )
+        )
 
 
 def _canonical_mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -385,6 +439,76 @@ class PreparedAuthorityCase:
     reviewed_state_graph_hash: str
     reviewed_packet_hash: str
     advisor_packet_hash: str
+    evidence_family_ids: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        evidence_ids = {item.evidence_id for item in self.evidence}
+        derive_legacy_family_ids = not self.evidence_family_ids and bool(self.evidence)
+        supplied_family_ids = (
+            _fallback_evidence_family_ids(self.evidence)
+            if derive_legacy_family_ids
+            else self.evidence_family_ids
+        )
+        family_ids = set(supplied_family_ids)
+        if family_ids != evidence_ids:
+            missing = sorted(evidence_ids - family_ids)
+            unknown = sorted(family_ids - evidence_ids)
+            raise ConditionalAuthorityError(
+                "Prepared evidence-family mapping keys must exactly match all prepared evidence IDs; "
+                f"missing={missing}, unknown={unknown}."
+            )
+        frozen_family_ids = MappingProxyType({
+            str(key): str(value)
+            for key, value in sorted(supplied_family_ids.items())
+        })
+        _validate_evidence_family_assignments(self.evidence, frozen_family_ids)
+        object.__setattr__(self, "evidence_family_ids", frozen_family_ids)
+        if derive_legacy_family_ids:
+            packet_artifact = {
+                **self.pre_packet_artifact,
+                "evidence_family_identity_hash": evidence_family_identity_hash(
+                    frozen_family_ids
+                ),
+            }
+            frozen_packet_artifact = _canonical_mapping(packet_artifact)
+            packet_hash = hash_artifact(frozen_packet_artifact)
+            object.__setattr__(self, "pre_packet_artifact", frozen_packet_artifact)
+            object.__setattr__(self, "reviewed_packet_hash", packet_hash)
+            object.__setattr__(self, "advisor_packet_hash", packet_hash)
+
+    @property
+    def evidence_family_identity_hash(self) -> str:
+        return evidence_family_identity_hash(self.evidence_family_ids)
+
+
+def validate_prepared_evidence_family_identity(prepared: PreparedAuthorityCase) -> str:
+    """Validate the complete family map and its reviewed-packet binding."""
+
+    evidence_ids = {item.evidence_id for item in prepared.evidence}
+    family_ids = set(prepared.evidence_family_ids)
+    if family_ids != evidence_ids:
+        missing = sorted(evidence_ids - family_ids)
+        unknown = sorted(family_ids - evidence_ids)
+        raise ConditionalAuthorityError(
+            "Prepared evidence-family mapping keys must exactly match all prepared evidence IDs; "
+            f"missing={missing}, unknown={unknown}."
+        )
+    _validate_evidence_family_assignments(
+        prepared.evidence, prepared.evidence_family_ids,
+    )
+    identity_hash = prepared.evidence_family_identity_hash
+    bound_hash = str(
+        prepared.pre_packet_artifact.get("evidence_family_identity_hash", "")
+    )
+    if bound_hash != identity_hash:
+        raise StaleAuthorityError(
+            "Prepared evidence-family identity is stale or substituted."
+        )
+    if hash_artifact(prepared.pre_packet_artifact) != prepared.reviewed_packet_hash:
+        raise StaleAuthorityError(
+            "Prepared packet hash is stale after evidence-family validation."
+        )
+    return identity_hash
 
 
 class ConditionalAuthorityExecutor:
@@ -477,12 +601,14 @@ class ConditionalAuthorityExecutor:
         *,
         evidence_lock_hash: str,
         state_lock_hash: str,
+        evidence_family_identity_hash: str,
     ) -> dict[str, Any]:
         return {
             "case_id": case_id,
             "packet": packet.to_dict(),
             "evidence_snapshot_hash": evidence_lock_hash,
             "state_graph_hash": state_lock_hash,
+            "evidence_family_identity_hash": evidence_family_identity_hash,
         }
 
     @staticmethod
@@ -508,8 +634,93 @@ class ConditionalAuthorityExecutor:
             raise ConditionalAuthorityError(
                 f"Every MetricEvidenceV2 subject_id must equal case_id {case_id!r}; got {sorted(subjects)}."
             )
+        case_ids = {str(item.case_id) for item in evidence}
+        if case_ids != {case_id}:
+            raise ConditionalAuthorityError(
+                f"Every MetricEvidenceV2 case_id must equal case_id {case_id!r}; got {sorted(case_ids)}."
+            )
+        if any(not str(item.session_id).strip() for item in evidence):
+            raise ConditionalAuthorityError("Every MetricEvidenceV2 item requires a session_id.")
+        if any(item.task_id is None or not str(item.task_id).strip() for item in evidence):
+            raise ConditionalAuthorityError("Every MetricEvidenceV2 item requires a task_id.")
         if len({item.evidence_id for item in evidence}) != len(evidence):
             raise ConditionalAuthorityError("MetricEvidenceV2 evidence_id values must be unique per case.")
+
+    @staticmethod
+    def _evidence_family_ids(
+        evidence: Sequence[MetricEvidenceV2],
+        correlation_config: Mapping[str, Any] | None,
+    ) -> Mapping[str, str]:
+        configured: dict[tuple[str, str], str] = {}
+        raw_states = (correlation_config or {}).get("states", {})
+        if isinstance(raw_states, list):
+            states = {
+                str(state.get("id", "")): state
+                for state in raw_states
+                if isinstance(state, Mapping)
+            }
+        elif isinstance(raw_states, Mapping):
+            states = dict(raw_states)
+        else:
+            states = {}
+        for state_id, state in states.items():
+            if not isinstance(state, Mapping):
+                continue
+            raw_families = state.get("families", ())
+            if isinstance(raw_families, Mapping):
+                families = [
+                    dict(value, id=family_id)
+                    for family_id, value in raw_families.items()
+                    if isinstance(value, Mapping)
+                ]
+            else:
+                families = raw_families
+            for family in families:
+                if not isinstance(family, Mapping):
+                    continue
+                family_id = str(family.get("id", "family")).strip() or "family"
+                for metric_id in family.get("metrics", ()):
+                    key = (str(state_id), str(metric_id))
+                    if key in configured and configured[key] != family_id:
+                        raise ConditionalAuthorityError(
+                            f"Metric {metric_id!r} has multiple correlation families in state {state_id!r}."
+                        )
+                    configured[key] = family_id
+        configured_by_measurement: dict[str, set[str]] = {}
+        for item in evidence:
+            configured_family = configured.get((item.state_id, item.metric_id))
+            if configured_family is not None:
+                configured_by_measurement.setdefault(
+                    _measurement_identity(item), set()
+                ).add(configured_family)
+        conflicts = {
+            measurement_id: sorted(family_ids)
+            for measurement_id, family_ids in configured_by_measurement.items()
+            if len(family_ids) > 1
+        }
+        if conflicts:
+            raise ConditionalAuthorityError(
+                "Measurement instances have conflicting correlation families across states: "
+                + ", ".join(
+                    f"{measurement_id!r}={family_ids}"
+                    for measurement_id, family_ids in sorted(conflicts.items())
+                )
+            )
+        resolved = {
+            measurement_id: next(iter(family_ids))
+            for measurement_id, family_ids in configured_by_measurement.items()
+        }
+        fallback_family_ids = _fallback_evidence_family_ids(evidence)
+        family_ids = MappingProxyType({
+            item.evidence_id: (
+                f"correlation:{resolved[_measurement_identity(item)]}"
+                if _measurement_identity(item) in resolved
+                else fallback_family_ids[item.evidence_id]
+            )
+            for item in evidence
+        })
+        _validate_evidence_family_assignments(evidence, family_ids)
+        return family_ids
 
     @staticmethod
     def _state_cards(
@@ -706,11 +917,13 @@ class ConditionalAuthorityExecutor:
         )
         pre_state_artifact = self._state_artifact(case_id, pre, pre_state_cards)
         pre_state_hash = hash_artifact(pre_state_artifact)
+        family_ids = self._evidence_family_ids(frozen_evidence, self.correlation_config)
         pre_packet_artifact = self._packet_artifact(
             case_id,
             pre.packet,
             evidence_lock_hash=pre_evidence_hash,
             state_lock_hash=pre_state_hash,
+            evidence_family_identity_hash=evidence_family_identity_hash(family_ids),
         )
         pre_packet_hash = hash_artifact(pre_packet_artifact)
         return PreparedAuthorityCase(
@@ -730,6 +943,7 @@ class ConditionalAuthorityExecutor:
             reviewed_state_graph_hash=pre_state_hash,
             reviewed_packet_hash=pre_packet_hash,
             advisor_packet_hash=pre_packet_hash,
+            evidence_family_ids=family_ids,
         )
 
     def finalize_case(
@@ -745,6 +959,7 @@ class ConditionalAuthorityExecutor:
 
         if not isinstance(prepared, PreparedAuthorityCase):
             raise TypeError("finalize_case requires a PreparedAuthorityCase from prepare_case.")
+        validate_prepared_evidence_family_identity(prepared)
         return self._finalize_prepared(
             prepared=prepared,
             agent_decision=agent_decision,
@@ -867,6 +1082,7 @@ class ConditionalAuthorityExecutor:
             case_id, post.packet,
             evidence_lock_hash=post_evidence_lock_hash,
             state_lock_hash=post_state_lock_hash,
+            evidence_family_identity_hash=prepared.evidence_family_identity_hash,
         )
         post_packet_hash = hash_artifact(post_packet_artifact)
         revision_artifact = self._revision_artifact(case_id, post, accepted_revision)
@@ -982,5 +1198,6 @@ class ConditionalAuthorityExecutor:
 __all__ = [
     "AgentAuthorityDecision", "AuthorityValidation", "ConditionalAuthorityError",
     "ConditionalAuthorityExecutor", "ConditionalAuthorityResult", "PreparedAuthorityCase",
-    "StaleAuthorityError",
+    "StaleAuthorityError", "EVIDENCE_FAMILY_IDENTITY_VERSION",
+    "evidence_family_identity_hash", "validate_prepared_evidence_family_identity",
 ]

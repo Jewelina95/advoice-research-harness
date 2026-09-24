@@ -9,7 +9,13 @@ observation_routes:
     family: picture_description
   structured_multitask:
     family: structured_cognitive_multitask
+  structured_task_audio:
+    family: structured_cognitive_multitask
+  neuropsychological_multitask:
+    family: structured_cognitive_multitask
   spontaneous_multilingual:
+    family: spontaneous_speech
+  spontaneous_multilingual_audio:
     family: spontaneous_speech
   public_speech:
     family: public_speech

@@ -12,13 +12,17 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 from .agent_runtime import case_pseudonym, run_structured_batch
-from .conditional_authority import PreparedAuthorityCase
+from .conditional_authority import (
+    ConditionalAuthorityError,
+    PreparedAuthorityCase,
+    validate_prepared_evidence_family_identity,
+)
 from .condition_c import clean_model_transcript
 from .decision_lock import canonical_json, hash_artifact
 from .transcript_sanitization import sanitize_transcript_payload
 
 
-SCHEMA_VERSION = "advoice.authority_review_runtime.v4-evidence-bound-likelihood"
+SCHEMA_VERSION = "advoice.authority_review_runtime.v5-correlated-fusion"
 STATE_ACTIONS = frozenset({"retain", "downweight", "invalidate", "mark_unavailable"})
 DOWNWEIGHT_MULTIPLIERS = (0.25, 0.5, 0.75)
 REVIEW_AVAILABLE = "available"
@@ -27,6 +31,12 @@ REVIEW_PROVIDER_ERROR = "failed_closed_provider_error"
 REVIEW_MODE_SINGLE_BLIND = "single_blind"
 REVIEW_MODE_LEGACY_TWO_PASS = "legacy_two_pass"
 REVIEW_MODES = frozenset({REVIEW_MODE_SINGLE_BLIND, REVIEW_MODE_LEGACY_TWO_PASS})
+EVIDENCE_STRENGTH_POLICY_STRICT = "strict_independent_v1"
+EVIDENCE_STRENGTH_POLICY_SHARED_AWARE = "shared_aware_correlated_fusion_v1"
+EVIDENCE_STRENGTH_POLICIES = frozenset({
+    EVIDENCE_STRENGTH_POLICY_STRICT,
+    EVIDENCE_STRENGTH_POLICY_SHARED_AWARE,
+})
 _DECISION_POLICY_EXCLUSIONS = frozenset({"REFERENCES.md", "REPORT_CONTRACT.md"})
 
 
@@ -68,6 +78,15 @@ def _strings(value: Any, *, field: str) -> tuple[str, ...]:
     if len(values) != len(set(values)):
         raise AuthorityReviewValidationError(f"{field} cannot contain duplicates.")
     return values
+
+
+def _evidence_strength_policy(value: str) -> str:
+    policy = str(value)
+    if policy not in EVIDENCE_STRENGTH_POLICIES:
+        raise AuthorityReviewValidationError(
+            f"Unsupported evidence-strength policy: {policy!r}."
+        )
+    return policy
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +222,7 @@ class BlindEvidenceAssessment:
     ordinal_scores: Mapping[str, int]
     report_trace: tuple[str, ...]
     likelihood_evidence: tuple[LikelihoodEvidenceCitation, ...] = ()
+    evidence_strength_policy: str = EVIDENCE_STRENGTH_POLICY_STRICT
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -218,6 +238,11 @@ class BlindEvidenceAssessment:
             raise AuthorityReviewValidationError("report_trace must be a tuple of non-empty strings.")
         if len(self.likelihood_evidence) != len(set(self.likelihood_evidence)):
             raise AuthorityReviewValidationError("likelihood_evidence cannot contain duplicates.")
+        object.__setattr__(
+            self,
+            "evidence_strength_policy",
+            _evidence_strength_policy(self.evidence_strength_policy),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -230,12 +255,15 @@ class BlindEvidenceAssessment:
             "ordinal_scores": dict(self.ordinal_scores),
             "report_trace": list(self.report_trace),
             "likelihood_evidence": [item.to_dict() for item in self.likelihood_evidence],
+            "evidence_strength_policy": self.evidence_strength_policy,
         }
 
 
 def agent_evidence_strength(
     prepared: PreparedAuthorityCase,
     assessment: BlindEvidenceAssessment,
+    *,
+    policy: str | None = None,
 ) -> float:
     """Return conservative cited-evidence authority in [0, 1].
 
@@ -245,14 +273,31 @@ def agent_evidence_strength(
     reduce authority.
     """
 
+    selected_policy = _evidence_strength_policy(
+        getattr(
+            assessment,
+            "evidence_strength_policy",
+            EVIDENCE_STRENGTH_POLICY_STRICT,
+        )
+        if policy is None
+        else policy
+    )
     likelihood_evidence = tuple(getattr(assessment, "likelihood_evidence", ()))
     if not likelihood_evidence:
         return 0.0
-    evidence_by_id = {
-        item.evidence_id: item
-        for item in prepared.evidence
-        if item.inference_permission and item.observable
-    }
+    _verify_evidence_family_identity(prepared)
+    evidence_by_id = {}
+    for item in prepared.evidence:
+        legal = (
+            item.inference_permission
+            and item.observable
+            and item.unavailable_reason is None
+        )
+        independent = item.incremental_for_agent and not item.consumed_by_supervised
+        if legal and (
+            selected_policy == EVIDENCE_STRENGTH_POLICY_SHARED_AWARE or independent
+        ):
+            evidence_by_id[item.evidence_id] = item
     cited_ids = {
         evidence_id
         for citation in likelihood_evidence
@@ -261,31 +306,46 @@ def agent_evidence_strength(
     cited = [evidence_by_id[evidence_id] for evidence_id in cited_ids if evidence_id in evidence_by_id]
     if not cited:
         return 0.0
-    reliabilities = []
+    eligible_citations = tuple(
+        citation
+        for citation in likelihood_evidence
+        if any(evidence_id in evidence_by_id for evidence_id in citation.cited_metric_evidence_ids)
+    )
+    family_reliabilities: dict[str, list[float]] = {}
     for item in cited:
         components = item.reliability_components.to_dict()
         reliability = min(float(value) for value in components.values())
         if item.confounds.observed:
             reliability *= 0.5
-        reliabilities.append(reliability)
+        family_id = prepared.evidence_family_ids[item.evidence_id]
+        family_reliabilities.setdefault(family_id, []).append(reliability)
     state_diversity = min(
         1.0,
-        len({citation.state_id for citation in likelihood_evidence}) / 2.0,
+        len({citation.state_id for citation in eligible_citations}) / 2.0,
     )
     metric_family_diversity = min(
         1.0,
-        len({item.metric_id for item in cited if item.metric_id}) / 2.0,
+        len({
+            prepared.evidence_family_ids[item.evidence_id]
+            for item in cited
+            if item.metric_id
+        }) / 2.0,
     )
     independence_credit = min(state_diversity, metric_family_diversity)
+    reliability = sum(
+        min(values) for values in family_reliabilities.values()
+    ) / len(family_reliabilities)
     return max(
         0.0,
-        min(1.0, independence_credit * sum(reliabilities) / len(reliabilities)),
+        min(1.0, independence_credit * reliability),
     )
 
 
 def agent_staging_evidence_strength(
     prepared: PreparedAuthorityCase,
     assessment: BlindEvidenceAssessment,
+    *,
+    policy: str | None = None,
 ) -> float:
     """Return evidence authority for MCI-versus-AD staging only.
 
@@ -317,6 +377,7 @@ def agent_staging_evidence_strength(
     return agent_evidence_strength(
         prepared,
         replace(assessment, likelihood_evidence=citations),
+        policy=policy,
     )
 
 
@@ -590,6 +651,7 @@ def _request_runtime_fingerprint(
     model: str,
     policy_documents: Mapping[str, str],
     review_mode: str,
+    evidence_strength_policy: str,
 ) -> Mapping[str, str]:
     """Return the configuration identity that makes a provider response reusable.
 
@@ -603,8 +665,16 @@ def _request_runtime_fingerprint(
         "model": str(model),
         "runtime_schema_version": SCHEMA_VERSION,
         "review_mode": review_mode,
+        "evidence_strength_policy": _evidence_strength_policy(evidence_strength_policy),
         "policy_content_hash": hash_artifact(dict(policy_documents)),
     })
+
+
+def _verify_evidence_family_identity(prepared: PreparedAuthorityCase) -> str:
+    try:
+        return validate_prepared_evidence_family_identity(prepared)
+    except ConditionalAuthorityError as exc:
+        raise AuthorityReviewValidationError(str(exc)) from exc
 
 
 def _verify_prepared(prepared: PreparedAuthorityCase) -> tuple[str, tuple[str, ...], set[str]]:
@@ -615,6 +685,7 @@ def _verify_prepared(prepared: PreparedAuthorityCase) -> tuple[str, tuple[str, .
         raise AuthorityReviewValidationError("Prepared state-card artifact hash is stale.")
     if hash_artifact(prepared.pre_packet_artifact) != prepared.reviewed_packet_hash:
         raise AuthorityReviewValidationError("Prepared advisor packet hash is stale.")
+    _verify_evidence_family_identity(prepared)
     if prepared.advisor_packet_hash != prepared.reviewed_packet_hash:
         raise AuthorityReviewValidationError("Prepared advisor packet hash is stale.")
     if str(prepared.pre_state_artifact.get("evidence_hash", "")) != prepared.reviewed_evidence_hash:
@@ -645,10 +716,12 @@ def build_blind_payload(
     policy_documents: Mapping[str, str],
     transcript: Mapping[str, Any] | str | None = None,
     evidence_aliases: Mapping[str, str] | None = None,
+    evidence_strength_policy: str = EVIDENCE_STRENGTH_POLICY_STRICT,
 ) -> Mapping[str, Any]:
     """Build the first-pass, label-blind provider payload."""
 
     pseudo, states, _ = _verify_prepared(prepared)
+    selected_policy = _evidence_strength_policy(evidence_strength_policy)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "review_pass": "blind_evidence_assessment",
@@ -660,6 +733,7 @@ def build_blind_payload(
         },
         "class_order": list(prepared.route.target_route.labels),
         "review_contract": {
+            "evidence_strength_policy": selected_policy,
             "reviewable_state_ids": list(states),
             "state_id_rule": "Use state_id exactly; never use state_card_id.",
             "output_rule": "Return only states requiring a non-retain evidence action; omitted states are retained.",
@@ -681,6 +755,7 @@ def build_blind_payload(
         "reviewed_packet_hash": prepared.reviewed_packet_hash,
         "reviewed_evidence_hash": prepared.reviewed_evidence_hash,
         "reviewed_state_graph_hash": prepared.reviewed_state_graph_hash,
+        "evidence_family_identity_hash": prepared.evidence_family_identity_hash,
         "metric_evidence": _safe_evidence(prepared, evidence_aliases),
         "state_cards": _safe_state_cards(prepared, evidence_aliases),
         "sanitized_transcript": _safe_transcript(transcript, prepared.route.observation_route.language),
@@ -826,16 +901,19 @@ def _likelihood_evidence_schema(
 
 
 def _blind_schema(
-    class_order: Sequence[str], evidence_ids_by_state: Mapping[str, Sequence[str]],
+    prepared: PreparedAuthorityCase,
+    evidence_ids_by_state: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
+    pseudo, _, _ = _verify_prepared(prepared)
+    class_order = prepared.route.target_route.labels
     score_properties = {label: {"type": "integer", "minimum": 0, "maximum": 4} for label in class_order}
     return {
         "type": "object", "additionalProperties": False,
         "properties": {
-            "case_id": {"type": "string"},
-            "reviewed_packet_hash": {"type": "string"},
-            "reviewed_evidence_hash": {"type": "string"},
-            "reviewed_state_graph_hash": {"type": "string"},
+            "case_id": {"type": "string", "enum": [pseudo]},
+            "reviewed_packet_hash": {"type": "string", "enum": [prepared.reviewed_packet_hash]},
+            "reviewed_evidence_hash": {"type": "string", "enum": [prepared.reviewed_evidence_hash]},
+            "reviewed_state_graph_hash": {"type": "string", "enum": [prepared.reviewed_state_graph_hash]},
             "state_actions": {
                 "type": "array", "items": _action_schema(evidence_ids_by_state, allow_retain=False),
                 "minItems": 0, "maxItems": len(evidence_ids_by_state),
@@ -853,16 +931,18 @@ def _blind_schema(
 
 
 def _reconciliation_schema(
+    prepared: PreparedAuthorityCase,
     evidence_ids_by_state: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
+    pseudo, _, _ = _verify_prepared(prepared)
     return {
         "type": "object", "additionalProperties": False,
         "properties": {
-            "case_id": {"type": "string"},
-            "reviewed_packet_hash": {"type": "string"},
-            "reviewed_evidence_hash": {"type": "string"},
-            "reviewed_state_graph_hash": {"type": "string"},
-            "advisor_packet_hash": {"type": "string"},
+            "case_id": {"type": "string", "enum": [pseudo]},
+            "reviewed_packet_hash": {"type": "string", "enum": [prepared.reviewed_packet_hash]},
+            "reviewed_evidence_hash": {"type": "string", "enum": [prepared.reviewed_evidence_hash]},
+            "reviewed_state_graph_hash": {"type": "string", "enum": [prepared.reviewed_state_graph_hash]},
+            "advisor_packet_hash": {"type": "string", "enum": [prepared.advisor_packet_hash]},
             "disposition": {"type": "string", "enum": ["retain", "amend"]},
             "amendments": {
                 "type": "array",
@@ -903,7 +983,12 @@ def _validate_actions(
     return mapped
 
 
-def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenceAssessment:
+def _parse_blind(
+    response: Any,
+    prepared: PreparedAuthorityCase,
+    *,
+    evidence_strength_policy: str = EVIDENCE_STRENGTH_POLICY_STRICT,
+) -> BlindEvidenceAssessment:
     _reject_leakage(response)
     if not isinstance(response, Mapping):
         raise AuthorityReviewValidationError("Blind provider response must be an object.")
@@ -924,15 +1009,24 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
         raise AuthorityReviewValidationError(
             "Blind provider response requires non-empty likelihood_evidence."
         )
-    likelihood = tuple(
-        LikelihoodEvidenceCitation.from_mapping(item)
-        for item in likelihood_value
-        if isinstance(item, Mapping)
-    )
-    if len(likelihood) != len(likelihood_value):
+    likelihood_mappings = [item for item in likelihood_value if isinstance(item, Mapping)]
+    if len(likelihood_mappings) != len(likelihood_value):
         raise AuthorityReviewValidationError(
             "Every likelihood evidence citation must be an object."
         )
+    # Strict-output providers do not support JSON Schema uniqueItems. Exact
+    # repeated citations are idempotent, so normalize them before validation;
+    # conflicting or cross-state citations still fail below.
+    unique_likelihood: list[Mapping[str, Any]] = []
+    seen_likelihood: set[str] = set()
+    for item in likelihood_mappings:
+        fingerprint = canonical_json(item)
+        if fingerprint not in seen_likelihood:
+            unique_likelihood.append(item)
+            seen_likelihood.add(fingerprint)
+    likelihood = tuple(
+        LikelihoodEvidenceCitation.from_mapping(item) for item in unique_likelihood
+    )
     allowed_labels = set(prepared.route.target_route.labels)
     for citation in likelihood:
         if citation.class_label not in allowed_labels:
@@ -997,6 +1091,7 @@ def _parse_blind(response: Any, prepared: PreparedAuthorityCase) -> BlindEvidenc
         ordinal_scores=ordinal_scores,
         report_trace=tuple(response.get("report_trace", ())),
         likelihood_evidence=likelihood,
+        evidence_strength_policy=evidence_strength_policy,
     )
     if (assessment.case_id, assessment.reviewed_packet_hash, assessment.reviewed_evidence_hash, assessment.reviewed_state_graph_hash) != (
         pseudo, prepared.reviewed_packet_hash, prepared.reviewed_evidence_hash, prepared.reviewed_state_graph_hash,
@@ -1065,6 +1160,7 @@ class AuthorityReviewRuntime:
         skill_path: Path | None = None,
         cache_dir: Path | None = None,
         review_mode: str = REVIEW_MODE_SINGLE_BLIND,
+        evidence_strength_policy: str = EVIDENCE_STRENGTH_POLICY_STRICT,
     ) -> None:
         if review_mode not in REVIEW_MODES:
             raise ValueError(f"Unsupported authority review mode: {review_mode!r}")
@@ -1074,6 +1170,7 @@ class AuthorityReviewRuntime:
         self.skill_path = None if skill_path is None else Path(skill_path)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.root / ".authority_review_cache"
         self.review_mode = review_mode
+        self.evidence_strength_policy = _evidence_strength_policy(evidence_strength_policy)
 
     def study_identity(self) -> Mapping[str, str]:
         """Bind resumable cohort outputs to the exact decision runtime."""
@@ -1083,6 +1180,7 @@ class AuthorityReviewRuntime:
             model=self.model,
             policy_documents=_policy_documents(self.root, self.skill_path),
             review_mode=self.review_mode,
+            evidence_strength_policy=self.evidence_strength_policy,
         )
 
     def review(
@@ -1093,7 +1191,13 @@ class AuthorityReviewRuntime:
     ) -> AuthorityReviewResult:
         pseudo, _, _ = _verify_prepared(prepared)
         if self.provider in {None, "", "disabled"}:
-            unavailable_hash = hash_artifact({"case_id": pseudo, "provider": "disabled", "pass": 1})
+            unavailable_hash = hash_artifact({
+                "case_id": pseudo,
+                "provider": "disabled",
+                "pass": 1,
+                "evidence_strength_policy": self.evidence_strength_policy,
+                "evidence_family_identity_hash": prepared.evidence_family_identity_hash,
+            })
             return AuthorityReviewResult(
                 REVIEW_UNAVAILABLE, pseudo, unavailable_hash, None,
                 error="provider_disabled", review_mode=self.review_mode,
@@ -1105,6 +1209,7 @@ class AuthorityReviewRuntime:
             model=self.model,
             policy_documents=policy,
             review_mode=self.review_mode,
+            evidence_strength_policy=self.evidence_strength_policy,
         )
         evidence_aliases = _evidence_aliases(prepared)
         full_evidence_ids = {alias: evidence_id for evidence_id, alias in evidence_aliases.items()}
@@ -1113,6 +1218,7 @@ class AuthorityReviewRuntime:
             policy_documents=policy,
             transcript=transcript,
             evidence_aliases=evidence_aliases,
+            evidence_strength_policy=self.evidence_strength_policy,
         )
         _, state_ids, _ = _verify_prepared(prepared)
         evidence_ids_by_state = {
@@ -1123,7 +1229,7 @@ class AuthorityReviewRuntime:
             ))
             for state_id in state_ids
         }
-        blind_schema = _blind_schema(prepared.route.target_route.labels, evidence_ids_by_state)
+        blind_schema = _blind_schema(prepared, evidence_ids_by_state)
         blind_hash = hash_artifact({
             "pass": 1,
             "runtime": runtime_fingerprint,
@@ -1141,7 +1247,9 @@ class AuthorityReviewRuntime:
                 self.provider,
             )
             blind = _parse_blind(
-                _alias_response_citations(blind_response, full_evidence_ids), prepared
+                _alias_response_citations(blind_response, full_evidence_ids),
+                prepared,
+                evidence_strength_policy=self.evidence_strength_policy,
             )
             if self.review_mode == REVIEW_MODE_SINGLE_BLIND:
                 return AuthorityReviewResult(
@@ -1159,7 +1267,7 @@ class AuthorityReviewRuntime:
                 policy_documents=policy,
                 evidence_aliases=evidence_aliases,
             )
-            reconciliation_schema = _reconciliation_schema(evidence_ids_by_state)
+            reconciliation_schema = _reconciliation_schema(prepared, evidence_ids_by_state)
             advisor_hash = hash_artifact({
                 "pass": 2,
                 "runtime": runtime_fingerprint,
@@ -1203,6 +1311,8 @@ class AuthorityReviewRuntime:
 __all__ = [
     "AdvisorReconciliation", "AuthorityReviewError", "AuthorityReviewResult", "AuthorityReviewRuntime",
     "AuthorityReviewValidationError", "BlindEvidenceAssessment", "LikelihoodEvidenceCitation", "REVIEW_AVAILABLE",
+    "EVIDENCE_STRENGTH_POLICIES", "EVIDENCE_STRENGTH_POLICY_SHARED_AWARE",
+    "EVIDENCE_STRENGTH_POLICY_STRICT",
     "REVIEW_MODE_LEGACY_TWO_PASS", "REVIEW_MODE_SINGLE_BLIND", "REVIEW_MODES",
     "REVIEW_PROVIDER_ERROR", "REVIEW_UNAVAILABLE", "SCHEMA_VERSION", "STATE_ACTIONS", "StateReviewAction", "build_advisor_payload",
     "agent_evidence_strength", "agent_staging_evidence_strength", "build_blind_payload", "sanitize_provider_payload",

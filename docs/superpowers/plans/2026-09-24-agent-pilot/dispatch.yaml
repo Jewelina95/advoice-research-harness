@@ -1,0 +1,152 @@
+schema_version: advoice.agent_dispatch.v1
+status: planned_not_executed
+runtime_configuration: false
+repository: "/Users/wenshaoyue/Desktop/research/ad general/AD voice/9.2/github_release/advoice-research-harness"
+raw_data_root: "/Users/wenshaoyue/Desktop/research/ad general/AD voice/raw data"
+historical_artifact_root: "/Users/wenshaoyue/Desktop/research/ad general/AD voice/8.27/artifacts"
+coordinator: T0
+coordinator_only_operations: [review_dirty_changes, checkpoint_commit, integrate_worker_commits, push_reviewed_release]
+max_parallel_code_workers: 3
+fork_full_conversation: false
+shared_contract: CONTRACTS.md
+preflight_gate: T7P
+paid_execution_task: T6B
+sequence:
+  - [T0]
+  - [T1, T2, T3]
+  - [T4, T5]
+  - [T6A]
+  - [T7P]
+  - [T6B]
+  - [T7R]
+cost:
+  core_semantic_calls_max: 742
+  model_comparison_semantic_calls_max: 144
+  model_comparison_subjects: 24
+  model_comparison_models: 2
+  structured_calls_per_cell_max: 2
+  flat_calls_per_cell_max: 1
+  canary_semantic_calls_max: 24
+  total_semantic_calls_max: 910
+  transport_attempts_per_request_max: 2
+  provider_concurrency: 2
+  canary_usd_stop: 10
+  remaining_pilot_usd_stop: 100
+  price_and_exact_model_resolution_required: true
+source_policy:
+  checkpoint_includes_reviewed_dirty_changes: true
+  raw_data_read_only: true
+  private_artifacts_root: .local/pilot-handoff
+  production_route_unchanged_until_acceptance: true
+  full_nine_dataset_run: false
+tasks:
+  - id: T0
+    role: T0
+    model: gpt-6-astra
+    reasoning_effort: high
+    task_file: tasks/00-contracts-integration.md
+    phase: implementation
+    depends_on: []
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/__init__.py","src/advoice/pilot/contracts.py","configs/pilot/evidence_state_v1.yaml","tests/test_pilot_contracts.py"]
+    artifact_write_paths: [".local/pilot-handoff/T0",".local/pilot-handoff/ACCEPTED_BASELINE.md"]
+    result_file: .local/pilot-handoff/T0/WORKER_RESULT.md
+  - id: T1
+    role: T1
+    model: gpt-5.6-terra
+    reasoning_effort: high
+    task_file: tasks/01-data-manifests.md
+    phase: implementation
+    depends_on: ["T0"]
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/data.py","tests/test_pilot_data.py"]
+    artifact_write_paths: [".local/pilot-handoff/T1",".local/pilot-handoff/data"]
+    result_file: .local/pilot-handoff/T1/WORKER_RESULT.md
+  - id: T2
+    role: T2
+    model: gpt-5.6-sol
+    reasoning_effort: high
+    task_file: tasks/02-fold-training-calibration.md
+    phase: implementation
+    depends_on: ["T0"]
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/learning.py","tests/test_pilot_learning.py"]
+    artifact_write_paths: [".local/pilot-handoff/T2"]
+    result_file: .local/pilot-handoff/T2/WORKER_RESULT.md
+  - id: T3
+    role: T3
+    model: gpt-5.6-sol
+    reasoning_effort: high
+    task_file: tasks/03-agent-trace-replay.md
+    phase: implementation
+    depends_on: ["T0"]
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/runtime.py","tests/test_pilot_runtime.py"]
+    artifact_write_paths: [".local/pilot-handoff/T3"]
+    result_file: .local/pilot-handoff/T3/WORKER_RESULT.md
+  - id: T4
+    role: T4
+    model: gpt-5.6-terra
+    reasoning_effort: high
+    task_file: tasks/04-independent-tests.md
+    phase: implementation
+    depends_on: ["T1","T2","T3"]
+    paid_calls_allowed: false
+    write_files: ["tests/test_pilot_integration.py","tests/test_pilot_interventions.py","tests/fixtures/pilot/synthetic_cases.json"]
+    artifact_write_paths: [".local/pilot-handoff/T4",".local/pilot-handoff/qa"]
+    result_file: .local/pilot-handoff/T4/WORKER_RESULT.md
+  - id: T5
+    role: T5
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+    task_file: tasks/05-reports.md
+    phase: implementation
+    depends_on: ["T1","T2","T3"]
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/reporting.py","templates/pilot/system_report.html.j2","templates/pilot/evaluation_report.html.j2","tests/test_pilot_reporting.py"]
+    artifact_write_paths: [".local/pilot-handoff/T5"]
+    result_file: .local/pilot-handoff/T5/WORKER_RESULT.md
+  - id: T6A
+    role: T6
+    model: gpt-5.6-terra
+    reasoning_effort: high
+    task_file: tasks/06-runner-and-execution.md
+    phase: implementation
+    depends_on: ["T4","T5"]
+    paid_calls_allowed: false
+    write_files: ["src/advoice/pilot/runner.py","scripts/run_evidence_state_pilot.py","tests/test_pilot_runner.py"]
+    artifact_write_paths: [".local/pilot-handoff/T6A"]
+    result_file: .local/pilot-handoff/T6A/WORKER_RESULT.md
+  - id: T7P
+    role: T7
+    model: gpt-6-astra
+    reasoning_effort: high
+    task_file: tasks/07-independent-review.md
+    phase: preflight_review
+    depends_on: ["T6A"]
+    paid_calls_allowed: false
+    write_files: []
+    artifact_write_paths: [".local/pilot-handoff/T7P",".local/pilot-handoff/review/preflight.json"]
+    result_file: .local/pilot-handoff/T7P/WORKER_RESULT.md
+  - id: T6B
+    role: T6
+    model: gpt-5.6-terra
+    reasoning_effort: high
+    task_file: tasks/06-runner-and-execution.md
+    phase: paid_execution
+    depends_on: ["T7P"]
+    paid_calls_allowed: true
+    write_files: []
+    artifact_write_paths: [".local/pilot-handoff/T6B",".local/pilot-v1"]
+    result_file: .local/pilot-handoff/T6B/WORKER_RESULT.md
+  - id: T7R
+    role: T7
+    model: gpt-6-astra
+    reasoning_effort: high
+    task_file: tasks/07-independent-review.md
+    phase: results_review
+    depends_on: ["T6B"]
+    paid_calls_allowed: false
+    write_files: []
+    artifact_write_paths: [".local/pilot-handoff/T7R",".local/pilot-handoff/review/final_review.json"]
+    result_file: .local/pilot-handoff/T7R/WORKER_RESULT.md

@@ -1,0 +1,130 @@
+schema_version: advoice.research_execution_plan.v1
+status: proposed_not_executed
+is_runtime_configuration: false
+seed: 20260923
+scope: representative_channel_pilot
+historical_artifact_root: /Users/wenshaoyue/Desktop/research/ad general/AD voice/8.27/artifacts
+primary_comparison: joint_agent_state_vs_matched_base
+group_unit: patient_or_source_identity
+resample_after_outcome: false
+llm_post_training: false
+encoder_weight_training: false
+datasets:
+  - id: PREPARE_DrivenData
+    role: trainable_internal_pilot
+    channel: structured_multitask
+    eligible_partition: historical_train
+    observed_eligible_subjects: 1622
+    selection_target: 150
+    development_target: 120
+    internal_holdout_target: 30
+    excluded_historical_test_subjects: 412
+    stratify_priority: [class, language]
+    audit_task_coverage: true
+  - id: ADReSS_2020
+    role: trainable_internal_pilot
+    channel: picture_description
+    eligible_partition: historical_train
+    observed_eligible_subjects: 81
+    selection_target: 81
+    development_target: 65
+    internal_holdout_target: 16
+    excluded_historical_test_subjects: 27
+    stratify_priority: [class]
+    is_official_test: false
+  - id: NCMMSC2021_AD
+    role: trainable_internal_pilot
+    channel: picture_description_zh
+    eligible_partition: official_train
+    observed_eligible_subjects: 120
+    selection_target: 120
+    development_target: 96
+    internal_holdout_target: 24
+    excluded_historical_test_subjects: 53
+    stratify_priority: [class]
+    long_recordings_only: true
+    exclude_six_second_track: true
+  - id: IAEAV
+    role: acquisition_shift_stress_only
+    channel: clinical_interview
+    evaluation_subjects: 14
+    keep_acquisition_groups_disjoint: true
+    fit_new_joint_calibrator: false
+    calibrated_joint_risk_claim: false
+  - id: DementiaNet_PublicFigures
+    role: public_speech_engineering_only
+    channel: public_speech
+    evaluation_subjects: 6
+    keep_persons_disjoint: true
+    fit_new_joint_calibrator: false
+    calibrated_joint_risk_claim: false
+training:
+  module_a: fold_safe_existing_low_capacity_base
+  oof_folds: 5
+  oof_grouping: subject_and_source_duplicate_group
+  refit_references_each_fold: true
+  reuse_in_sample_base_predictions: false
+  module_b:
+    family: regularized_two_head_logit_stacking
+    inputs: [base_log_odds, agent_contrast, state_replay_log_odds_delta]
+    intercept: true
+    coefficient_prior: [1.0, 0.0, 0.0, 0.0]
+    l2_lambda: 1.0
+    penalized_loss_reduction: mean
+    feature_scale_fit_partition: development_only
+    preserve_base_log_odds_scale: true
+    non_intercept_coefficients_nonnegative: true
+    missing_agent_policy: declared_base_fallback
+    hyperparameter_search: false
+    evaluate_fit_rows_as_generalization: false
+  future_search_requires_inner_refitting: true
+agent:
+  first_pass_hidden: [base_probabilities, truth, diagnostic_paths, dataset_subject_labels]
+  output_mode: typed_decisions_and_bounded_operations
+  max_calls_per_subject: 2
+  changed_state_requires_fresh_assessment: true
+  second_pass_allows_further_patch: false
+  batch_generate_clinical_reports: false
+  exact_model_id: resolve_and_freeze_before_calls
+evaluation:
+  arms: [base, agent_judgment_joint, state_replay_joint, agent_state_joint]
+  base_calibration: matched_oof_slope_and_intercept
+  uncalibrated_base: supplementary_only
+  fallback: frozen_calibrated_base
+  matched_available_training_sensitivity: true
+  retain_all_assigned_subjects: true
+  count_failures_and_fallbacks: true
+  paired_subject_bootstrap: true
+  report_layer_a: true
+  report_layer_b: true
+  stress_results_separate: true
+  speechcare_superiority_claim_from_pilot: false
+budget:
+  core_subject_target: 371
+  core_initial_call_upper_bound: 371
+  core_total_call_upper_bound: 742
+  model_comparison_subjects: 24
+  model_comparison_call_upper_bound: 144
+  canary_accounting: separate_unless_exact_cache_reuse
+  token_cost_budget: required_in_resolved_config_before_execution
+  estimate_runtime_after_canary: true
+stages: [inventory, freeze_split, fit_oof, agent_assess, fit_fusion, evaluate_holdout, stress, render]
+delegation:
+  - id: W0
+    scope: shared_contracts_and_acceptance
+    depends_on: []
+  - id: W1
+    scope: manifests_splits_cache_provenance
+    depends_on: [W0]
+  - id: W2
+    scope: fold_safe_training_and_joint_calibration
+    depends_on: [W0]
+  - id: W3
+    scope: agent_runtime_replay_usage
+    depends_on: [W0]
+  - id: W4
+    scope: tests_and_fixed_reports
+    depends_on: [W1, W2, W3]
+  - id: W5
+    scope: independent_integration_review
+    depends_on: [W4]

@@ -29,7 +29,7 @@ from sklearn.linear_model import LogisticRegression
 from .contracts import EvidenceSnapshot, FusionRow, PredictionRow, SubjectRow
 
 
-LEARNING_SCHEMA_VERSION = "advoice.pilot.learning.v2"
+LEARNING_SCHEMA_VERSION = "advoice.pilot.learning.v3"
 FULL_BASE_PREDICTOR_SYMBOL = "advoice.condition_c.train_condition_c"
 STATE_REPLAY_PREDICTOR_SYMBOL = "advoice.module_a.TaskConditionedStatisticalExpert"
 EXISTING_FUSION_SYMBOL = "advoice.authority_joint_fusion.fuse_authority_joint"
@@ -43,6 +43,10 @@ HEADS_BY_TASK = {
 }
 PRIOR_COEFFICIENTS = (1.0, 0.0, 0.0, 0.0)
 _FOLD_MANIFEST_SEAL = object()
+_DEVELOPMENT_MANIFEST_SEAL = object()
+_ADAPTER_REGISTRY_SEAL = object()
+_ADAPTER_ATTESTATION_SEAL = object()
+_PREDICTION_RECEIPT_SEAL = object()
 
 Arm = Literal["B_raw", "B", "J-A", "J-S", "J-AS"]
 HeadName = Literal["binary", "impairment", "stage"]
@@ -63,7 +67,6 @@ class PredictorAdapter(Protocol):
     role: Literal["base", "replay"]
     implementation_id: str
     implementation_version: str
-    analytical_capable: bool
 
     def feature_pipeline_hash(
         self, feature_names: tuple[str, ...], class_order: tuple[str, ...],
@@ -82,7 +85,133 @@ class PredictorAdapter(Protocol):
         seed: int,
         c: float,
         max_iter: int,
+        adapter_attestation_id: str | None,
     ) -> "LinearModelArtifact": ...
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class TrustedAdapterAttestation:
+    """Non-forgeable-in-API attestation for an exact allowlisted adapter type."""
+
+    role: Literal["base", "replay"]
+    implementation_id: str
+    implementation_version: str
+    feature_pipeline_hash: str
+    adapter_type: str
+    adapter_object_id: int
+    attestation_id: str
+
+    def __init__(
+        self,
+        *,
+        role: Literal["base", "replay"],
+        implementation_id: str,
+        implementation_version: str,
+        feature_pipeline_hash: str,
+        adapter_type: str,
+        adapter_object_id: int,
+        attestation_id: str,
+        _seal: object | None = None,
+    ) -> None:
+        if _seal is not _ADAPTER_ATTESTATION_SEAL:
+            raise LearningError("Adapter attestations are issued only by the trusted registry.")
+        object.__setattr__(self, "role", role)
+        object.__setattr__(self, "implementation_id", implementation_id)
+        object.__setattr__(self, "implementation_version", implementation_version)
+        object.__setattr__(self, "feature_pipeline_hash", feature_pipeline_hash)
+        object.__setattr__(self, "adapter_type", adapter_type)
+        object.__setattr__(self, "adapter_object_id", adapter_object_id)
+        object.__setattr__(self, "attestation_id", attestation_id)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class TrustedAdapterRegistry:
+    """Closed runner-created registry; arbitrary adapter claims are never trusted."""
+
+    attestations: tuple[TrustedAdapterAttestation, ...]
+
+    def __init__(
+        self,
+        attestations: tuple[TrustedAdapterAttestation, ...],
+        *,
+        _seal: object | None = None,
+    ) -> None:
+        if _seal is not _ADAPTER_REGISTRY_SEAL:
+            raise LearningError(
+                "TrustedAdapterRegistry must be created by create_trusted_adapter_registry()."
+            )
+        object.__setattr__(self, "attestations", attestations)
+
+    def resolve(
+        self,
+        adapter: PredictorAdapter,
+        role: Literal["base", "replay"],
+        feature_pipeline_hash: str,
+    ) -> TrustedAdapterAttestation:
+        matches = [
+            item for item in self.attestations
+            if item.adapter_object_id == id(adapter) and item.role == role
+        ]
+        if len(matches) != 1:
+            raise LearningError(f"{role} adapter lacks a trusted registry attestation.")
+        attestation = matches[0]
+        adapter_type = f"{type(adapter).__module__}.{type(adapter).__qualname__}"
+        if (
+            attestation.implementation_id != adapter.implementation_id
+            or attestation.implementation_version != adapter.implementation_version
+            or attestation.feature_pipeline_hash != feature_pipeline_hash
+            or attestation.adapter_type != adapter_type
+        ):
+            raise LearningError(f"{role} adapter differs from its trusted registry attestation.")
+        return attestation
+
+
+# T2 owns no production fitting implementation. Exact production adapter types must
+# be added here by the runner integration task; an empty allowlist fails closed.
+_TRUSTED_ANALYTICAL_ADAPTER_TYPES: dict[str, tuple[type[Any], ...]] = {
+    "base": (),
+    "replay": (),
+}
+
+
+def create_trusted_adapter_registry(
+    adapters: Sequence[PredictorAdapter],
+    *,
+    class_order: Sequence[str] | None = None,
+    feature_names_by_role: Mapping[str, Sequence[str]] | None = None,
+) -> TrustedAdapterRegistry:
+    """Issue attestations only for exact production adapter types in the closed registry."""
+
+    attestations: list[TrustedAdapterAttestation] = []
+    for adapter in adapters:
+        role = getattr(adapter, "role", None)
+        if role not in ("base", "replay") or type(adapter) not in _TRUSTED_ANALYTICAL_ADAPTER_TYPES[role]:
+            raise LearningError("Adapter type is not a trusted analytical adapter.")
+        if class_order is None or feature_names_by_role is None or role not in feature_names_by_role:
+            raise LearningError("Trusted adapter attestation requires the frozen model recipe.")
+        order = _validate_class_order(class_order)
+        names = _ordered_ids(feature_names_by_role[role], f"{role}_feature_names")
+        pipeline_hash = adapter.feature_pipeline_hash(names, order)
+        adapter_type = f"{type(adapter).__module__}.{type(adapter).__qualname__}"
+        payload = {
+            "role": role,
+            "implementation_id": adapter.implementation_id,
+            "implementation_version": adapter.implementation_version,
+            "feature_pipeline_hash": pipeline_hash,
+            "adapter_type": adapter_type,
+        }
+        attestations.append(TrustedAdapterAttestation(
+            role=role, implementation_id=adapter.implementation_id,
+            implementation_version=adapter.implementation_version,
+            feature_pipeline_hash=pipeline_hash, adapter_type=adapter_type,
+            adapter_object_id=id(adapter),
+            attestation_id="adapter_attestation_" + _digest(payload)[:24],
+            _seal=_ADAPTER_ATTESTATION_SEAL,
+        ))
+    roles = tuple(item.role for item in attestations)
+    if set(roles) != {"base", "replay"} or len(roles) != 2:
+        raise LearningError("Trusted adapter registry requires one base and one replay adapter.")
+    return TrustedAdapterRegistry(tuple(attestations), _seal=_ADAPTER_REGISTRY_SEAL)
 
 
 def model_identity_manifest() -> dict[str, dict[str, Any]]:
@@ -220,6 +349,95 @@ class FoldInputs:
 
 
 @dataclass(frozen=True, slots=True)
+class DevelopmentSubjectProof:
+    subject_id: str
+    source_group_id: str
+    fold_id: str
+    subject_hash: str
+
+    @classmethod
+    def from_subject(cls, subject: SubjectRow) -> Self:
+        if subject.partition != "development":
+            raise FoldLeakageError("Development manifests cannot contain non-development subjects.")
+        return cls(
+            subject_id=subject.subject_id, source_group_id=subject.source_group_id,
+            fold_id=subject.fold_id, subject_hash=subject.content_hash,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "subject_id": self.subject_id, "source_group_id": self.source_group_id,
+            "fold_id": self.fold_id, "subject_hash": self.subject_hash,
+        }
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class DevelopmentManifest:
+    """Canonical immutable development cohort derived from SubjectRow contracts."""
+
+    subjects: tuple[DevelopmentSubjectProof, ...]
+    manifest_id: str
+
+    def __init__(
+        self,
+        subjects: tuple[DevelopmentSubjectProof, ...],
+        manifest_id: str = "",
+        *,
+        _seal: object | None = None,
+    ) -> None:
+        if _seal is not _DEVELOPMENT_MANIFEST_SEAL:
+            raise LearningError(
+                "DevelopmentManifest must be created by seal_development_manifest()."
+            )
+        if not subjects:
+            raise LearningError("Canonical development manifest cannot be empty.")
+        ordered = tuple(sorted(subjects, key=lambda item: item.subject_id))
+        subject_ids = tuple(item.subject_id for item in ordered)
+        if len(set(subject_ids)) != len(subject_ids):
+            raise LearningError("Canonical development manifest contains duplicate subjects.")
+        expected = "development_manifest_" + _digest(
+            [item.to_dict() for item in ordered]
+        )[:24]
+        if manifest_id and manifest_id != expected:
+            raise LearningError("Stale development manifest ID.")
+        object.__setattr__(self, "subjects", ordered)
+        object.__setattr__(self, "manifest_id", expected)
+
+    @property
+    def subject_ids(self) -> tuple[str, ...]:
+        return tuple(item.subject_id for item in self.subjects)
+
+
+def seal_development_manifest(inputs: FoldInputs) -> DevelopmentManifest:
+    """Seal every development SubjectRow in the supplied canonical data contracts."""
+
+    proofs = tuple(
+        DevelopmentSubjectProof.from_subject(case.subject)
+        for case in inputs.cases.values()
+        if case.subject.partition == "development"
+    )
+    return DevelopmentManifest(proofs, _seal=_DEVELOPMENT_MANIFEST_SEAL)
+
+
+def _validate_development_manifest(
+    inputs: FoldInputs, manifest: DevelopmentManifest,
+) -> tuple[str, ...]:
+    if not isinstance(manifest, DevelopmentManifest):
+        raise LearningError("A sealed canonical development manifest is required.")
+    actual = tuple(sorted(
+        (
+            DevelopmentSubjectProof.from_subject(case.subject)
+            for case in inputs.cases.values()
+            if case.subject.partition == "development"
+        ),
+        key=lambda item: item.subject_id,
+    ))
+    if actual != manifest.subjects:
+        raise FoldLeakageError("Inputs differ from the sealed canonical development manifest.")
+    return manifest.subject_ids
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenFoldConfig:
     """Fixed fitting recipe; no data-driven hyperparameter search is allowed."""
 
@@ -235,6 +453,8 @@ class FrozenFoldConfig:
     analytical_run: bool = True
     base_adapter: PredictorAdapter | None = None
     replay_adapter: PredictorAdapter | None = None
+    development_manifest: DevelopmentManifest | None = None
+    trusted_adapter_registry: TrustedAdapterRegistry | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "class_order", _validate_class_order(self.class_order))
@@ -254,6 +474,14 @@ class FrozenFoldConfig:
             raise LearningError("Base and replay model identities must remain distinct.")
         if not isinstance(self.analytical_run, bool):
             raise LearningError("analytical_run must be boolean.")
+        if self.development_manifest is not None and not isinstance(
+            self.development_manifest, DevelopmentManifest,
+        ):
+            raise LearningError("development_manifest must be sealed.")
+        if self.trusted_adapter_registry is not None and not isinstance(
+            self.trusted_adapter_registry, TrustedAdapterRegistry,
+        ):
+            raise LearningError("trusted_adapter_registry must be runner-created.")
         if self.c <= 0 or self.max_iter < 1:
             raise LearningError("The fixed linear fitting recipe is invalid.")
 
@@ -266,7 +494,7 @@ class LinearModelArtifact:
     adapter_implementation: str
     adapter_version: str
     feature_pipeline_hash: str
-    analytical_capable: bool
+    adapter_attestation_id: str | None
     class_order: tuple[str, ...]
     feature_names: tuple[str, ...]
     impute_values: tuple[float, ...]
@@ -288,6 +516,11 @@ class LinearModelArtifact:
             raise LearningError("Model and adapter identities plus features are required.")
         if len(self.feature_pipeline_hash) != 64:
             raise LearningError("Feature pipeline hash must be SHA-256.")
+        if self.adapter_attestation_id is not None and not (
+            isinstance(self.adapter_attestation_id, str)
+            and self.adapter_attestation_id.startswith("adapter_attestation_")
+        ):
+            raise LearningError("Adapter attestation ID is invalid.")
         if not (len(self.impute_values) == len(self.means) == len(self.scales) == width):
             raise LearningError("Preprocessing vectors must match feature_names.")
         if set(self.learned_classes) != set(order):
@@ -342,7 +575,7 @@ class LinearModelArtifact:
             "adapter_implementation": self.adapter_implementation,
             "adapter_version": self.adapter_version,
             "feature_pipeline_hash": self.feature_pipeline_hash,
-            "analytical_capable": self.analytical_capable,
+            "adapter_attestation_id": self.adapter_attestation_id,
             "class_order": list(self.class_order),
             "feature_names": list(self.feature_names),
             "impute_values": list(self.impute_values),
@@ -368,7 +601,7 @@ class LinearModelArtifact:
             adapter_implementation=str(value["adapter_implementation"]),
             adapter_version=str(value["adapter_version"]),
             feature_pipeline_hash=str(value["feature_pipeline_hash"]),
-            analytical_capable=bool(value["analytical_capable"]),
+            adapter_attestation_id=value["adapter_attestation_id"],
             class_order=tuple(value["class_order"]), feature_names=tuple(value["feature_names"]),
             impute_values=tuple(value["impute_values"]), means=tuple(value["means"]),
             scales=tuple(value["scales"]), learned_classes=tuple(value["learned_classes"]),
@@ -400,7 +633,7 @@ def _fit_linear_model(
     adapter_implementation: str,
     adapter_version: str,
     feature_pipeline_hash: str,
-    analytical_capable: bool,
+    adapter_attestation_id: str | None,
     class_order: tuple[str, ...],
     seed: int,
     c: float,
@@ -437,7 +670,7 @@ def _fit_linear_model(
     return LinearModelArtifact(
         model_id=model_id, adapter_implementation=adapter_implementation,
         adapter_version=adapter_version, feature_pipeline_hash=feature_pipeline_hash,
-        analytical_capable=analytical_capable, class_order=class_order,
+        adapter_attestation_id=adapter_attestation_id, class_order=class_order,
         feature_names=feature_names, impute_values=tuple(float(value) for value in impute),
         means=tuple(float(value) for value in means),
         scales=tuple(float(value) for value in scales),
@@ -454,7 +687,6 @@ class SyntheticLinearPredictorAdapter:
 
     role: Literal["base", "replay"]
     implementation_version: str = "synthetic_linear_v1"
-    analytical_capable: bool = False
 
     @property
     def implementation_id(self) -> str:
@@ -485,7 +717,10 @@ class SyntheticLinearPredictorAdapter:
         seed: int,
         c: float,
         max_iter: int,
+        adapter_attestation_id: str | None,
     ) -> LinearModelArtifact:
+        if adapter_attestation_id is not None:
+            raise LearningError("Synthetic adapters cannot receive analytical attestations.")
         return _fit_linear_model(
             cases=cases, labels=labels, fit_ids=fit_ids, excluded_ids=excluded_ids,
             feature_names=feature_names,
@@ -493,14 +728,21 @@ class SyntheticLinearPredictorAdapter:
             model_id=model_id, adapter_implementation=self.implementation_id,
             adapter_version=self.implementation_version,
             feature_pipeline_hash=self.feature_pipeline_hash(feature_names, class_order),
-            analytical_capable=self.analytical_capable, class_order=class_order,
+            adapter_attestation_id=None, class_order=class_order,
             seed=seed, c=c, max_iter=max_iter,
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedAdapter:
+    adapter: PredictorAdapter
+    pipeline_hash: str
+    attestation_id: str | None
+
+
 def _resolve_adapter(
     config: FrozenFoldConfig, role: Literal["base", "replay"],
-) -> PredictorAdapter:
+) -> _ResolvedAdapter:
     adapter = config.base_adapter if role == "base" else config.replay_adapter
     if adapter is None:
         if config.analytical_run:
@@ -512,20 +754,61 @@ def _resolve_adapter(
         raise LearningError(f"{role} adapter does not implement PredictorAdapter.")
     if adapter.role != role:
         raise LearningError(f"{role} adapter declares the wrong model role.")
-    if config.analytical_run and not adapter.analytical_capable:
-        raise LearningError(f"Synthetic/test-only {role} adapter is forbidden for analytical runs.")
     pipeline_hash = adapter.feature_pipeline_hash(
         config.base_feature_names if role == "base" else config.state_feature_names,
         config.class_order,
     )
     if len(pipeline_hash) != 64:
         raise LearningError(f"{role} adapter returned an invalid feature pipeline hash.")
-    return adapter
+    attestation_id = None
+    if config.analytical_run:
+        if config.trusted_adapter_registry is None:
+            raise LearningError("Analytical fitting requires a runner-created trusted adapter registry.")
+        attestation = config.trusted_adapter_registry.resolve(adapter, role, pipeline_hash)
+        attestation_id = attestation.attestation_id
+    return _ResolvedAdapter(adapter, pipeline_hash, attestation_id)
+
+
+def _model_recipe_hash(
+    config: FrozenFoldConfig,
+    base: _ResolvedAdapter,
+    replay: _ResolvedAdapter,
+) -> str:
+    return _digest({
+        "class_order": config.class_order,
+        "base_feature_names": config.base_feature_names,
+        "state_feature_names": config.state_feature_names,
+        "base_model_id": config.base_model_id,
+        "replay_model_id": config.replay_model_id,
+        "seed": config.seed,
+        "c": config.c,
+        "max_iter": config.max_iter,
+        "excluded_ids": config.excluded_ids,
+        "analytical_run": config.analytical_run,
+        "development_manifest_id": (
+            None if config.development_manifest is None
+            else config.development_manifest.manifest_id
+        ),
+        "base_adapter": {
+            "implementation_id": base.adapter.implementation_id,
+            "implementation_version": base.adapter.implementation_version,
+            "pipeline_hash": base.pipeline_hash,
+            "attestation_id": base.attestation_id,
+        },
+        "replay_adapter": {
+            "implementation_id": replay.adapter.implementation_id,
+            "implementation_version": replay.adapter.implementation_version,
+            "pipeline_hash": replay.pipeline_hash,
+            "attestation_id": replay.attestation_id,
+        },
+    })
 
 
 @dataclass(frozen=True, slots=True)
 class FoldArtifact:
     class_order: tuple[str, ...]
+    development_manifest_id: str
+    recipe_hash: str
     fold_id: str
     fit_ids: tuple[str, ...]
     validation_ids: tuple[str, ...]
@@ -547,10 +830,13 @@ class FoldArtifact:
             raise LearningError("Base and replay artifacts require distinct model identities.")
         if self.base_model.feature_pipeline_hash == self.replay_model.feature_pipeline_hash:
             raise LearningError("Base and replay feature pipelines must remain distinct.")
-        if self.purpose == "analytical" and not (
-            self.base_model.analytical_capable and self.replay_model.analytical_capable
+        if self.purpose == "analytical" and (
+            self.base_model.adapter_attestation_id is None
+            or self.replay_model.adapter_attestation_id is None
         ):
-            raise LearningError("Analytical fold artifacts require production-capable adapters.")
+            raise LearningError("Analytical fold artifacts require trusted adapter attestations.")
+        if not self.development_manifest_id or len(self.recipe_hash) != 64:
+            raise LearningError("Fold artifacts require a development manifest and model recipe hash.")
         if set(self.fit_ids) & set(self.validation_ids):
             raise FoldLeakageError("Fit and validation IDs overlap.")
         if set(self.fit_group_ids) & set(self.validation_group_ids):
@@ -570,6 +856,8 @@ class FoldArtifact:
     def to_dict(self, *, include_id: bool = True) -> dict[str, Any]:
         result = {
             "schema_version": LEARNING_SCHEMA_VERSION,
+            "development_manifest_id": self.development_manifest_id,
+            "recipe_hash": self.recipe_hash,
             "class_order": list(self.class_order), "fold_id": self.fold_id,
             "fit_ids": list(self.fit_ids), "validation_ids": list(self.validation_ids),
             "excluded_ids": list(self.excluded_ids), "fit_group_ids": list(self.fit_group_ids),
@@ -588,6 +876,8 @@ class FoldArtifact:
 @dataclass(frozen=True, slots=True)
 class FoldArtifactProof:
     fold_artifact_id: str
+    development_manifest_id: str
+    recipe_hash: str
     fold_id: str
     fit_ids: tuple[str, ...]
     fit_group_ids: tuple[str, ...]
@@ -604,7 +894,9 @@ class FoldArtifactProof:
     @classmethod
     def from_artifact(cls, artifact: FoldArtifact) -> Self:
         return cls(
-            fold_artifact_id=artifact.artifact_id, fold_id=artifact.fold_id,
+            fold_artifact_id=artifact.artifact_id,
+            development_manifest_id=artifact.development_manifest_id,
+            recipe_hash=artifact.recipe_hash, fold_id=artifact.fold_id,
             fit_ids=artifact.fit_ids, fit_group_ids=artifact.fit_group_ids,
             validation_ids=artifact.validation_ids,
             validation_subject_groups=artifact.validation_subject_groups,
@@ -619,7 +911,9 @@ class FoldArtifactProof:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "fold_artifact_id": self.fold_artifact_id, "fold_id": self.fold_id,
+            "fold_artifact_id": self.fold_artifact_id,
+            "development_manifest_id": self.development_manifest_id,
+            "recipe_hash": self.recipe_hash, "fold_id": self.fold_id,
             "fit_ids": list(self.fit_ids), "fit_group_ids": list(self.fit_group_ids),
             "validation_ids": list(self.validation_ids),
             "validation_subject_groups": [list(item) for item in self.validation_subject_groups],
@@ -633,14 +927,90 @@ class FoldArtifactProof:
         }
 
 
+def _canonical_feature_values(
+    values: Mapping[str, float | int | None], feature_names: Sequence[str],
+) -> tuple[tuple[str, float | None], ...]:
+    result: list[tuple[str, float | None]] = []
+    for name in feature_names:
+        value = values.get(name)
+        try:
+            normalized = None if value is None else float(value)
+        except (TypeError, ValueError):
+            normalized = None
+        if normalized is not None and not math.isfinite(normalized):
+            normalized = None
+        result.append((name, normalized))
+    return tuple(result)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class FoldPredictionReceipt:
+    """Private receipt for the exact fold-artifact execution and output payload."""
+
+    subject_id: str
+    subject_hash: str
+    snapshot_hash: str
+    fold_artifact_id: str
+    base_features: tuple[tuple[str, float | None], ...]
+    state_features: tuple[tuple[str, float | None], ...]
+    base_probabilities: tuple[float, ...]
+    state_probabilities: tuple[float, ...]
+    receipt_id: str
+
+    def __init__(
+        self,
+        *,
+        subject_id: str,
+        subject_hash: str,
+        snapshot_hash: str,
+        fold_artifact_id: str,
+        base_features: tuple[tuple[str, float | None], ...],
+        state_features: tuple[tuple[str, float | None], ...],
+        base_probabilities: tuple[float, ...],
+        state_probabilities: tuple[float, ...],
+        receipt_id: str = "",
+        _seal: object | None = None,
+    ) -> None:
+        if _seal is not _PREDICTION_RECEIPT_SEAL:
+            raise LearningError("Fold prediction receipts are issued only by predict_fold().")
+        payload = {
+            "subject_id": subject_id, "subject_hash": subject_hash,
+            "snapshot_hash": snapshot_hash, "fold_artifact_id": fold_artifact_id,
+            "base_features": base_features, "state_features": state_features,
+            "base_probabilities": base_probabilities,
+            "state_probabilities": state_probabilities,
+        }
+        expected = "fold_output_" + _digest(payload)[:24]
+        if receipt_id and receipt_id != expected:
+            raise LearningError("Stale fold prediction receipt ID.")
+        for name, value in payload.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "receipt_id", expected)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subject_id": self.subject_id, "subject_hash": self.subject_hash,
+            "snapshot_hash": self.snapshot_hash, "fold_artifact_id": self.fold_artifact_id,
+            "base_features": [list(item) for item in self.base_features],
+            "state_features": [list(item) for item in self.state_features],
+            "base_probabilities": list(self.base_probabilities),
+            "state_probabilities": list(self.state_probabilities),
+            "receipt_id": self.receipt_id,
+        }
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class FoldArtifactManifest:
     proofs: tuple[FoldArtifactProof, ...]
+    outputs: tuple[FoldPredictionReceipt, ...]
+    _artifacts: tuple[FoldArtifact, ...]
     manifest_id: str = ""
 
     def __init__(
         self,
         proofs: tuple[FoldArtifactProof, ...],
+        outputs: tuple[FoldPredictionReceipt, ...] = (),
+        artifacts: tuple[FoldArtifact, ...] = (),
         manifest_id: str = "",
         *,
         _seal: object | None = None,
@@ -648,19 +1018,48 @@ class FoldArtifactManifest:
         if _seal is not _FOLD_MANIFEST_SEAL:
             raise LearningError("FoldArtifactManifest must be created by seal_fold_artifacts().")
         object.__setattr__(self, "proofs", proofs)
+        object.__setattr__(self, "outputs", outputs)
+        object.__setattr__(self, "_artifacts", artifacts)
         object.__setattr__(self, "manifest_id", manifest_id)
         self.__post_init__()
 
     def __post_init__(self) -> None:
         if not self.proofs:
             raise LearningError("A sealed fold-artifact manifest cannot be empty.")
+        if not self.outputs:
+            raise LearningError("A sealed fold-artifact manifest requires persisted fold outputs.")
+        if len(self.proofs) != len(self._artifacts):
+            raise LearningError("Fold-artifact proofs and immutable artifacts differ.")
         artifact_ids = tuple(item.fold_artifact_id for item in self.proofs)
         fold_ids = tuple(item.fold_id for item in self.proofs)
         if len(set(artifact_ids)) != len(artifact_ids) or len(set(fold_ids)) != len(fold_ids):
             raise LearningError("Fold-artifact manifest contains duplicate artifact or fold IDs.")
         if any(item.final_refit for item in self.proofs):
             raise FoldLeakageError("Final-refit artifacts cannot enter an OOF manifest.")
-        expected = "fold_manifest_" + _digest([item.to_dict() for item in self.proofs])[:24]
+        if len({item.development_manifest_id for item in self.proofs}) != 1:
+            raise FoldLeakageError("OOF artifacts do not share one development manifest.")
+        if len({item.recipe_hash for item in self.proofs}) != 1:
+            raise FoldLeakageError("OOF artifacts do not share one frozen model recipe.")
+        for proof, artifact in zip(self.proofs, self._artifacts, strict=True):
+            if proof != FoldArtifactProof.from_artifact(artifact):
+                raise LearningError("Fold-artifact proof differs from its immutable artifact.")
+        output_keys = tuple((item.subject_id, item.fold_artifact_id) for item in self.outputs)
+        if len(set(output_keys)) != len(output_keys):
+            raise LearningError("Fold-output manifest contains duplicate subject outputs.")
+        if not set(item.fold_artifact_id for item in self.outputs) <= set(artifact_ids):
+            raise LearningError("Fold output refers to an artifact outside the sealed manifest.")
+        validation_ids = tuple(
+            subject_id for proof in self.proofs for subject_id in proof.validation_ids
+        )
+        output_ids = tuple(item.subject_id for item in self.outputs)
+        if len(set(validation_ids)) != len(validation_ids) or set(output_ids) != set(validation_ids):
+            raise FoldLeakageError(
+                "Sealed fold outputs must cover every validation subject exactly once."
+            )
+        expected = "fold_manifest_" + _digest({
+            "proofs": [item.to_dict() for item in self.proofs],
+            "outputs": [item.to_dict() for item in self.outputs],
+        })[:24]
         if self.manifest_id and self.manifest_id != expected:
             raise LearningError("Stale fold-artifact manifest ID.")
         object.__setattr__(self, "manifest_id", expected)
@@ -671,13 +1070,39 @@ class FoldArtifactManifest:
             raise FoldLeakageError("OOF prediction does not resolve to exactly one sealed fold artifact.")
         return matches[0]
 
+    def resolve_artifact(self, artifact_id: str) -> FoldArtifact:
+        matches = [item for item in self._artifacts if item.artifact_id == artifact_id]
+        if len(matches) != 1:
+            raise FoldLeakageError("OOF prediction does not resolve to one immutable fold artifact.")
+        return matches[0]
 
-def seal_fold_artifacts(artifacts: Sequence[FoldArtifact]) -> FoldArtifactManifest:
-    """Seal actual non-final fold artifacts for later OOF verification."""
+    def resolve_output(self, subject_id: str, artifact_id: str) -> FoldPredictionReceipt:
+        matches = [
+            item for item in self.outputs
+            if item.subject_id == subject_id and item.fold_artifact_id == artifact_id
+        ]
+        if len(matches) != 1:
+            raise FoldLeakageError("OOF prediction does not resolve to one sealed fold output.")
+        return matches[0]
 
+
+def seal_fold_artifacts(
+    artifacts: Sequence[FoldArtifact], predictions: Sequence["FoldPrediction"],
+) -> FoldArtifactManifest:
+    """Seal immutable fold artifacts and their exact predict-fold output receipts."""
+
+    artifact_tuple = tuple(artifacts)
+    by_id = {item.artifact_id: item for item in artifact_tuple}
+    receipts: list[FoldPredictionReceipt] = []
+    for prediction in predictions:
+        artifact = by_id.get(prediction.fold_artifact_id)
+        if artifact is None:
+            raise FoldLeakageError("Fold output refers to an unsealed fold artifact.")
+        _validate_prediction_receipt_against_artifact(prediction, artifact)
+        receipts.append(prediction.output_receipt)
     return FoldArtifactManifest(
-        tuple(FoldArtifactProof.from_artifact(item) for item in artifacts),
-        _seal=_FOLD_MANIFEST_SEAL,
+        tuple(FoldArtifactProof.from_artifact(item) for item in artifact_tuple),
+        tuple(receipts), artifact_tuple, _seal=_FOLD_MANIFEST_SEAL,
     )
 
 
@@ -711,11 +1136,14 @@ class FoldPrediction:
     base_fit_hash: str
     reference_fit_id: str
     reference_fit_hash: str
+    output_receipt: FoldPredictionReceipt
     prediction_hash: str = ""
 
     def __post_init__(self) -> None:
         if self.subject != self.evidence_snapshot.subject:
             raise LearningError("Fold prediction subject differs from its evidence snapshot.")
+        if not isinstance(self.output_receipt, FoldPredictionReceipt):
+            raise LearningError("Fold prediction requires a predict_fold output receipt.")
         _probability_vector(self.base_probabilities, self.subject.class_order)
         _probability_vector(self.state_probabilities, self.subject.class_order)
         if self.base_fit_hash == self.replay_context.replay_model.artifact_id:
@@ -754,6 +1182,7 @@ class FoldPrediction:
             "replay_model_artifact_hash": self.replay_context.replay_model.artifact_id,
             "reference_fit_id": self.reference_fit_id,
             "reference_fit_hash": self.reference_fit_hash,
+            "output_receipt_id": self.output_receipt.receipt_id,
         }
         expected = _digest(payload)
         if self.prediction_hash and self.prediction_hash != expected:
@@ -761,25 +1190,45 @@ class FoldPrediction:
         object.__setattr__(self, "prediction_hash", expected)
 
 
+def _validate_prediction_receipt_against_artifact(
+    prediction: FoldPrediction, artifact: FoldArtifact,
+) -> None:
+    receipt = prediction.output_receipt
+    subject = prediction.subject
+    expected_base = artifact.base_model.predict_proba((dict(receipt.base_features),))[0]
+    expected_state = artifact.replay_model.predict_proba((dict(receipt.state_features),))[0]
+    if (
+        receipt.subject_id != subject.subject_id
+        or receipt.subject_hash != subject.content_hash
+        or receipt.snapshot_hash != prediction.evidence_snapshot.snapshot_hash
+        or receipt.fold_artifact_id != artifact.artifact_id
+        or receipt.base_probabilities != expected_base
+        or receipt.state_probabilities != expected_state
+        or prediction.base_probabilities != receipt.base_probabilities
+        or prediction.state_probabilities != receipt.state_probabilities
+    ):
+        raise FoldLeakageError("OOF prediction payload differs from its sealed fold output.")
+
+
 def _validate_adapter_artifact(
-    artifact: LinearModelArtifact, adapter: PredictorAdapter, *,
+    artifact: LinearModelArtifact, resolved: _ResolvedAdapter, *,
     fit_ids: tuple[str, ...], excluded_ids: tuple[str, ...],
     feature_names: tuple[str, ...], class_order: tuple[str, ...], analytical_run: bool,
 ) -> None:
-    expected_pipeline = adapter.feature_pipeline_hash(feature_names, class_order)
+    adapter = resolved.adapter
     if (
         artifact.adapter_implementation != adapter.implementation_id
         or artifact.adapter_version != adapter.implementation_version
-        or artifact.feature_pipeline_hash != expected_pipeline
-        or artifact.analytical_capable != adapter.analytical_capable
+        or artifact.feature_pipeline_hash != resolved.pipeline_hash
+        or artifact.adapter_attestation_id != resolved.attestation_id
         or artifact.fit_ids != fit_ids
         or artifact.excluded_ids != excluded_ids
         or artifact.feature_names != feature_names
         or artifact.class_order != class_order
     ):
         raise LearningError("Predictor adapter returned an artifact with mismatched provenance.")
-    if analytical_run and not artifact.analytical_capable:
-        raise LearningError("Analytical fitting produced a synthetic/test-only model artifact.")
+    if analytical_run and artifact.adapter_attestation_id is None:
+        raise LearningError("Analytical fitting produced an unattested model artifact.")
 
 
 def _fit_artifact(
@@ -802,6 +1251,15 @@ def _fit_artifact(
     if non_development:
         raise FoldLeakageError(
             f"Fold fitting and OOF validation require development subjects: {non_development}"
+        )
+    if frozen_config.development_manifest is None:
+        raise LearningError("Fold fitting requires a sealed canonical development manifest.")
+    development_ids = _validate_development_manifest(
+        inputs, frozen_config.development_manifest,
+    )
+    if set(selected) != set(development_ids):
+        raise FoldLeakageError(
+            "Fold fit and validation IDs must partition the canonical development manifest."
         )
     if set(fit) & set(validation) or set(fit) & set(excluded):
         raise FoldLeakageError("Fit IDs overlap validation or excluded IDs.")
@@ -826,8 +1284,11 @@ def _fit_artifact(
         if len(fold_ids) != 1:
             raise LearningError("A fold artifact requires one validation fold ID.")
         fold_id = next(iter(fold_ids))
-    base_adapter = _resolve_adapter(frozen_config, "base")
-    replay_adapter = _resolve_adapter(frozen_config, "replay")
+    base_resolved = _resolve_adapter(frozen_config, "base")
+    replay_resolved = _resolve_adapter(frozen_config, "replay")
+    recipe_hash = _model_recipe_hash(frozen_config, base_resolved, replay_resolved)
+    base_adapter = base_resolved.adapter
+    replay_adapter = replay_resolved.adapter
     fit_cases = {subject_id: inputs.cases[subject_id] for subject_id in fit}
     fit_labels = {subject_id: inputs.labels[subject_id] for subject_id in fit}
     base = base_adapter.fit(
@@ -835,20 +1296,22 @@ def _fit_artifact(
         feature_names=frozen_config.base_feature_names,
         model_id=frozen_config.base_model_id, class_order=frozen_config.class_order,
         seed=frozen_config.seed, c=frozen_config.c, max_iter=frozen_config.max_iter,
+        adapter_attestation_id=base_resolved.attestation_id,
     )
     replay = replay_adapter.fit(
         cases=fit_cases, labels=fit_labels, fit_ids=fit, excluded_ids=excluded,
         feature_names=frozen_config.state_feature_names,
         model_id=frozen_config.replay_model_id, class_order=frozen_config.class_order,
         seed=frozen_config.seed, c=frozen_config.c, max_iter=frozen_config.max_iter,
+        adapter_attestation_id=replay_resolved.attestation_id,
     )
     _validate_adapter_artifact(
-        base, base_adapter, fit_ids=fit, excluded_ids=excluded,
+        base, base_resolved, fit_ids=fit, excluded_ids=excluded,
         feature_names=frozen_config.base_feature_names, class_order=frozen_config.class_order,
         analytical_run=frozen_config.analytical_run,
     )
     _validate_adapter_artifact(
-        replay, replay_adapter, fit_ids=fit, excluded_ids=excluded,
+        replay, replay_resolved, fit_ids=fit, excluded_ids=excluded,
         feature_names=frozen_config.state_feature_names, class_order=frozen_config.class_order,
         analytical_run=frozen_config.analytical_run,
     )
@@ -858,7 +1321,9 @@ def _fit_artifact(
         "replay_feature_pipeline_hash": replay.feature_pipeline_hash,
     })
     return FoldArtifact(
-        class_order=frozen_config.class_order, fold_id=fold_id, fit_ids=fit,
+        class_order=frozen_config.class_order,
+        development_manifest_id=frozen_config.development_manifest.manifest_id,
+        recipe_hash=recipe_hash, fold_id=fold_id, fit_ids=fit,
         validation_ids=validation, excluded_ids=excluded, fit_group_ids=fit_groups,
         validation_group_ids=validation_groups,
         validation_subject_groups=validation_subject_groups,
@@ -905,6 +1370,18 @@ def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> Fol
         raise LearningError("Evidence snapshot is not from the paired fold reference fit.")
     base_probability = fold_artifact.base_model.predict_proba((case_inputs.base_features,))[0]
     state_probability = fold_artifact.replay_model.predict_proba((case_inputs.state_features,))[0]
+    receipt = FoldPredictionReceipt(
+        subject_id=subject.subject_id, subject_hash=subject.content_hash,
+        snapshot_hash=snapshot.snapshot_hash, fold_artifact_id=fold_artifact.artifact_id,
+        base_features=_canonical_feature_values(
+            case_inputs.base_features, fold_artifact.base_model.feature_names,
+        ),
+        state_features=_canonical_feature_values(
+            case_inputs.state_features, fold_artifact.replay_model.feature_names,
+        ),
+        base_probabilities=base_probability, state_probabilities=state_probability,
+        _seal=_PREDICTION_RECEIPT_SEAL,
+    )
     return FoldPrediction(
         subject=subject, base_probabilities=base_probability,
         state_probabilities=state_probability, evidence_snapshot=snapshot,
@@ -923,6 +1400,7 @@ def predict_fold(fold_artifact: FoldArtifact, case_inputs: FoldCaseInput) -> Fol
         base_fit_hash=fold_artifact.base_model.artifact_id,
         reference_fit_id=fold_artifact.reference_fit_id,
         reference_fit_hash=fold_artifact.reference_fit_hash,
+        output_receipt=receipt,
     )
 
 
@@ -930,6 +1408,13 @@ def _verify_oof_prediction(
     prediction: FoldPrediction, fold_manifest: FoldArtifactManifest,
 ) -> FoldArtifactProof:
     proof = fold_manifest.resolve(prediction.fold_artifact_id)
+    artifact = fold_manifest.resolve_artifact(prediction.fold_artifact_id)
+    persisted_output = fold_manifest.resolve_output(
+        prediction.subject.subject_id, prediction.fold_artifact_id,
+    )
+    if prediction.output_receipt != persisted_output:
+        raise FoldLeakageError("OOF prediction differs from its sealed fold output receipt.")
+    _validate_prediction_receipt_against_artifact(prediction, artifact)
     subject = prediction.subject
     expected_group = dict(proof.validation_subject_groups).get(subject.subject_id)
     if proof.final_refit or prediction.final_refit:
@@ -960,24 +1445,23 @@ def _verify_oof_prediction(
 
 def refit_full_development(
     inputs: FoldInputs,
-    development_ids: Sequence[str],
     oof_predictions: Sequence[FoldPrediction],
     fold_manifest: FoldArtifactManifest,
     frozen_config: FrozenFoldConfig,
 ) -> FoldArtifact:
     """Refit only after every development subject has exactly one OOF row."""
 
-    expected = _ordered_ids(development_ids, "development_ids")
-    unknown = [item for item in expected if item not in inputs.cases]
-    if unknown:
-        raise LearningError(f"Unknown development IDs: {unknown}")
-    non_development = [
-        item for item in expected if inputs.cases[item].subject.partition != "development"
-    ]
-    if non_development:
-        raise FoldLeakageError(
-            f"Full-development refit received non-development subjects: {non_development}"
-        )
+    if frozen_config.development_manifest is None:
+        raise LearningError("Full refit requires a sealed canonical development manifest.")
+    expected = _validate_development_manifest(inputs, frozen_config.development_manifest)
+    manifest_ids = {item.development_manifest_id for item in fold_manifest.proofs}
+    if manifest_ids != {frozen_config.development_manifest.manifest_id}:
+        raise FoldLeakageError("OOF artifacts differ from the canonical development manifest.")
+    base_resolved = _resolve_adapter(frozen_config, "base")
+    replay_resolved = _resolve_adapter(frozen_config, "replay")
+    expected_recipe = _model_recipe_hash(frozen_config, base_resolved, replay_resolved)
+    if {item.recipe_hash for item in fold_manifest.proofs} != {expected_recipe}:
+        raise FoldLeakageError("Full-development refit changed the verified OOF model recipe.")
     for prediction in oof_predictions:
         _verify_oof_prediction(prediction, fold_manifest)
     observed = [item.subject.subject_id for item in oof_predictions]

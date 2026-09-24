@@ -82,12 +82,14 @@ def _fold_fixture(*, leaky_group: bool = False) -> tuple[l.FoldInputs, tuple[str
         )
         labels[subject.subject_id] = label
         (validation_ids if index >= 8 else fit_ids).append(subject.subject_id)
+    inputs = l.FoldInputs(cases=cases, labels=labels)
     config = l.FrozenFoldConfig(
         class_order=("HC", "AD"), base_feature_names=("base_signal", "constant"),
         state_feature_names=("state_signal", "missing"), base_model_id="condition_c_fixture_v1",
         replay_model_id="state_replay_fixture_v1", analytical_run=False,
+        development_manifest=l.seal_development_manifest(inputs),
     )
-    return l.FoldInputs(cases=cases, labels=labels), tuple(fit_ids), tuple(validation_ids), config
+    return inputs, tuple(fit_ids), tuple(validation_ids), config
 
 
 def _actual_oof_predictions(
@@ -115,6 +117,7 @@ def _actual_oof_predictions(
         class_order=class_order, base_feature_names=("base_signal", "base_nonstate"),
         state_feature_names=("state_signal",), base_model_id="synthetic_full_base_v1",
         replay_model_id="synthetic_state_replay_v1", analytical_run=False,
+        development_manifest=l.seal_development_manifest(inputs),
     )
     artifacts: list[l.FoldArtifact] = []
     predictions: list[l.FoldPrediction] = []
@@ -133,7 +136,7 @@ def _actual_oof_predictions(
                 reference_fit_hash=artifact.reference_fit_hash,
             ))
             predictions.append(l.predict_fold(artifact, bound))
-    return predictions, labels, l.seal_fold_artifacts(artifacts), inputs, config
+    return predictions, labels, l.seal_fold_artifacts(artifacts, predictions), inputs, config
 
 
 def _three_class_rows(
@@ -248,6 +251,27 @@ def test_synthetic_adapter_is_typed_persisted_and_blocked_for_analytical_runs():
         l.fit_fold(inputs, fit_ids, validation_ids, replace(config, analytical_run=True))
 
 
+def test_synthetic_adapter_cannot_self_attest_for_analytical_use(monkeypatch):
+    inputs, fit_ids, validation_ids, config = _fold_fixture()
+    base = l.SyntheticLinearPredictorAdapter("base")
+    replay = l.SyntheticLinearPredictorAdapter("replay")
+    monkeypatch.setattr(l.SyntheticLinearPredictorAdapter, "analytical_capable", True, raising=False)
+    with pytest.raises(l.LearningError, match="trusted analytical adapter"):
+        l.create_trusted_adapter_registry((base, replay))
+    with pytest.raises(l.LearningError, match="trusted adapter registry"):
+        l.fit_fold(
+            inputs, fit_ids, validation_ids,
+            replace(
+                config, analytical_run=True, base_adapter=base, replay_adapter=replay,
+            ),
+        )
+
+
+def test_trusted_adapter_registry_cannot_be_caller_constructed():
+    with pytest.raises(l.LearningError, match="created by create_trusted_adapter_registry"):
+        l.TrustedAdapterRegistry(())
+
+
 @pytest.mark.parametrize("partition", ["holdout", "stress"])
 @pytest.mark.parametrize("target", ["fit", "validation"])
 def test_fit_fold_rejects_non_development_fit_and_validation_subjects(partition, target):
@@ -283,8 +307,15 @@ def test_private_full_refit_requires_verified_complete_development_oof():
         task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
     )
     final = l.refit_full_development(
-        inputs, tuple(labels), predictions, manifest, config,
+        inputs, predictions, manifest, config,
     )
+    development_manifest = config.development_manifest
+    assert set(development_manifest.subject_ids) == set(labels)
+    for proof in development_manifest.subjects:
+        subject = inputs.cases[proof.subject_id].subject
+        assert proof.source_group_id == subject.source_group_id
+        assert proof.fold_id == subject.fold_id
+        assert proof.subject_hash == subject.content_hash
     assert final.final_refit
     assert not final.validation_ids
 
@@ -295,9 +326,47 @@ def test_private_full_refit_requires_verified_complete_development_oof():
     changed_cases[subject_id] = replace(
         original, subject=holdout_subject, evidence_snapshot=_snapshot(holdout_subject),
     )
-    with pytest.raises(l.FoldLeakageError, match="non-development"):
+    with pytest.raises(l.FoldLeakageError, match="canonical development manifest"):
         l.refit_full_development(
-            replace(inputs, cases=changed_cases), tuple(labels), predictions, manifest, config,
+            replace(inputs, cases=changed_cases), predictions, manifest, config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("base_model_id", "changed_base"),
+        ("replay_model_id", "changed_replay"),
+        ("seed", 7),
+        ("c", 0.25),
+        ("max_iter", 17),
+        ("excluded_ids", ("sub_external_exclusion",)),
+    ],
+)
+def test_full_refit_rejects_recipe_changes(field, value):
+    predictions, _, manifest, inputs, config = _actual_oof_predictions(
+        task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
+    )
+    with pytest.raises(l.FoldLeakageError, match="model recipe"):
+        l.refit_full_development(
+            inputs, predictions, manifest, replace(config, **{field: value}),
+        )
+
+
+def test_full_refit_rejects_subset_against_canonical_development_manifest():
+    predictions, _, manifest, inputs, config = _actual_oof_predictions(
+        task="hc_ad", class_order=("HC", "AD"), ordered_labels=("HC", "AD"), count=12,
+    )
+    omitted = predictions[0].subject.subject_id
+    with pytest.raises(l.LearningError, match="exactly one OOF"):
+        l.refit_full_development(inputs, predictions[1:], manifest, config)
+
+    subset_cases = {key: value for key, value in inputs.cases.items() if key != omitted}
+    subset_labels = {key: value for key, value in inputs.labels.items() if key != omitted}
+    with pytest.raises(l.FoldLeakageError, match="canonical development manifest"):
+        l.refit_full_development(
+            l.FoldInputs(cases=subset_cases, labels=subset_labels),
+            predictions[1:], manifest, config,
         )
 
 
@@ -382,10 +451,10 @@ def test_full_refit_is_blocked_until_oof_is_complete():
             reference_fit_hash=artifact.reference_fit_hash,
         ))
         predictions.append(l.predict_fold(artifact, bound))
-    manifest = l.seal_fold_artifacts((artifact,))
+    manifest = l.seal_fold_artifacts((artifact,), predictions)
     with pytest.raises(l.LearningError, match="exactly one OOF"):
         l.refit_full_development(
-            inputs, fit_ids + validation_ids, predictions, manifest, config,
+            inputs, predictions, manifest, config,
         )
 
 
@@ -424,6 +493,24 @@ def test_oof_binding_retains_and_verifies_resolved_fold_artifact_fields():
     with pytest.raises(l.FoldLeakageError, match="resolved sealed fold artifact"):
         l.fit_joint_calibrators(
             [tampered_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
+        )
+
+
+def test_oof_probability_tamper_with_recomputed_prediction_hash_is_rejected():
+    rows, labels, manifest = _three_class_rows()
+    prediction = rows[0].fold_prediction
+    forged_probabilities = tuple(reversed(prediction.base_probabilities))
+    forged_prediction = replace(
+        prediction, base_probabilities=forged_probabilities, prediction_hash="",
+    )
+    assert forged_prediction.prediction_hash != prediction.prediction_hash
+    forged_row = replace(
+        rows[0], base_probabilities=forged_probabilities,
+        fold_prediction=forged_prediction,
+    )
+    with pytest.raises(l.FoldLeakageError, match="sealed fold output"):
+        l.fit_joint_calibrators(
+            [forged_row, *rows[1:]], labels, l.CalibrationConfig(), manifest,
         )
 
 
@@ -517,7 +604,7 @@ def test_model_class_permutation_round_trip():
     artifact = l.LinearModelArtifact(
         model_id="permuted_fixture", adapter_implementation="fixture.full_base",
         adapter_version="v1", feature_pipeline_hash="a" * 64,
-        analytical_capable=False,
+        adapter_attestation_id=None,
         class_order=("HC", "MCI", "AD"), feature_names=("x",), impute_values=(0.0,),
         means=(0.0,), scales=(1.0,), learned_classes=("AD", "HC", "MCI"),
         coefficients=((2.0,), (-2.0,), (0.0,)), intercepts=(0.0, 0.0, 0.0),

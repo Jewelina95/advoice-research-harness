@@ -198,41 +198,54 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
     for row in collisions:
         collision_groups[(row["dataset_id"], row["source_group_id"])].append(row)
     collision_audit = []
-    blocked_datasets: set[str] = set()
+    blocked_reasons: dict[str, str] = {}
     for (dataset, group), rows in sorted(collision_groups.items()):
         label_count = len({row["label"] for row in rows})
         hash_count = len({row["raw_hash"] for row in rows})
         unresolved = label_count > 1 or hash_count > 1
         if unresolved:
-            blocked_datasets.add(dataset)
+            blocked_reasons[dataset] = "unresolved_source_identity_collision"
         collision_audit.append({"dataset_id": dataset, "source_group_id": _pseudo("grp", dataset, group),
                                 "record_count": len(rows), "distinct_label_count": label_count,
                                 "distinct_hash_count": hash_count,
                                 "source_ids": sorted(_pseudo("src", dataset, row["source_id"]) for row in rows),
                                 "resolution": ("unresolved_conflicting_identity_or_recording"
                                                if unresolved else "canonical_duplicate_excluded")})
+
+    recording_groups: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for row in source:
+        recording_groups[row["raw_hash"]].add((row["dataset_id"], row["source_group_id"]))
+    recording_collisions = {digest: groups for digest, groups in recording_groups.items() if len(groups) > 1}
+    recording_collision_audit = []
+    for digest, groups in sorted(recording_collisions.items()):
+        datasets = sorted({dataset for dataset, _ in groups})
+        for dataset in datasets:
+            blocked_reasons.setdefault(dataset, "duplicate_recording_spans_source_identity_groups")
+        recording_collision_audit.append({"asset_id": _pseudo("asset", digest),
+                                          "source_group_count": len(groups),
+                                          "affected_datasets": datasets,
+                                          "source_group_ids": sorted(_pseudo("grp", dataset, group)
+                                                                     for dataset, group in groups)})
+
+    blocked_datasets = set(blocked_reasons)
     eligible, exclusions, reasons = [], [], Counter()
     for row in source:
         reason = ("six_second_track" if row["source_track"] == "six_second" else
                   "missing_raw_provenance" if not row["raw_path"] else
                   "prepare_invalid_uid" if row["dataset_id"] == "PREPARE_DrivenData" and row["source_split"] == "invalid" else
                   "source_identity_collision" if row["source_split"] == "identity_collision" else
-                  "cohort_blocked_identity_collision" if row["dataset_id"] in blocked_datasets and row["source_split"] in {"development", "stress"} else
+                  ("cohort_blocked_identity_collision" if blocked_reasons[row["dataset_id"]] == "unresolved_source_identity_collision"
+                   else "cohort_blocked_recording_collision") if row["dataset_id"] in blocked_datasets and row["source_split"] in {"development", "stress"} else
                   "source_cohort_excluded" if row["source_split"] not in {"development", "stress"} else "")
         if reason:
             reasons[reason] += 1
             exclusions.append({"dataset_id": row["dataset_id"], "source_id": _pseudo("src", row["dataset_id"], row["source_id"]), "reason": reason})
         else:
             eligible.append(row)
-    hash_groups: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    for row in eligible:
-        hash_groups[row["raw_hash"]].add((row["dataset_id"], row["source_group_id"]))
-    if any(len(groups) > 1 for groups in hash_groups.values()):
-        raise ManifestError("A duplicate recording spans source identity groups.")
     grouped, output = _groups(eligible), []
     audit = {"status": "partial" if blocked_datasets else "ready", "seed": seed, "n_splits": n_splits,
              "source_records": len(source), "blocked_cohorts": sorted(blocked_datasets),
-             "collision_groups": collision_audit,
+             "collision_groups": collision_audit, "recording_collision_groups": recording_collision_audit,
              "source_records_by_dataset_track": {f"{d}:{t}": n for (d, t), n in sorted(Counter((r["dataset_id"], r["source_track"]) for r in source).items())},
              "excluded_records": len(exclusions), "exclusion_reason_counts": dict(sorted(reasons.items())),
              "prepare_invalid_uid_provenance": prepare,
@@ -243,10 +256,14 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
     analytical_hashes: set[str] = set()
     for offset, (dataset, (total, holdout_n)) in enumerate(CORE_COHORTS.items()):
         if dataset in blocked_datasets:
-            audit["cohorts"][dataset] = {"status": "blocked", "reason": "unresolved_source_identity_collision",
-                                           "selected": 0, "development": 0, "holdout": 0,
-                                           "collision_group_count": sum(row["dataset_id"] == dataset and row["resolution"].startswith("unresolved")
-                                                                        for row in collision_audit)}
+            cohort = {"status": "blocked", "reason": blocked_reasons[dataset],
+                      "selected": 0, "development": 0, "holdout": 0,
+                      "collision_group_count": sum(row["dataset_id"] == dataset and row["resolution"].startswith("unresolved")
+                                                   for row in collision_audit)}
+            recording_collision_count = sum(dataset in row["affected_datasets"] for row in recording_collision_audit)
+            if recording_collision_count:
+                cohort["recording_collision_group_count"] = recording_collision_count
+            audit["cohorts"][dataset] = cohort
             continue
         candidates = [r for r in grouped if r["dataset_id"] == dataset and r["rows"][0]["source_split"] == "development"]
         selected = _take(candidates, total, seed + offset)
@@ -265,10 +282,13 @@ def build_pilot_manifest(config: Mapping[str, Any], source_inventory: Iterable[M
                                        "source_pool": len(candidates), "development_fold_counts": dict(sorted(Counter(fold_map.values()).items()))}
     for offset, (dataset, count) in enumerate(STRESS_COHORTS.items()):
         if dataset in blocked_datasets:
-            audit["cohorts"][dataset] = {"status": "blocked", "reason": "unresolved_source_identity_collision",
-                                           "selected": 0, "stress": 0,
-                                           "collision_group_count": sum(row["dataset_id"] == dataset and row["resolution"].startswith("unresolved")
-                                                                        for row in collision_audit)}
+            cohort = {"status": "blocked", "reason": blocked_reasons[dataset], "selected": 0, "stress": 0,
+                      "collision_group_count": sum(row["dataset_id"] == dataset and row["resolution"].startswith("unresolved")
+                                                   for row in collision_audit)}
+            recording_collision_count = sum(dataset in row["affected_datasets"] for row in recording_collision_audit)
+            if recording_collision_count:
+                cohort["recording_collision_group_count"] = recording_collision_count
+            audit["cohorts"][dataset] = cohort
             continue
         candidates = [r for r in grouped if r["dataset_id"] == dataset and r["rows"][0]["source_split"] == "stress"]
         selected = _take(candidates, count, seed + 200 + offset)

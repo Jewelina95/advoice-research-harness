@@ -51,18 +51,24 @@ def test_manifest_deterministic_safe_and_folds_are_integrated():
     assert not ({asset for r in canaries for asset in r["raw_hashes"]} & {asset for r in analytical for asset in r["raw_hashes"]})
 
 
-def test_canaries_exclude_reserved_official_test_groups_and_hashes():
+def test_reserved_official_test_recording_blocks_affected_cohort():
     rows = _inventory()
     first_manifest = build_pilot_manifest(_config(), rows)[0]
-    reserved_hash = next(iter(next(r for r in first_manifest if r["partition"] == "engineering_canary")["raw_hashes"].values()))
+    reserved_hash = next(iter(next(r for r in first_manifest
+                                  if r["dataset_id"] == "PREPARE_DrivenData" and r["partition"] == "development")["raw_hashes"].values()))
     rows.append(_row("PREPARE_DrivenData", "reserved-test", "HC", split="excluded", raw_hash=reserved_hash))
 
-    manifest, _, audit = build_pilot_manifest(_config(), rows)
+    manifest, exclusions, audit = build_pilot_manifest(_config(), rows)
 
-    canaries = [row for row in manifest if row["partition"] == "engineering_canary"]
-    assert len(canaries) == 11
-    assert reserved_hash not in {digest for row in canaries for digest in row["raw_hashes"].values()}
-    assert audit["cohorts"]["engineering_canary"]["gap"] == 1
+    assert audit["status"] == "partial"
+    assert audit["blocked_cohorts"] == ["PREPARE_DrivenData"]
+    assert audit["cohorts"]["PREPARE_DrivenData"]["reason"] == "duplicate_recording_spans_source_identity_groups"
+    assert audit["cohorts"]["PREPARE_DrivenData"]["recording_collision_group_count"] == 1
+    assert len(audit["recording_collision_groups"]) == 1
+    assert not any(row["dataset_id"] == "PREPARE_DrivenData" for row in manifest)
+    assert len([row for row in manifest if row["dataset_id"] == "ADReSS_2020"]) == 81
+    assert len([row for row in manifest if row["dataset_id"] == "NCMMSC2021_AD"]) == 120
+    assert sum(row["reason"] == "cohort_blocked_recording_collision" for row in exclusions) == 162
 
 
 def test_every_six_second_source_is_audited_and_excluded():
@@ -94,10 +100,13 @@ def test_prepare_mismatch_requires_exact_pinned_source_provenance():
     assert sum(r["reason"] == "prepare_invalid_uid" for r in exclusions) == 24
 
 
-def test_duplicate_recording_and_missing_class_fail_before_training():
-    rows = _inventory(); rows[0]["raw_hash"] = rows[1]["raw_hash"]
-    with pytest.raises(ManifestError, match="duplicate recording"):
-        build_pilot_manifest(_config(), rows)
+def test_duplicate_recording_blocks_cohort_and_missing_class_fail_before_training():
+    rows = _inventory()
+    rows[0]["raw_hash"] = rows[1]["raw_hash"]
+    manifest, exclusions, audit = build_pilot_manifest(_config(), rows)
+    assert audit["cohorts"]["PREPARE_DrivenData"]["reason"] == "duplicate_recording_spans_source_identity_groups"
+    assert not any(row["dataset_id"] == "PREPARE_DrivenData" for row in manifest)
+    assert sum(row["reason"] == "cohort_blocked_recording_collision" for row in exclusions) == 162
     manifest = build_pilot_manifest(_config(), _inventory())[0]
     dev = [r for r in manifest if r["dataset_id"] == "ADReSS_2020" and r["partition"] == "development"]
     with pytest.raises(ManifestError, match="Missing class"):

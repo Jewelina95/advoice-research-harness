@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Voice Agent：证据约束的认知筛查框架</title>
+  <style>
+    :root{--ink:#173042;--muted:#667783;--teal:#238d83;--coral:#e67f75;--line:#dbe4e6;--paper:#fff;--wash:#f4f8f7}
+    *{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+    header,section{background:var(--paper);border-bottom:1px solid var(--line)}.wrap{max-width:1240px;margin:auto;padding:38px 44px}
+    h1{font-size:38px;line-height:1.15;margin:0 0 14px;letter-spacing:0}h2{font-size:27px;margin:0 0 18px;letter-spacing:0}h3{font-size:19px;margin:0 0 8px;letter-spacing:0}
+    p{margin:8px 0}.lead{font-size:21px;max-width:980px}.tag{display:inline-block;color:#fff;background:var(--teal);padding:3px 9px;border-radius:4px;font-size:13px;font-weight:700;margin-right:7px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.item{border:1px solid var(--line);border-top:4px solid var(--teal);padding:18px;border-radius:6px;background:#fff}.item.coral{border-top-color:var(--coral)}
+    .flow{display:grid;grid-template-columns:repeat(6,1fr);gap:9px}.step{padding:14px 10px;border:1px solid var(--line);border-radius:5px;text-align:center;background:#fbfdfd;font-weight:700}.step small{display:block;color:var(--muted);font-weight:500;margin-top:6px}
+    figure{margin:18px 0 0}img{display:block;width:100%;height:auto;border:1px solid var(--line);background:#fff}figcaption{font-size:14px;color:var(--muted);margin-top:8px}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status{border-left:5px solid #d59b2a;background:#fff8e8;padding:15px 18px}.result{font-size:22px;font-weight:800;color:var(--teal)}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line)}th{background:#eef5f3}.foot{font-size:13px;color:var(--muted)}
+    @media(max-width:800px){.wrap{padding:26px 20px}.grid,.two,.flow{grid-template-columns:1fr}h1{font-size:30px}}
+  </style>
+</head>
+<body>
+<header><div class="wrap"><span class="tag">MEETING VERSION</span><span class="tag">24 SEP 2026</span><h1>Voice Agent：证据约束的认知筛查框架</h1><p class="lead">核心变化不是让大模型自由给诊断，而是让它在可追溯的 MetricEvidence、StateCard 与源片段上完成结构化判断、有限修订和报告生成。</p></div></header>
+
+<section><div class="wrap"><h2>六步实务链路</h2><div class="flow">
+  <div class="step">1 数据路由<small>任务、角色、语言、来源</small></div>
+  <div class="step">2 指标证据<small>值、方向、可靠性、混杂</small></div>
+  <div class="step">3 认知状态<small>语言、效率、停顿、韵律</small></div>
+  <div class="step">4 监督基础<small>折内训练与 OOF 校准</small></div>
+  <div class="step">5 Agent 判断<small>盲判、证据修订、有限回放</small></div>
+  <div class="step">6 联合输出<small>预测、证据链、临床建议</small></div>
+</div><figure><img src="assets/system_architecture.png" alt="Voice Agent system architecture"><figcaption>图 1｜当前系统结构。B1 是监督声学基线，B2 是直接 LLM 基线，B3 是证据约束 Voice Agent。</figcaption></figure></div></section>
+
+<section><div class="wrap"><h2>这次框架更新解决什么</h2><div class="grid">
+  <article class="item"><h3>证据进入预测链</h3><p>State 与 Agent 不是报告装饰。联合校准显式比较 B、J-A、J-S、J-AS，检验 Agent 判断和状态回放是否提供净增益。</p></article>
+  <article class="item"><h3>Agent 获得有限判断权</h3><p>Agent 独立阅读不含基础概率和真值的证据包；可提出有限修订，但不能伪造测量、参考范围或标签。</p></article>
+  <article class="item"><h3>结果可以回溯</h3><p>每个报告发现都绑定 StateCard、MetricEvidence、源片段、版本与哈希；状态变化后必须重新计算，不能沿用旧判断。</p></article>
+  <article class="item coral"><h3>避免弱 Agent 被放大</h3><p>Agent 权重不再由“基础模型不确定”直接决定，而由完整 OOF 验证集上的独立增量联合校准。</p></article>
+  <article class="item coral"><h3>保护 HC、MCI、AD</h3><p>除总体指标外，记录每类帮助与伤害、回退率和拒绝原因，禁止通过牺牲一个类别换取总体准确率。</p></article>
+  <article class="item coral"><h3>控制成本与失败</h3><p>限制两轮语义评估、三项修订操作，并把 token、费用、超时、取消和回退纳入正式结果。</p></article>
+</div></div></section>
+
+<section><div class="wrap"><h2>数据覆盖与跨通道设计</h2><figure><img src="assets/dataset_landscape.png" alt="Dataset landscape"><figcaption>图 2｜历史数据清点快照，覆盖结构化任务、图片描述、临床访谈、公共自然语音与纵向任务。新 pilot 按患者/来源分组并严格隔离训练、校准和保留测试。</figcaption></figure></div></section>
+
+<section><div class="wrap"><h2>Trace back：从报告结论返回原始片段</h2><div class="two"><figure><img src="assets/traceback.png" alt="Evidence trace back"><figcaption>图 3｜报告发现 → StateCard → MetricEvidence → 可重放源片段。</figcaption></figure><figure><img src="assets/trajectory.png" alt="Within-record trajectory"><figcaption>图 4｜记录内轨迹保留局部变化，避免把整段语音压成单个均值。</figcaption></figure></div></div></section>
+
+<section><div class="wrap"><h2>已锁定历史结果：用于说明覆盖，不作为新 pilot 结论</h2><div class="status"><strong>解释边界：</strong>下图来自此前评估快照。它说明现有系统在多个数据通道具有可运行结果，但不能证明本次 Agent 权限重构已经产生净增益，也不能替代与 SpeechCARE 的同协议、同分割、同统计口径比较。</div><figure><img src="assets/layer_a.png" alt="Historical Layer A results"><figcaption>图 5｜Layer A 历史快照：跨独立数据集的判别和固定阈值结果。</figcaption></figure><figure><img src="assets/layer_b.png" alt="Historical Layer B results"><figcaption>图 6｜Layer B 历史快照：状态增量与报告结构审计。</figcaption></figure></div></section>
+
+<section><div class="wrap"><h2>当前工程结果与论文可写结论</h2><table><thead><tr><th>项目</th><th>当前状态</th><th>可以写入论文的范围</th></tr></thead><tbody>
+<tr><td>代码验证</td><td class="result">1,260 passed; 3 skipped</td><td>可写为软件级验证，不等价于临床有效性。</td></tr>
+<tr><td>五个比较臂</td><td>B_raw、B、J-A、J-S、J-AS 已实现</td><td>可写方法和预注册比较逻辑。</td></tr>
+<tr><td>证据修订</td><td>盲判、修订、重算、回退与成本边界已实现</td><td>可写运行机制与可追溯性。</td></tr>
+<tr><td>真实付费 pilot</td><td>审查阻断，未调用</td><td>不能写 Agent 提升或超过 SpeechCARE。</td></tr>
+<tr><td>SpeechCARE 同协议</td><td>待最终 runner、评分与 OOF 约束通过复审</td><td>只写比较协议，暂不写优越性结论。</td></tr>
+</tbody></table></div></section>
+
+<section><div class="wrap"><h2>本轮必须通过的判定标准</h2><div class="grid">
+<article class="item"><h3>预测增益</h3><p>J-AS 相对匹配 B 的净增益来自同一保留集，并报告置信区间与配对差异。</p></article>
+<article class="item"><h3>机制增益</h3><p>更强 Agent 应提高有证据支持的判断或修订质量，而不是增加无依据覆盖率。</p></article>
+<article class="item"><h3>安全增益</h3><p>HC、MCI、AD 各类伤害受控；无效证据、调用失败和成本不从分母中消失。</p></article>
+</div><p class="foot">本页为汇报版本。涉及患者的原始音频、转录和标签均未打包或上传。</p></div></section>
+</body></html>

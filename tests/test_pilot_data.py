@@ -3,12 +3,12 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
-import advoice.pilot.data as pilot_data
 from advoice.pilot.contracts import PilotContractError
 from advoice.pilot.data import (ManifestError, PREPARE_827_MANIFEST_SHA256, PREPARE_TASK_SHA256,
     PREPARE_TASK_SOURCE_VERSION,
-    build_pilot_manifest, load_canary_labels, load_development_labels, load_sealed_scoring_labels,
-    make_group_folds, make_label_rows, write_pilot_artifacts)
+    build_pilot_manifest, load_canary_labels, load_cohort_status, load_development_labels,
+    load_sealed_scoring_labels, make_group_folds, make_label_rows, require_cohort_ready,
+    write_pilot_artifacts)
 
 
 def _row(dataset, subject, label, *, split="development", track="primary", raw_hash=None):
@@ -109,30 +109,42 @@ def test_unresolved_identity_collision_blocks_affected_cohort():
     rows.extend([_row("NCMMSC2021_AD", "collision-ad", "AD", split="identity_collision"),
                  _row("NCMMSC2021_AD", "collision-mci", "MCI", split="identity_collision")])
     rows[-1]["source_group_id"] = rows[-2]["source_group_id"] = "same-source-identity"
-    with pytest.raises(ManifestError, match="collisions block"):
-        build_pilot_manifest(_config(), rows)
+    manifest, exclusions, audit = build_pilot_manifest(_config(), rows)
+
+    assert audit["status"] == "partial"
+    assert audit["blocked_cohorts"] == ["NCMMSC2021_AD"]
+    assert audit["cohorts"]["NCMMSC2021_AD"] == {
+        "status": "blocked", "reason": "unresolved_source_identity_collision", "selected": 0,
+        "development": 0, "holdout": 0, "collision_group_count": 1}
+    assert audit["collision_groups"][0]["distinct_label_count"] == 2
+    assert audit["collision_groups"][0]["distinct_hash_count"] == 2
+    assert not any(row["dataset_id"] == "NCMMSC2021_AD" for row in manifest)
+    assert len([row for row in manifest if row["dataset_id"] == "PREPARE_DrivenData"]) == 162
+    assert len([row for row in manifest if row["dataset_id"] == "ADReSS_2020"]) == 81
+    assert sum(row["reason"] == "cohort_blocked_identity_collision" for row in exclusions) == 120
 
 
-def test_blocked_inventory_removes_stale_freeze_and_hashes_audit(tmp_path: Path):
+def test_cohort_status_rejects_only_blocked_dataset_and_preserves_capabilities(tmp_path: Path):
     rows = _inventory()
     rows.extend([_row("NCMMSC2021_AD", "collision-ad", "AD", split="identity_collision"),
                  _row("NCMMSC2021_AD", "collision-mci", "MCI", split="identity_collision")])
     rows[-1]["source_group_id"] = rows[-2]["source_group_id"] = "same-source-identity"
-    (tmp_path / "split_manifest.csv").write_text("stale\n")
-    initial = [{"dataset_id": "NCMMSC2021_AD", "source_id": "metadata", "reason": "filesystem_metadata_ignored"}]
+    manifest, exclusions, audit = build_pilot_manifest(_config(), rows)
+    paths = write_pilot_artifacts(tmp_path, rows, manifest, exclusions, audit, make_label_rows(manifest, rows))
 
-    pilot_data._write_blocked_inventory(tmp_path, rows, initial, _config())
-
-    assert not (tmp_path / "split_manifest.csv").exists()
-    audit = json.loads((tmp_path / "identity_audit.json").read_text())
-    assert audit["status"] == "blocked"
-    assert audit["collision_groups"][0]["distinct_label_count"] == 2
-    assert audit["collision_groups"][0]["distinct_hash_count"] == 2
-    assert audit["exclusion_reason_counts"]["filesystem_metadata_ignored"] == 1
-    assert audit["engineering_canary_reservation"]["status"] == "not_frozen_due_to_block"
-    hashes = json.loads((tmp_path / "sha256_manifest.json").read_text())["files"]
-    assert set(hashes) == {"source_index.jsonl", "exclusions.csv", "identity_audit.json", "cache_provenance.json"}
-    assert all(hashlib.sha256((tmp_path / name).read_bytes()).hexdigest() == digest for name, digest in hashes.items())
+    statuses = load_cohort_status(paths["cohort_status.csv"])
+    assert statuses["NCMMSC2021_AD"]["status"] == "blocked"
+    assert require_cohort_ready(paths["cohort_status.csv"], "ADReSS_2020")["status"] == "ready"
+    with pytest.raises(ManifestError, match="NCMMSC2021_AD is blocked"):
+        require_cohort_ready(paths["cohort_status.csv"], "NCMMSC2021_AD")
+    assert len(load_development_labels(paths["development_labels.jsonl"])) == 185
+    assert len(load_sealed_scoring_labels(paths["sealed_holdout_labels.jsonl"])) == 46
+    assert len(load_sealed_scoring_labels(paths["sealed_stress_labels.jsonl"])) == 20
+    assert len(load_canary_labels(paths["canary_labels.jsonl"])) == 12
+    assert "NCMMSC2021_AD" not in paths["split_manifest.csv"].read_text()
+    assert "NCMMSC2021_AD" not in paths["folds.csv"].read_text()
+    assert all("NCMMSC2021_AD" not in paths[name].read_text() for name in
+               ("development_labels.jsonl", "sealed_holdout_labels.jsonl", "sealed_stress_labels.jsonl", "canary_labels.jsonl"))
 
 
 def test_typed_labels_are_partitioned_and_capability_checked(tmp_path: Path):
@@ -149,7 +161,11 @@ def test_typed_labels_are_partitioned_and_capability_checked(tmp_path: Path):
 
 
 def test_artifacts_are_canonical_and_all_payloads_are_hashed(tmp_path: Path):
-    source = _inventory(); manifest, exclusions, audit = build_pilot_manifest(_config(), source)
+    source = _inventory()
+    source.extend([_row("NCMMSC2021_AD", "collision-ad", "AD", split="identity_collision"),
+                   _row("NCMMSC2021_AD", "collision-mci", "MCI", split="identity_collision")])
+    source[-1]["source_group_id"] = source[-2]["source_group_id"] = "same-source-identity"
+    manifest, exclusions, audit = build_pilot_manifest(_config(), source)
     labels = make_label_rows(manifest, source)
     first = write_pilot_artifacts(tmp_path / "a", source, manifest, exclusions, audit, labels)
     second = write_pilot_artifacts(tmp_path / "b", list(reversed(source)), list(reversed(manifest)), list(reversed(exclusions)), audit, list(reversed(labels)))
@@ -158,5 +174,5 @@ def test_artifacts_are_canonical_and_all_payloads_are_hashed(tmp_path: Path):
     for name, digest in hashes.items():
         assert hashlib.sha256(first[name].read_bytes()).hexdigest() == digest
         assert first[name].read_bytes() == second[name].read_bytes()
-    safe = first["split_manifest.csv"].read_text() + first["folds.csv"].read_text()
+    safe = first["split_manifest.csv"].read_text() + first["folds.csv"].read_text() + first["cohort_status.csv"].read_text()
     assert "/private/" not in safe and "label" not in safe and "unassigned" not in safe

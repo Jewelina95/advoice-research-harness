@@ -1,0 +1,266 @@
+% ADvoice manuscript draft for npj Digital Medicine
+% Revised on 2026-10-08 (v2: PREPARE three-condition comparison, governance evidence). Historical 2026-09-24 text retained where marked. Historical evaluation results are retained as a
+% locked snapshot; the redesigned Agent pilot is reported only after gate review.
+% The Springer Nature sn-jnl class is used for internal authoring only.
+% npj Digital Medicine does not require this class at initial submission.
+
+\documentclass[pdflatex,sn-nature]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{tabularx}
+\usepackage{threeparttable}
+\usepackage{xcolor}
+
+\raggedbottom
+
+\begin{document}
+
+\title[Evidence-governed speech screening]{Evidence-governed cognitive-state fusion for task-aware speech screening}
+
+\author*[1]{\fnm{AUTHOR} \sur{INPUT REQUIRED}}\email{AUTHOR.INPUT@REQUIRED}
+\affil*[1]{\orgdiv{Department}, \orgname{Institution}, \orgaddress{\city{City}, \country{Country}}}
+
+\abstract{Speech-based cognitive screening is scalable, but models trained across heterogeneous tasks and languages can mistake task structure or recording quality for disease evidence. We developed an evidence-governed framework that links source segments to MetricEvidence objects, task-conditioned cognitive StateCards with healthy-reference z-scores, a decomposable supervised prediction (state contributions plus an encoder residual) and an optional large-language-model (LLM) measurement agent. On the PREPARE official test set (n=412; retrospective, because the test set had been viewed previously), the framework with a Whisper encoder branch reached micro-AUC 0.869 and accuracy 0.691 (mean of three seeds), against 0.868 and 0.721 for SpeechCARE: discrimination was at parity, but accuracy remained below SpeechCARE. Adding GPT-5.5 measurement on ASR transcripts did not improve discrimination (micro-AUC 0.868), and a plain GPT reader performed worst (accuracy 0.556, micro-AUC 0.698). The contribution of the framework lies in governance rather than raw accuracy: under prompt rewording the plain agent changed its class in 14.2\% of 120 cases versus 1.7\% for the framework, evidence groups were highly redundant (effective rank 17.0 of 52 variable metrics), the evidence-group curve reached its minimum out-of-fold log-loss with four groups, and the full framework scored somewhat higher at small training sizes. A historical ten-dataset pilot is reported separately and was not a test of the v2 pipeline. The claims are limited to retrospective research screening.}
+
+\keywords{cognitive impairment, speech, evidence governance, clinical decision support, multimodal learning, large language model}
+
+\maketitle
+
+\section{Introduction}\label{sec:introduction}
+
+Cognitive impairment is often identified only after functional difficulties have become clinically apparent, whereas specialist assessment, neuroimaging and fluid biomarkers are difficult to deploy as population-scale first-line tests \cite{Xue2024,Verghese2024}. Speech can be collected repeatedly and remotely, and it reflects performance across language, executive, memory and processing-speed domains rather than a single disease-specific lesion \cite{Heitz2026}. This distinction defines the intended use of speech artificial intelligence: it may identify people whose cognitive performance warrants further assessment, but speech alone cannot establish Alzheimer pathology, determine aetiology or replace formal clinical evaluation. The clinically relevant target is therefore cognitive-risk screening and referral support with explicit uncertainty and evidence sufficiency.
+
+Speech-based models have progressed from hand-crafted acoustic and linguistic variables to multilingual pretrained representations and adaptive multimodal fusion. SpeechCARE combines acoustic, linguistic and demographic representations with a learned gating network across languages and speech tasks \cite{Azadmaleki2025}. Such systems can learn whether a case is better represented by audio or text, but a modality weight does not identify which cognitive function was observable, which patient behaviour was abnormal, or whether the apparent signal arose from an interviewer, task duration, automatic speech recognition (ASR) error or recording device. A recent systematic review similarly found persistent gaps in stakeholder evaluation, real-world validation and standardized assessment of explanations in speech-based cognitive models \cite{Shankar2025}. Predictive discrimination and post-hoc attribution therefore do not by themselves provide a patient-level clinical evidence chain.
+
+A parallel literature has integrated prediction and language-model reasoning in cognitive decision support. Multimodal systems using clinical, cognitive and imaging data have supported differential dementia assessment and clinician decision making \cite{Qiu2022,Xue2024}. The Multimodal Evidence-Driven Reasoning Framework (MEDRF) combined a hierarchical classifier with retrieval of analogous cases and medical literature, improving three-class external accuracy from 0.706 to 0.753 and producing physician-rated reports \cite{Hu2026}. Agentic systems have also operated over longitudinal clinical notes to predict Alzheimer disease or detect documented cognitive concerns \cite{Li2025,Tian2026}. These studies establish the value of combining statistical prediction and language-model reasoning, but they do not solve the measurement problems specific to speech: task-dependent observability, speaker-role separation, recording reliability, confounding, segment-level provenance and permission to translate a low-level feature into a clinician-facing statement.
+
+Here we investigate whether evidence-governed cognitive states can serve as a common interface between heterogeneous speech tasks, supervised prediction and clinical reporting. The framework routes each recording by task, language, modality and speaker role; converts each measurement into a MetricEvidence object; estimates task-conditioned StateCards against training-fold reference participants; and fits a matched supervised base from complete out-of-fold predictions. A single diagnostic Agent then reads a label-blind package that omits the base probability, cites eligible evidence, and may request a bounded remeasurement or state revision. A deterministic executor applies accepted operations and recomputes affected states. Three comparison conditions separate conventional acoustic modelling (A), a plain LLM reader (B) and the evidence-governed pipeline with and without LLM measurement (C). Evaluation separates medical prediction from evidence integrity, traceability, class-specific harm, fallback and computational cost.
+
+\section{Related work and positioning}\label{sec:related}
+
+\subsection{Speech-based cognitive screening}
+
+Speech research in cognitive impairment has developed along three technical lines. Early systems relied on hand-crafted acoustic and linguistic variables, including pause timing, speaking rate, lexical diversity, syntactic complexity and semantic content. More recent systems use pretrained speech and language encoders to learn representations that are less dependent on a manually selected feature inventory. A third line combines modalities or tasks through attention, late fusion or learned gates. Across these approaches, speech is best understood as a proxy for performance in several cognitive domains rather than a direct assay of Alzheimer pathology \cite{Heitz2026}. The distinction is clinically important: a model can support low-burden risk screening while remaining unable to establish disease aetiology.
+
+SpeechCARE is the closest predictive benchmark to the present work \cite{Azadmaleki2025}. It combines multilingual HuBERT audio representations, multilingual text embeddings and age information, and learns sample-specific modality weights through adaptive gating. Its PREPARE evaluation demonstrates that multilingual and multi-task speech can be integrated without a separate model for every task. However, modality-level weights answer which representation the classifier used, not whether a cognitive state was observable under the current task, which patient behaviour supplied the evidence, or whether the signal was contaminated by interviewer structure, ASR quality, duration or device characteristics. Our work treats those measurement and provenance questions as part of the model interface rather than as post-hoc explanation.
+
+Explainable speech systems have used feature attribution, attention visualization, saliency and natural-language summaries. A recent systematic review found that explanation methods were rarely assessed with patients or clinicians and that real-world validation remained limited \cite{Shankar2025}. Low-level attribution is also vulnerable to overinterpretation: a spectral coefficient or encoder dimension may aid classification without constituting a clinically reportable mechanism. This motivates our explicit separation among clinical evidence, model-only auxiliary information and quality control.
+
+\subsection{Multimodal cognitive decision support}
+
+Clinical decision-support studies have combined neuropsychological tests, demographics, structural imaging and electronic health records to classify cognitive stage or dementia aetiology \cite{Qiu2022,Xue2024}. These systems address a different point in the care pathway from speech screening. They operate after richer clinical information has been collected and can use variables with stronger diagnostic specificity. Their principal methodological challenge is integrating heterogeneous clinical evidence and missing modalities, whereas speech screening must additionally determine whether the elicitation task made a particular behaviour measurable.
+
+MEDRF represents the closest evidence-driven clinical framework \cite{Hu2026}. It couples a hierarchical classifier with retrieval of similar cases and medical literature, allowing a language model to refine ambiguous predictions and generate supporting explanations. MEDRF's hierarchy is diagnostic: cognitive status is followed by disease subtype and aetiology. Our hierarchy is a measurement hierarchy: source segments support metrics, metrics support cognitive states, and states support a screening estimate. The two approaches are therefore complementary. MEDRF demonstrates how retrieved clinical knowledge can support specialist reasoning; the present study asks how evidence should be constructed and governed before a language model is allowed to reason over speech.
+
+\subsection{Agentic reasoning and the remaining gap}
+
+Language-model agents have been used to synthesize longitudinal notes, retrieve relevant observations and detect documented cognitive concerns \cite{Li2025,Tian2026}. These systems show that an Agent can organize temporally distributed evidence and communicate a decision. They also expose a safety issue: fluent reasoning can cite unsupported facts, conflate a risk factor with an observed impairment or change a model prediction without a reproducible measurement basis. In speech, this risk is amplified because the input contains interviewer speech, task prompts, silence, recording artefacts and ASR errors.
+
+The unresolved gap is therefore not simply multimodal fusion or report generation. It is the absence of a common, machine-verifiable evidence representation linking heterogeneous speech tasks to prediction and clinical communication. We address this gap with four design constraints. First, evidence is conditioned on task, language and speaker role. Second, every metric carries direction, reliability, missingness, confound and report-permission fields. Third, metrics are aggregated into observable cognitive StateCards with supporting and counterevidence. Fourth, the supervised model and diagnostic Agent operate over the same identifiers, and unsupported Agent proposals are rolled back. This positioning shifts the research question from whether an Agent can produce a plausible cognitive report to whether the complete decision can be reconstructed from permitted patient evidence.
+
+\section{Methods}\label{sec:methods}
+
+\subsection{Study design and intended use}
+
+We conducted a retrospective, multi-dataset evaluation of speech-based cognitive-risk screening. The intended use was research screening and referral support. The system was not designed to establish Alzheimer pathology or replace clinical history, neurological examination, validated cognitive testing, imaging or biomarkers. The experimental unit was a participant, subject or public figure according to the source dataset. Repeated recordings from the same identity were aggregated or assigned to the same partition.
+
+\subsection{Datasets and held-out partitions}
+
+Ten locally available datasets were registered before the final aggregate evaluation: IAEAV, ADReSS 2020, ADReSSo 2021 diagnosis, ADReSSo 2021 progression, PROCESS-2, PREPARE, TAUKADIAL, DementiaBank Pitt, DementiaNet PublicFigures and NCMMSC 2021 AD. Source labels were retained rather than harmonized into a single clinical endpoint. Official subject-disjoint train--test partitions were used when labelled test data were available. Otherwise, deterministic stratified participant-disjoint holdouts of 20--30\% were created with a fixed project seed. All three conditions used identical held-out identities within each dataset.
+
+For NCMMSC, only the distributed long-speech track was included; six-second clips and unlabelled recordings were excluded. For Pitt and other CHAT-derived data, patient and interviewer roles were parsed and only patient intervals were used for patient acoustic measurements. IAEAV patient segments were derived from distributed role annotations. For data without speaker roles, the limitation was recorded and role-dependent metrics were marked unavailable. Dataset-specific inclusion criteria and source licenses are provided in Supplementary Table~1. \textbf{[AUTHOR INPUT REQUIRED: insert ethics approvals, consent basis and exact data-use agreements.]}
+
+\subsection{Audio, transcript and task preprocessing}
+
+Audio was resampled to 16~kHz. Processing retained original duration and quality variables, including clipping, a signal-to-noise proxy and role coverage. Recordings were routed by language, task type, source channel and available speaker-role structure. Distributed transcripts were used when available; otherwise ASR used Whisper large-v3-turbo with automatic language selection. ASR outputs retained provenance and were assigned lower reliability when no human-verified transcript was available.
+
+The deep acoustic pathway used a frozen multilingual HuBERT encoder (mHuBERT-147, pinned model revision). Up to 30~s per participant were split into 5~s windows with 25\% overlap. Window vectors were $L_2$ normalized, and participant-level mean and standard deviation vectors were supplied to a dense expert. A segment-attention expert was additionally eligible when sample size and audio coverage met prespecified thresholds. The deep text pathway used frozen multilingual-e5-base embeddings with a maximum input length of 512 tokens. These representations were model-only inputs and were not translated directly into disease mechanisms.
+
+Hand-crafted measures covered pauses, voiced and non-voiced timing, speech-run continuity, rate, intensity, fundamental frequency, spectral descriptors, lexical specificity and diversity, utterance length, disfluency, repair and patient turn share. Availability depended on task, language, transcript quality and speaker roles. Spectral features and quality variables could aid prediction but were not reportable as clinical mechanisms.
+
+Where source age metadata were available, age was encoded into prespecified fixed categories together with an explicit missing-age indicator. The categories were outcome-independent, were used only as optional model context and were never translated into patient-level cognitive evidence or a clinician-facing disease mechanism. Datasets without age metadata did not receive an imputed age category.
+
+\subsection{MetricEvidence objects}
+
+Each measured metric was stored as a MetricEvidence object containing the value, expected abnormal direction, training-reference median and scale, task scope, source modality, reliability, missingness, confound tags, evidence role, report permission and links to source segments. For metric $j$ in participant $i$, a fold-internal directional deviation was computed as
+
+\begin{equation}
+z_{ij}^{\mathrm{dir}} = d_j\frac{x_{ij}-\operatorname{median}_{\mathrm{CN,train}}(x_j)}{s_{j,\mathrm{CN,train}}},
+\end{equation}
+
+where $d_j\in\{-1,0,1\}$ encoded whether lower or higher values were expected to indicate greater impairment, and $s_j$ was a robust scale estimated only from reference participants in the current training fold. Near-constant or unavailable reference metrics were marked missing rather than divided by an arbitrarily small scale. Directional deviations were clipped to $[-5,5]$ before state aggregation to limit single-metric dominance.
+
+Reliability was determined from design reliability and case-specific availability, transcript provenance, role coverage and quality flags. Quality-control variables had $d_j=0$ and could alter reliability or trigger a limitation but could not directly support a disease statement. This separation was enforced both in the model input schema and in report validation.
+
+\subsection{Task-conditioned cognitive StateCards}
+
+Metrics were mapped to prespecified cognitive or speech-behaviour states: pause and fluency burden, output efficiency, speech continuity, intensity stability, prosodic variation, low-level spectral pattern, lexical retrieval and specificity, lexical diversity, syntactic complexity, disfluency and repair, and interaction burden. Semantic coherence, information density and task performance were registered but disabled because validated multilingual scoring algorithms or task answer keys were not available.
+
+For state $k$, the case score was the reliability-weighted mean of bounded directional metric deviations,
+
+\begin{equation}
+S_{ik}=\frac{\sum_{j\in\mathcal{M}_k} w_{jk}r_{ij}\,\operatorname{clip}(z_{ij}^{\mathrm{dir}},-5,5)}{\sum_{j\in\mathcal{M}_k} w_{jk}r_{ij}},
+\end{equation}
+
+where $w_{jk}$ was the prespecified within-state metric weight and $r_{ij}$ was participant-level reliability. The denominator also produced a state confidence estimate. StateCards stored severity, category, confidence, missing fraction, supporting metrics, counterevidence, task scope and local evidence segments. Overall states were retained for every case; task-specific states were added for multi-task recordings and selected only within training folds.
+
+\subsection{Supervised task-conditioned fusion}
+
+The supervised prediction pathway contained two small modules. Module A combined eligible experts representing clinical-language states, speech behaviour, auxiliary acoustics, interaction/task information, multilingual text embeddings, deep audio embeddings, segment trajectories and optional age context. Quality variables were used for reliability and ridge residualization rather than as a disease branch. Experts with cross-validated macro-AUROC below 0.52 were excluded. Auxiliary-acoustic influence was capped.
+
+Fusion candidates included multinomial logistic stacking of expert log probabilities and reliabilities and a dynamic reliability gate with a 48-dimensional hidden layer. Selection used nested stratified cross-validation within the training data, with macro-F1 as the primary criterion and macro-AUROC as the tie-breaker. All branch models generated out-of-fold probabilities before the meta-model was fitted. Module B used cross-fitted evidence coverage, evidence reliability, confound burden, state-to-class prototype differences and Module A probabilities to learn a bounded residual correction. Blend strength, class offsets and temperature were selected in inner folds. Small datasets used a non-inferiority guard, and the base probability was retained when evidence gating or selected blend strength was zero.
+
+\subsection{Blind diagnostic Agent, bounded state replay and locked reports}
+
+For each held-out case, one language-model Agent receives a structured workspace containing MetricEvidence, StateCards, task and segment traces, counterevidence, transcript provenance and quality limitations. The base probability and test label are omitted. The Agent returns ordinal support for the allowed classes, cited evidence, state judgments and at most three proposed operations. Agent support scores are not treated as probabilities.
+
+A deterministic validator checks that every cited identifier exists in the same participant workspace, that quality-only and model-only features are not used as disease evidence, and that proposed operations are source backed. The executor, rather than the Agent, performs permitted remeasurement, span or role repair, confound flagging and invalidation. A meaningful change creates a child evidence snapshot and requires a fresh assessment; stale pre-revision judgment is not reused. Invalid assessments, replay failures or budget exhaustion produce an explicit calibrated-base fallback. The clinician-facing report is compiled only after the prediction and evidence snapshot are locked.
+
+Agent contribution is learned only from complete out-of-fold development predictions. For HC/MCI/AD tasks, separate impairment and conditional AD heads combine the base log odds, Agent class-support contrast and frozen replay-model log-odds change. Coefficients are constrained to be non-negative and shrink towards the calibrated base. Matched-row base calibrators distinguish genuine Agent contribution from changes caused by missing rows or ordinary recalibration. No calibrator is borrowed across datasets.
+
+\subsection{Comparators}
+
+B1 was a conventional acoustic machine-learning baseline using the same held-out participants and low-level acoustic features. The headline classifier was multinomial logistic regression with standardized inputs and regularization selected from $C\in\{0.01,0.1,1,10\}$ within training folds. B2 was a direct language-model comparator that received the transcript or permitted audio-derived summary but not MetricEvidence, StateCards, supervised model outputs or source labels. It selected among the dataset-specific classes and produced a free-form research screening report under a fixed prompt. Ours used the complete evidence-state fusion, constrained Agent and locked report pathway.
+
+Negative controls included a quality-control-only model and a no-duration/no-loudness model. Framework ablations compared concept-only and full fusion, overall versus task-specific states, and intervention on discrepant states in misclassified cases.
+
+\subsection{PREPARE v2 comparison}
+
+For the v2 analysis on PREPARE (official split, 1,622 training and 412 test participants; 899/216/507 HC/MCI/AD in training and 229/51/132 in test) we compared seven arms: handcrafted acoustic features (A); acoustic plus text metrics; frozen mHuBERT and text embeddings with demographics; the evidence-state framework with healthy-reference z-scores stratified by task, language and age (S); S with a Whisper encoder branch; S with GPT-5.5 measurement of content units, coherence, empty words and word finding (C); and a plain GPT-5.5 reader that outputs class probabilities from the transcript (B). Each branch was regularized by five-fold out-of-fold selection on the training set, branches were combined by multinomial logistic stacking, and the 412-participant test set was used only for evaluation. The test set had been viewed in earlier development, so all PREPARE test results are retrospective. Results are the mean of three seeds. Prompt-rewording drift (120 cases), measurement test--retest, metric redundancy, evidence-group Pareto selection, learning curves and a verbatim-continuation contamination probe were run as governance analyses. SpeechCARE values are the published ten-run means \cite{Azadmaleki2025}.
+
+\subsection{Outcomes and statistical analysis}
+
+Layer A evaluated medical prediction and screening performance: accuracy, balanced accuracy, macro- and weighted F1, Matthews correlation coefficient, one-vs-rest macro/micro/weighted AUROC and AUPRC, multiclass Brier score, log loss, expected calibration error, calibration intercept and slope, class-specific sensitivity and specificity, and locked-threshold sensitivity, specificity, positive predictive value and negative predictive value. Confidence intervals were obtained from 500 participant-level bootstrap samples. No participant-level observation crossed train and test partitions.
+
+Layer B evaluated whether the proposed evidence pathway existed and was internally consistent: MetricEvidence completeness, StateCard completeness, normalized branch contributions, report-permission compliance, source-identifier privacy, segment faithfulness, reference-state intervention, task-state ablation, Agent execution, candidate evidence validity, correction and rollback rates, safe-fallback reports and a five-domain automated report rubric. The automated rubric scored evidence completeness, clinical interpretability, safety/calibration, screening usefulness and traceability from 0 to 5 each. This score was not treated as physician validation.
+
+Cross-dataset win counts and median differences were descriptive because labels and protocols were heterogeneous. The PREPARE comparison with SpeechCARE was restricted to definitions available in both studies and was reported without a formal superiority test because the repeated-training protocols differed.
+
+\subsection{Software and reproducibility}
+
+The pipeline was implemented in Python and executed through a versioned, resumable command-line workflow. Model revisions, dataset configuration, split seeds, preprocessing provenance, cache identity, token usage, cost and generated artifacts are recorded for each run. At the 24 September 2026 engineering checkpoint, 1,260 software tests passed and three were skipped. This verifies software behavior, not clinical performance. The v2 LLM arms used GPT-5.5 only; Claude and DeepSeek runs are pending. \textbf{[AUTHOR INPUT REQUIRED: insert operating system, Python and package versions, hardware, repository URL, final commit hash and archived release DOI.]}
+
+\section{Results}\label{sec:results}
+
+\paragraph{Result-status boundary.}
+Sections~\ref{sec:r-prepare} to~\ref{sec:r-gov} report the v2 analysis on PREPARE. The ten-dataset results in Table~\ref{tab:datasets} and Fig.~\ref{fig:results}c are a locked historical pilot (September 2026) obtained with the earlier pipeline; they motivate routing but are not a test of v2. All PREPARE test results are retrospective.
+
+\subsection{Heterogeneous cohorts required task- and source-specific routing}\label{sec:r-data}
+
+The ten datasets differ in language, task, label set, transcript source and speaker-role availability (Fig.~\ref{fig:landscape}). Five datasets provide human or distributed transcripts and five rely on ASR only; speaker roles are available or segmented in five (and per task in PROCESS-2). Label sets range from HC/AD to HC/MCI/AD and a longitudinal decline endpoint. Training sizes are documented here only for PREPARE; for the other datasets the held-out size (6 to 412 participants, 745 in total) is shown and the training size is not reported. Because ASR-only datasets cannot support human-transcript linguistic measurement, and datasets without speaker roles cannot support interaction states, each recording is routed by its channel profile to the states that are observable. Data audits identified three cohorts that could not support an unqualified performance claim: IAEAV (acquisition structure aligned with labels), and DementiaBank Pitt and NCMMSC, where quality-control-only models reached macro-AUROC 0.788 and 0.832, respectively. DementiaNet had six held-out public figures.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/v2/Fig1_architecture.pdf}
+\caption{Evidence-governed speech screening architecture. Audio and transcripts are measured by acoustic, linguistic, encoder and optional LLM-agent measurers; each measurement becomes a MetricEvidence object with source span and quality flag. Task-conditioned StateCards express each metric as a z-score against a healthy reference stratified by task, language and age. A decomposable two-head model combines state contributions with an encoder residual, followed by calibration and locking and a clinician report with a trace map to source spans. A governance layer (provenance, observability, permissions, revision closure) spans the pipeline. Conditions A (acoustic ML), B (plain LLM reader) and C (full pipeline) are indicated.}
+\label{fig:architecture}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/v2/Fig2_data_landscape.pdf}
+\caption{Data landscape. (a)~Language, task or channel, label set, transcript source and speaker-role availability for ten datasets (from the dataset configuration files). (b)~Held-out participants per dataset in the historical pilot (log scale); training size is available only for PREPARE (n/a elsewhere). (c)~PREPARE class composition in the official training (1,622) and test (412) sets.}
+\label{fig:landscape}
+\end{figure*}
+
+\begin{table*}[t]
+\caption{Historical pilot: held-out datasets and three-condition macro-AUROC (locked September 2026 evaluation; earlier pipeline).}\label{tab:datasets}
+\centering
+\begin{threeparttable}
+\scriptsize
+\begin{tabularx}{\textwidth}{lrlXccc}
+\toprule
+Dataset & $n$ & Labels & Language and task & B1 & B2 & Ours \\
+\midrule
+ADReSS 2020 & 27 & HC/AD & English picture description & 0.643 & 0.530 & \textbf{0.978} \\
+ADReSSo diagnosis & 42 & HC/AD & English audio-only picture description & 0.614 & 0.634 & \textbf{0.857} \\
+ADReSSo progression & 12 & stable/decline & English longitudinal picture description & 0.741 & \textbf{0.759} & 0.556 \\
+DementiaBank Pitt$^{\dagger}$ & 59 & HC/AD & English neuropsychological multitask & 0.453 & 0.582 & \textbf{0.897} \\
+DementiaNet$^{\ddagger}$ & 6 & HC/AD & English public speech & 0.500 & \textbf{0.625} & 0.500 \\
+IAEAV$^{\dagger}$ & 14 & HC/AD & Spanish clinical interview & 0.755 & 0.704 & \textbf{0.939} \\
+NCMMSC 2021$^{\dagger}$ & 53 & HC/MCI/AD & Mandarin long picture description & 0.898 & 0.588 & \textbf{0.910} \\
+PREPARE & 412 & HC/MCI/AD & Multilingual structured tasks & 0.728 & 0.584 & \textbf{0.811} \\
+PROCESS-2 & 80 & HC/MCI/AD & English structured multitask & 0.737 & 0.756 & \textbf{0.862} \\
+TAUKADIAL & 40 & HC/MCI & Mandarin--English spontaneous speech & 0.459 & \textbf{0.625} & 0.516 \\
+\bottomrule
+\end{tabularx}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\item B1, conventional acoustic machine learning; B2, direct transcript-based language model; HC, cognitively healthy control; MCI, mild cognitive impairment; AD, Alzheimer disease label as distributed by the source dataset. $^{\dagger}$Result downgraded to a bias audit because of acquisition or quality-control confounding. $^{\ddagger}$Exploratory engineering check because of the very small held-out sample.
+\end{tablenotes}
+\end{threeparttable}
+\end{table*}
+
+\subsection{PREPARE: three-condition comparison with SpeechCARE}\label{sec:r-prepare}
+
+On the PREPARE official test set (Fig.~\ref{fig:results}a), accuracy rose from 0.583 (acoustic features) and 0.636 (with text metrics) to 0.673 with frozen embeddings and demographics, 0.687 for the evidence-state framework and 0.691 with the Whisper encoder branch. Micro-AUC followed the same order (0.764, 0.814, 0.857, 0.859 and 0.869). The best framework configuration therefore matched SpeechCARE on discrimination (micro-AUC 0.869 versus 0.868 \cite{Azadmaleki2025}) but remained below it on accuracy (0.691 versus 0.721). We do not claim superiority over SpeechCARE: the AUC difference is 0.001, SpeechCARE reports a ten-run mean whereas we report three seeds, and the test set was previously viewed. Macro-F1 was 0.592, with recall of 0.88, 0.33 and 0.50 for HC, MCI and AD in the framework arm with Whisper; MCI recall did not exceed 0.44 in any arm (Fig.~\ref{fig:results}b). Frozen embeddings with demographics already accounted for most of the gain over handcrafted features, so the evidence states added little discrimination beyond the encoders on this dataset; their value is examined in Section~\ref{sec:r-gov}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/v2/Fig3_results.pdf}
+\caption{Predictive results. (a)~PREPARE official test set (n=412, mean of three seeds): accuracy, macro-F1 and micro-AUC for seven arms; dashed lines show published SpeechCARE means (accuracy 0.7211, micro-AUC 0.8683). All PREPARE test results are retrospective. (b)~Per-class recall (A, acoustic; A+t, acoustic plus text; E+d, embeddings plus demographics; S, framework; S+W, framework plus Whisper; C, framework plus GPT measurement; B, plain GPT). (c)~Historical pilot macro-AUROC across ten datasets (locked September 2026 evaluation, earlier pipeline). (d)~Placeholder: the GPT, Claude and DeepSeek comparison is pending.}
+\label{fig:results}
+\end{figure*}
+
+\subsection{Agent effects}\label{sec:r-agent}
+
+Adding GPT-5.5 measurement to the framework (C) gave accuracy 0.685, macro-F1 0.597 and micro-AUC 0.868, compared with 0.691, 0.592 and 0.869 for the framework with Whisper but without LLM measurement. LLM measurement therefore gave no gain on ASR transcripts; the differences are small and we did not test them formally. A plain GPT reader that saw only the transcript was the worst arm (accuracy 0.556, macro-F1 0.419, micro-AUC 0.698; recall 0.81, 0.25 and 0.23), below even the acoustic baseline in accuracy. In the historical pilot the direct language-model condition (B2) had the lowest macro-AUROC in four of ten datasets (Table~\ref{tab:datasets}). The comparison across GPT, Claude and DeepSeek has not been completed and is not reported (Fig.~\ref{fig:results}d).
+
+\subsection{Governance properties}\label{sec:r-gov}
+
+\paragraph{Stability.} Under prompt rewording in 120 cases, the plain agent changed its predicted class in 14.2\% of cases and the framework in 1.7\%; mean absolute probability change was 0.062 versus 0.0085 (Fig.~\ref{fig:governance}a). LLM measurements were reproducible on repeat, with test--retest Spearman correlation of 0.82 for information units and for empty-word ratio, 0.79 for word finding, 0.73 for impairment support and 0.62 for coherence (Fig.~\ref{fig:governance}b).
+
+\paragraph{Redundancy and Pareto.} Of 55 metrics, three were constant, 14 pairs had $|\rho|\geq0.9$ and the effective rank of the 52 variable metrics was 17.0 (Fig.~\ref{fig:governance}c). Adding evidence groups greedily, out-of-fold log-loss fell from 0.723 with one group to a minimum of 0.7065 with four groups (Whisper, audio embedding, text embedding and stratified z) and then drifted upward to 0.711 with nine; GPT measurement, demographics, text metrics, acoustic variables and states did not lower it (Fig.~\ref{fig:governance}d). Many evidence groups are therefore redundant for prediction and are retained for traceability rather than accuracy.
+
+\paragraph{Few-shot behaviour.} At 32 training participants the full framework reached test macro-AUC 0.659, compared with 0.633 for embeddings alone, 0.643 for states alone and 0.552 for acoustic features; at 128 participants the full framework and embeddings were similar (0.769 and 0.766), and at the full 1,622 the full framework reached 0.821 versus 0.807 for embeddings (Fig.~\ref{fig:governance}e). Intervals at small sizes overlap, so we regard the few-shot advantage as suggestive.
+
+\paragraph{Contamination.} A verbatim-continuation probe asked the LLM to continue the first half of transcripts. On public ADReSS CHAT transcripts (n=30), the mean 4-gram overlap with the true continuation was 0.007 versus 0.006 with another case's continuation, and no case reached 0.3. On PREPARE ASR transcripts, which were never published as text, overlap was 0.091 versus 0.030, with three of 30 cases at or above 0.3 (Fig.~\ref{fig:governance}f). We found no evidence of memorization of the public corpus. Because the PREPARE transcripts cannot have been memorized, overlap of this size arises without memorization, so the probe sets a baseline rather than excluding partial memorization.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/v2/Fig4_governance.pdf}
+\caption{Governance evidence. (a)~Class flips and mean absolute probability change under prompt rewording (n=120). (b)~Test--retest Spearman correlation of LLM measurements. (c)~Metric redundancy: 55 metrics, three constant, 14 pairs with $|\rho|\geq0.9$, effective rank 17.0. (d)~Greedy evidence-group Pareto curve (out-of-fold log-loss). (e)~Learning curves, test macro-AUC against training size (shaded: SD across subsamples). (f)~Verbatim-continuation contamination probe, mean 4-gram overlap with the true versus another case's continuation.}
+\label{fig:governance}
+\end{figure*}
+
+\section{Discussion}\label{sec:discussion}
+
+This study suggests that a cognitive-state layer can provide a useful intermediate interface between heterogeneous speech tasks and clinical screening outputs. Rather than forcing picture description, interview, structured task and spontaneous speech into a single undifferentiated feature vector, the framework first determines which states are observable in each task and how reliable each measurement is for the current case. On PREPARE, this organization improved discrimination over handcrafted acoustic features and a plain language model, while retaining a trace from the final report to the task, state, metric and local source segment. Most of the discrimination, however, came from pretrained encoders; the states did not add measurable AUC beyond them.
+
+The contribution differs from SpeechCARE's adaptive modality fusion. SpeechCARE learns how strongly a sample should rely on acoustic, linguistic and demographic representations and reaches higher accuracy on PREPARE (0.721 versus 0.691) while AUC is at parity (0.868 versus 0.869) \cite{Azadmaleki2025}. Our framework instead constrains what those representations are allowed to mean clinically. Modality-level gating and cognitive-state evidence are complementary: the former is optimized for predictive representation, whereas the latter specifies task observability, patient-level reliability, confounding and report permission. The present results do not show that interpretability compensates for lower predictive performance. Parity in AUC is not parity in accuracy, and the PREPARE test set was previously viewed; a comparison on untouched data under SpeechCARE's repeated-run protocol is required before any equivalence claim.
+
+The contribution also differs from MEDRF. MEDRF uses clinical profiles and structural MRI to predict a diagnostic hierarchy, then retrieves analogous cases and literature to refine ambiguous predictions \cite{Hu2026}. Our hierarchy is a measurement pathway rather than a diagnostic ontology: local speech segments support metrics, metrics support cognitive states, and states support a screening probability. This design is intended for settings without imaging or complete neuropsychological profiles. However, MEDRF demonstrated actual prediction gains from RAG-LLM correction and obtained physician evaluations, whereas in our data LLM measurement gave no gain on ASR transcripts and the plain LLM was the weakest arm. The current evidence therefore supports an evidence-governed reporting and stability layer, not an autonomous diagnostic Agent.
+
+The failure analyses are as important as the favourable datasets (Table~\ref{tab:datasets}). Progression prediction did not benefit from the cross-sectional state architecture, suggesting that longitudinal change requires within-person baselines and trajectory-specific supervision. TAUKADIAL exposed weak transfer to Mandarin--English spontaneous speech, where ASR, language-specific lexical measurement and label definition differ from structured picture description. IAEAV, Pitt and NCMMSC showed that acquisition and quality variables can be highly predictive. Preventing these variables from appearing in the report is necessary, but it does not prevent correlated latent representations from exploiting them. Future evaluation should therefore use leave-site, leave-task and leave-language protocols, adversarial dataset-identity tests and prospective collection with balanced devices and interviewers.
+
+Several limitations constrain clinical interpretation. This was a retrospective benchmark assembled from datasets with different labels and reference standards; it was not a prospective screening trial. The 745 held-out units should not be treated as one exchangeable clinical cohort. Some confidence intervals were wide, particularly for progression, IAEAV and DementiaNet. State definitions were literature-informed but have not yet undergone formal clinician content-validity assessment. The report evaluator was automated, and no blinded clinician comparison measured decision quality, review time or referral appropriateness. The Agent evidence validator rejected many candidates and applied no risk corrections. Finally, the framework predicts dataset labels for research screening; it cannot determine Alzheimer pathology, distinguish all alternative causes of cognitive impairment or recommend treatment.
+
+Within these boundaries, the results establish a reproducible separation between predictive evidence, quality control and clinical communication. A clinically useful next version should combine SpeechCARE-level multilingual representation learning with the present state and provenance constraints, then evaluate whether clinicians can correct a state, observe a coherent probability change and make better referral decisions. That experiment, rather than another increase in automatically generated report fluency, would test whether the evidence chain improves care.
+
+\section*{Data availability}
+
+The study used datasets distributed under their respective source agreements. Several source recordings cannot be redistributed by the authors. Dataset adapters, inclusion rules, pseudonymous split identifiers and derived aggregate statistics will be released subject to those agreements. \textbf{[AUTHOR INPUT REQUIRED: list accession links, approval identifiers and the exact derived data that can be shared.]}
+
+\section*{Code availability}
+
+The complete analysis code, configuration files, tests and report-generation workflow are maintained in the 8.27 project repository. \textbf{[AUTHOR INPUT REQUIRED: provide a public repository URL, immutable release tag, license and archival DOI before submission.]}
+
+\backmatter
+
+\bmhead{Acknowledgements}
+\textbf{[AUTHOR INPUT REQUIRED: funding, computing support and contributors.]}
+
+\bmhead{Author contributions}
+\textbf{[AUTHOR INPUT REQUIRED: CRediT contributions using author initials.]}
+
+\bmhead{Competing interests}
+The authors declare no competing interests.
+
+\bmhead{Ethics declaration}
+\textbf{[AUTHOR INPUT REQUIRED: secondary-data ethics determination, original cohort approvals and consent statements.]}
+
+\bibliography{references}
+
+\end{document}

@@ -71,6 +71,8 @@ def collapse(pb: np.ndarray, labels: list[str]) -> np.ndarray:
     return q / q.sum(1, keepdims=True)
 
 
+if len(sys.argv) > 4:
+    DATASETS = sys.argv[4].split(",")
 results = {}
 for ds in DATASETS:
     art = ROOT / ds

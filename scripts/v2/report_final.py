@@ -111,8 +111,25 @@ for m in MODELS:
 cap_rows = "".join(f"<tr><td>{m}</td><td>{f(v[0])}</td><td>{v[1]:+.3f}</td><td>{v[2]}</td></tr>" for m, v in cap.items())
 order = sorted(cap, key=lambda m: cap[m][0])
 monotone = len(order) == 3 and cap[order[0]][1] <= cap[order[1]][1] <= cap[order[2]][1]
-cap_text = ("在当前三家模型上，纯 Agent 能力越强，接入框架后的增益也越大（单调）。" if monotone else
+flips = {m: (e["B_flip_rate"], e["C_flip_rate"]) for m, e in mc.get("models", {}).items() if isinstance(e, dict) and "C_flip_rate" in e}
+flip_text = "；".join(f"{m}：纯 Agent {100*b:.1f}% → 本系统 {100*c:.1f}%" for m, (b, c) in flips.items())
+retest = {m: e.get("test_retest_spearman", {}) for m, e in mc.get("models", {}).items() if isinstance(e, dict)}
+retest_text = "；".join(f"{m}：" + "，".join(f"{k} {v}" for k, v in r.items()) for m, r in retest.items() if r)
+s_auc = mc.get("S_framework_no_agent", {}).get("micro_auc")
+prep_cap = {m: (e["B_plain_agent"]["micro_auc"], e["C_framework_agent"]["micro_auc"] - s_auc)
+            for m, e in mc.get("models", {}).items() if isinstance(e, dict) and s_auc}
+prep_cap_rows = "".join(f"<tr><td>{m}（PREPARE）</td><td>{v[0]:.3f}</td><td>{v[1]:+.3f}</td><td>1</td></tr>" for m, v in prep_cap.items())
+cap_rows += prep_cap_rows
+if len(cap) == 2:
+    lo, hi = sorted(cap, key=lambda m: cap[m][0])
+    cap_text = (f"在 5 个数据集上，{hi} 的纯 Agent 能力更强（平均 AUC {cap[hi][0]:.3f} vs {cap[lo][0]:.3f}），接入框架后的增益也更大（{cap[hi][1]:+.3f} vs {cap[lo][1]:+.3f}），"
+                "方向支持“模型越强、框架收益越大”；但目前只有两个模型的完整多数据集结果，不能据此建立规律。"
+                "PREPARE 上三家模型接入框架后 AUC 都收敛到 0.866–0.869，纯 Agent 差距（0.60–0.75）被框架基本抹平——框架让结果对模型选择不敏感。")
+    monotone = None
+cap_text_final = ("在当前三家模型上，纯 Agent 能力越强，接入框架后的增益也越大（单调）。" if monotone else
             "在当前三家模型上，纯 Agent 能力与接入框架后的增益之间没有单调关系；只有三个模型，不足以支持“模型越强、框架收益越大”的结论。") if len(cap) == 3 else "（三家结果到齐后计算）"
+if len(cap) != 2:
+    cap_text = cap_text_final
 
 dr, rd = th.get("drift", {}), th.get("redundancy", {})
 lc = {}
@@ -137,7 +154,7 @@ th,td{{padding:6px 7px;border-bottom:1px solid var(--line);text-align:right}}th:
 <h1>ADvoice v2：证据治理的语音认知筛查</h1>
 <p class="muted">2026-10-08 · PREPARE 官方划分 1,622/412（回顾性：测试集历史上被多次查看）· 其余 8 个数据集为重复 5 折交叉验证 · 所有模型选择只在训练数据内完成</p>
 <div class="k"><div><b>{f(bm.get('micro_auc'))}</b>PREPARE micro-AUC（SpeechCARE 0.868）</div><div><b>{f(bm.get('acc'))}</b>PREPARE Accuracy（SpeechCARE 0.721）</div>
-<div><b>{f(100*dr.get('B_plain_agent_flip_rate',float('nan')),1)}% → {f(100*dr.get('C_framework_flip_rate',float('nan')),1)}%</b>换措辞后结论翻转：纯 Agent → 本系统</div><div><b>{rd.get('effective_rank','—')}/{rd.get('n_metrics','—')}</b>手工指标的有效维数</div></div>
+<div><b>{f(100*np.mean([b for b, c in flips.values()]),1) if flips else '—'}% → {f(100*np.mean([c for b, c in flips.values()]),1) if flips else '—'}%</b>换措辞后结论翻转，三家平均：纯 Agent → 本系统</div><div><b>{rd.get('effective_rank','—')}/{rd.get('n_metrics','—')}</b>手工指标的有效维数</div></div>
 
 <h2>一、核心贡献（三点）</h2>
 <div class="c"><b>1. 证据治理架构（系统设计）。</b>把语音筛查拆成“测量 → 证据 → 状态 → 可分解预测 → 受控报告”五层，LLM 只能通过有界、可审计的通道（测量和一个堆叠候选）影响结论；同一个条件信息判据 I(Y;e|E)&gt;0 同时决定哪些指标进入预测、Agent 何时有增益。</div>
@@ -168,11 +185,12 @@ th,td{{padding:6px 7px;border-bottom:1px solid var(--line);text-align:right}}th:
 <h3>4.3 九个数据集（AUC，重复 5 折交叉验证）</h3>
 <div class="wrap"><table><tr><th>数据集</th><th>n</th><th>标签</th><th>A</th><th>S</th><th>B GPT</th><th>B Claude</th><th>B DeepSeek</th><th>C GPT</th><th>C Claude</th><th>C DeepSeek</th></tr>{mm_rows}</table></div>
 {img(OUT / "Fig_multi_dataset.png")}
+<p class="c"><b>数据质量说明：</b>DementiaBank Pitt（ID 形如 AD_001）、NCMMSC（AD_F_…）和 DementiaNet（公众人物姓名）的受试者 ID 直接暴露诊断或身份，早先发送给大模型的请求因此存在标签泄漏，已全部作废；现已改为哈希化名，这三个数据集按要求暂停，重跑后补入。DeepSeek 的多数据集 C 臂同样按要求暂停，表中空格表示未运行，不是失败。</p>
 <h3>4.4 模型越强，框架收益越大吗</h3>
 <div class="wrap"><table><tr><th>模型</th><th>纯 Agent 平均 AUC（能力代理）</th><th>C − S 平均增益</th><th>数据集数</th></tr>{cap_rows}</table></div><p>{cap_text}</p>
 
 <h2>五、老师的问题（Q1–Q6）</h2>
-<h3>Q1 语言漂移：稳定性与准确性</h3><p>120 例只改提示措辞：纯 Agent 结论翻转 {f(100*dr.get('B_plain_agent_flip_rate',float('nan')),1)}%（概率平均变化 {f(dr.get('B_mean_abs_prob_change'))}），本系统 {f(100*dr.get('C_framework_flip_rate',float('nan')),1)}%（{f(dr.get('C_mean_abs_prob_change'),4)}），准确率不降。原因是结构上界：LLM 只能经由学到的权重影响结论。测量重测一致性：{", ".join(f"{k} {v}" for k, v in dr.get('measure_test_retest_spearman', {}).items())}。</p>
+<h3>Q1 语言漂移：稳定性与准确性</h3><p>同一批 120 例、只改提示措辞后的结论翻转率（PREPARE）——{flip_text}。准确率不降。原因是结构上界：LLM 只能经由学到的权重影响结论，|Δlogit| ≤ Σ|β|·|Δz| + |w|·|Δa|。测量重测一致性（Spearman）——{retest_text}。</p>
 <h3>Q2 证据是否重叠、是否独一有用</h3><p>{rd.get('n_metrics')} 个手工指标中 {rd.get('n_constant')} 个为常数（{", ".join(rd.get('constant', []))}，表示“测不到”而不是“正常”），{rd.get('n_pairs_rho_ge_0.9')} 对 |ρ|≥0.9。准入判据：条件信息增量 &gt; 0 或承担安全作用。</p>
 <h3>Q3 为什么需要这么多 feature</h3><p>有效维数 {rd.get('effective_rank')}；按训练 OOF 逐组加入证据：</p><div class="wrap"><table><tr><th>组数</th><th>加入</th><th>OOF log-loss</th><th>测试 macro-AUC</th></tr>{par_rows}</table></div><p>训练内最优约在第 4 组，之后不再改善：候选库大、实际执行稀疏。</p>
 <h3>Q4 底层模型是否见过数据库</h3><p>续写探针（GPT-5.5）：公开 ADReSS 转录与真实后文 4-gram 重合 {a_.get('mean_4gram_overlap_true')}，与无关病例 {a_.get('mean_4gram_overlap_other_case')}，无记忆迹象；PREPARE 对照偏高（{p_.get('mean_4gram_overlap_true')} vs {p_.get('mean_4gram_overlap_other_case')}）来自朗读任务的固定文本。阴性结果不能证明从未见过；Agent 作为测量仪器时输出可逐项核验，记忆的标签无法无声抬高结果。</p>
@@ -205,7 +223,7 @@ C 比传统声学 A 高约 {f((bm.get('acc',0)-p3.get('A_acoustic',{}).get('acc'
 {cap_text}在九个数据集上，详细数字见汇报页的 4.3 节。
 
 ## 五、老师的问题
-关于语言漂移：同样 120 个病例，只换提示措辞，纯大模型有 {f(100*dr.get('B_plain_agent_flip_rate',float('nan')),1)}% 的结论翻转，我们的系统只有 {f(100*dr.get('C_framework_flip_rate',float('nan')),1)}%。这不是偶然：在可分解结构下，大模型的漂移对结论的影响有一个上界，就是学到的权重乘以测量的漂移。
+关于语言漂移：同样 120 个病例，只换提示措辞，三家纯大模型平均有 {f(100*np.mean([b for b, c in flips.values()]),1) if flips else '—'}% 的结论翻转，放进我们的系统后平均只有 {f(100*np.mean([c for b, c in flips.values()]),1) if flips else '—'}%。这不是偶然：在可分解结构下，大模型的漂移对结论的影响有一个上界，就是学到的权重乘以测量的漂移。
 关于一百个特征：55 个手工指标里，有 3 个其实是常数，14 对高度相关，真正的有效维数大约 17；按训练数据逐组加入证据，大约 4 组就达到最好。所以我们的主张是“候选库大，实际执行稀疏”。
 关于底层模型是否见过数据：我们让 GPT 续写公开的 ADReSS 转录，和真实后文的重合度与和无关病例的重合度一样，没有发现记忆。这不能证明它从没见过，但我们让 Agent 做可以逐项核对的测量，而不是直接判类别，记住的标签无法悄悄抬高结果。
 关于少样本：只有 32 个训练病例时，基于认知状态的模型略好而且更稳定；病例多了以后，深度表示反超；完整系统在各个样本量下都不比深度表示差。

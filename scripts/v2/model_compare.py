@@ -57,7 +57,7 @@ if cache_file.exists():
     d = np.load(cache_file)
     cache = {k: (d[k + "__oof"], d[k + "__test"]) for k in base}
 else:
-    cache = {k: pv2.oof_branch(x[tr], y, x[te], 0) for k, x in base.items()}
+    cache = {k: pv2.oof_branch(x[tr], y, x[te], 0, cs=(0.05,)) for k, x in base.items()}
     np.savez(cache_file, **{f"{k}__oof": v[0] for k, v in cache.items()}, **{f"{k}__test": v[1] for k, v in cache.items()})
 
 
@@ -126,9 +126,9 @@ for ax, metric, title in ((axs[0], "acc", "Accuracy"), (axs[1], "micro_auc", "Mi
     ax.axhline(res["S_framework_no_agent"][metric], color="0.4", lw=0.7, ls=":", label="S framework, no agent")
     ax.axhline({"acc": 0.7211, "micro_auc": 0.8683}[metric], color="k", lw=0.7, ls="--", label="SpeechCARE (paper)")
     ax.set_xticks(x, [n.split()[0] for n in names])
-    ax.set_ylim(0.5, 0.9)
+    ax.set_ylim(0.4, 0.9)
     ax.set_title(title, fontsize=7.5)
-axs[0].legend(frameon=False, fontsize=5.5, loc="lower left")
+fig.legend(*axs[0].get_legend_handles_labels(), frameon=False, fontsize=6, ncol=4, loc="lower center", bbox_to_anchor=(0.5, -0.02))
 ax = axs[2]
 fl = [(n, done[n].get("B_flip_rate"), done[n].get("C_flip_rate")) for n in names if done[n].get("B_flip_rate") is not None]
 if fl:
@@ -146,7 +146,7 @@ ax.set_ylim(0, 1)
 ax.set_title("Measurement test–retest (ρ)", fontsize=7.5)
 for a, l in zip(axs, "abcd"):
     a.text(-0.18, 1.08, l, transform=a.transAxes, fontweight="bold", fontsize=9)
-fig.tight_layout()
+fig.tight_layout(rect=(0, 0.08, 1, 1))
 fig.savefig(OUT / "Fig_model_compare.pdf")
 fig.savefig(OUT / "Fig_model_compare.png", dpi=300)
 print(json.dumps({k: (v if isinstance(v, str) else {kk: (vv if not isinstance(vv, dict) or kk == "coverage" else {m: round(vv[m], 4) for m in ("acc", "macro_f1", "micro_auc")} if "acc" in vv else vv) for kk, vv in v.items()}) for k, v in res["models"].items()}, indent=1, default=float))

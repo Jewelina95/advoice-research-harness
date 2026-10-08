@@ -335,3 +335,42 @@ def test_missing_provider_key_fails_before_any_call(monkeypatch, tmp_path) -> No
     with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):
         run_api_batch("deepseek_api", "p", schema, tmp_path / "out.json", "deepseek-chat")
     assert not (tmp_path / "out.json.calls.jsonl").exists()
+
+
+def test_claude_cli_batch_reads_structured_output_and_cost(monkeypatch, tmp_path) -> None:
+    from advoice import agent_runtime
+
+    seen: dict = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["cwd"] = kwargs["cwd"]
+        envelope = {"type": "result", "subtype": "success", "is_error": False,
+                    "structured_output": {"action": "finish"}, "total_cost_usd": 0.01,
+                    "usage": {"input_tokens": 30, "output_tokens": 5}}
+        return types.SimpleNamespace(stdout=json.dumps(envelope), returncode=0)
+
+    monkeypatch.setattr("advoice.agent_runtime.shutil.which", lambda _: "claude")
+    monkeypatch.setattr("advoice.agent_runtime.subprocess.run", fake_run)
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    out = tmp_path / "out.json"
+    assert agent_runtime.run_structured_batch(tmp_path, "p", schema, out, "claude-opus-5-5", "claude_cli") == {"action": "finish"}
+    command = seen["command"]
+    assert command[command.index("--tools") + 1] == "" and "--no-session-persistence" in command
+    assert seen["cwd"].name == ".claude_cli_cwd"
+    event = json.loads((tmp_path / "out.json.calls.jsonl").read_text().splitlines()[-1])
+    assert event["reported_cost_usd"] == 0.01
+
+
+def test_claude_cli_login_error_is_explicit(monkeypatch, tmp_path) -> None:
+    from advoice import agent_runtime
+
+    envelope = {"is_error": True, "result": "Failed to authenticate: OAuth session expired", "structured_output": None}
+    monkeypatch.setattr("advoice.agent_runtime.shutil.which", lambda _: "claude")
+    monkeypatch.setattr("advoice.agent_runtime.subprocess.run",
+                        lambda *a, **k: types.SimpleNamespace(stdout=json.dumps(envelope), returncode=0))
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    with pytest.raises(RuntimeError, match="not logged in"):
+        agent_runtime.run_claude_cli_batch("p", schema, tmp_path / "out.json", "claude-opus-5-5")

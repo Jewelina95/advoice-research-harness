@@ -91,6 +91,8 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--extra", nargs="*", default=[], help="name=path.npz extra embedding branches")
+    ap.add_argument("--agent-c", nargs="*", default=[], help="name=results.csv framework measurement branches")
+    ap.add_argument("--agent-b", nargs="*", default=[], help="name=results.csv plain-agent probability arms")
     a = ap.parse_args()
     art = Path(a.artifacts)
     feats = pd.read_csv(art / "subject_features.csv")
@@ -131,6 +133,23 @@ def main() -> None:
         d = np.load(path, allow_pickle=True)
         idx = pd.Series(range(len(d["subject_ids"])), index=d["subject_ids"].astype(str))
         branches[name] = d["embeddings"][idx.loc[df["subject_id"].astype(str)].to_numpy()]
+    direct: dict[str, np.ndarray] = {}
+    for spec in a.agent_c:
+        name, path = spec.split("=", 1)
+        c = pd.read_csv(path).set_index("subject_id")
+        c = c.apply(pd.to_numeric, errors="coerce")
+        branches[name] = c.reindex(df["subject_id"]).to_numpy(float)
+    for spec in a.agent_b:
+        name, path = spec.split("=", 1)
+        b = pd.read_csv(path).set_index("subject_id")[["p_HC", "p_MCI", "p_AD"]].reindex(df["subject_id"])
+        pb = b.to_numpy(float)
+        missing = np.isnan(pb).any(1)
+        pb[missing] = 1 / 3
+        pb = np.clip(pb, 1e-6, None)
+        pb /= pb.sum(1, keepdims=True)
+        direct[name] = pb
+        branches[name] = np.log(pb)
+        print(name, "missing", int(missing.sum()))
     arms = {
         "A_acoustic": ["acoustic"],
         "A_plus_text": ["acoustic", "text_metrics"],
@@ -142,8 +161,16 @@ def main() -> None:
     for name in a.extra:
         key = name.split("=")[0]
         arms[f"S_framework_z+{key}"] = arms["S_framework_z"] + [key]
+    base_c = arms["S_framework_z"] + [k.split("=")[0] for k in a.extra]
+    for spec in a.agent_c:
+        arms[f"C_{spec.split('=')[0]}"] = base_c + [spec.split("=")[0]]
+    for spec in a.agent_b:
+        nb = spec.split("=")[0]
+        arms[f"S+{nb}_judgment"] = base_c + [nb]
+        for spec_c in a.agent_c:
+            arms[f"C_{spec_c.split('=')[0]}+{nb}"] = base_c + [spec_c.split("=")[0], nb]
     y = y_all[tr]
-    results: dict = {}
+    results: dict = {f"B_{n}_direct": [metrics(y_all[te], pb[te])] for n, pb in direct.items()}
     for seed in range(a.seeds):
         cache = {b: oof_branch(x[tr], y, x[te], seed) for b, x in branches.items()}
         for arm, members in arms.items():

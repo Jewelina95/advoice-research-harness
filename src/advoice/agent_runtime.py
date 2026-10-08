@@ -238,7 +238,7 @@ def run_codex_batch(
 
 
 API_PROVIDERS = ("openai_api", "anthropic_api", "deepseek_api")
-AGENT_PROVIDERS = ("disabled", "codex_cli", *API_PROVIDERS)
+AGENT_PROVIDERS = ("disabled", "codex_cli", "claude_cli", *API_PROVIDERS)
 _API_KEY_ENV = {
     "openai_api": "OPENAI_API_KEY",
     "anthropic_api": "ANTHROPIC_API_KEY",
@@ -400,6 +400,64 @@ def run_api_batch(
     return payload
 
 
+CLAUDE_CLI_TIMEOUT_SECONDS = 600
+
+
+def run_claude_cli_batch(prompt: str, schema_path: Path, output_path: Path, model: str) -> dict[str, Any]:
+    """Structured call through the local Claude Code CLI (subscription login, no API key).
+
+    Tools, MCP servers, settings files and session persistence are disabled and the
+    process runs in an empty directory, so the call is a single stateless completion.
+    """
+
+    binary = shutil.which("claude")
+    if binary is None:
+        raise RuntimeError("Claude Code CLI was not found on PATH.")
+    schema = _provider_schema(json.loads(schema_path.read_text(encoding="utf-8")))
+    metadata = {"provider": "claude_cli", "model": model, "effort": AGENT_REASONING_EFFORT,
+                "prompt_chars": len(prompt), "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
+    command = [binary, "-p", "--model", model, "--effort", AGENT_REASONING_EFFORT,
+               "--output-format", "json", "--json-schema", json.dumps(schema),
+               "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+               "--no-session-persistence",
+               "--system-prompt", "You are a measurement instrument. Answer only via the required structured output."]
+    sandbox = output_path.parent / ".claude_cli_cwd"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    for attempt, delay_seconds in enumerate(OPENAI_RETRY_DELAYS_SECONDS, start=1):
+        if delay_seconds:
+            time.sleep(delay_seconds)
+        started = time.monotonic()
+        _call_event(output_path, event="request_started", attempt=attempt, **metadata)
+        try:
+            result = subprocess.run(command, input=prompt, capture_output=True, text=True, cwd=sandbox,
+                                    timeout=CLAUDE_CLI_TIMEOUT_SECONDS, check=False)
+            envelope = json.loads(result.stdout)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+            _call_event(output_path, event="request_failed", attempt=attempt, **metadata,
+                        elapsed_seconds=time.monotonic() - started, error_type=type(error).__name__,
+                        error_category="claude_cli_transport", usage=None)
+            if attempt == len(OPENAI_RETRY_DELAYS_SECONDS):
+                raise _provider_runtime_error("claude_cli_transport") from None
+            continue
+        usage = _usage_counts(envelope.get("usage"))
+        _call_event(output_path, event="request_finished", attempt=attempt, **metadata,
+                    elapsed_seconds=time.monotonic() - started, status=envelope.get("subtype"),
+                    usage=usage, usage_available=usage is not None,
+                    reported_cost_usd=envelope.get("total_cost_usd"))
+        payload = envelope.get("structured_output")
+        if not envelope.get("is_error") and isinstance(payload, dict):
+            break
+        message = str(envelope.get("result") or "")
+        if "authenticate" in message.lower() or "login" in message.lower():
+            raise RuntimeError("Claude Code CLI is not logged in; run `claude` and /login once.")
+        transient = any(word in message.lower() for word in ("rate", "overloaded", "timeout", "529", "503"))
+        if not transient or attempt == len(OPENAI_RETRY_DELAYS_SECONDS):
+            raise _provider_runtime_error("claude_cli_response_failed")
+    _validate_payload(payload, schema)
+    json_dump(payload, output_path)
+    return payload
+
+
 def run_openai_batch(prompt: str, schema_path: Path, output_path: Path, model: str) -> dict[str, Any]:
     return run_api_batch("openai_api", prompt, schema_path, output_path, model)
 
@@ -427,6 +485,8 @@ def run_structured_batch(
         return cached
     if provider == "codex_cli":
         return run_codex_batch(root, prompt, schema_path, output_path, model)
+    if provider == "claude_cli":
+        return run_claude_cli_batch(prompt, schema_path, output_path, model)
     if provider == "openai_api":
         return run_openai_batch(prompt, schema_path, output_path, model)
     if provider in API_PROVIDERS:

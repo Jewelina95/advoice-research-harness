@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from advoice.agent_runtime import case_pseudonym
-from advoice.authority_review_runtime import (
+from advoice.legacy.authority_review_runtime import (
     AdvisorReconciliation,
     AuthorityReviewResult,
     BlindEvidenceAssessment,
@@ -17,12 +17,12 @@ from advoice.authority_review_runtime import (
     REVIEW_UNAVAILABLE,
     StateReviewAction,
 )
-from advoice.authority_review_transaction_bridge import (
+from advoice.legacy.authority_review_transaction_bridge import (
     AuthorityReviewTransactionBridgeError,
     compile_authority_review_decision,
     compile_authority_review_transaction,
 )
-from advoice.conditional_authority import PreparedAuthorityCase
+from advoice.legacy.conditional_authority import PreparedAuthorityCase
 from advoice.decision_lock import hash_artifact
 from advoice.evidence import EvidencePermissions, EvidenceProvenance, MetricEvidenceV2
 from advoice.routing import ObservationRoute, RouteDecision, TargetRoute

@@ -22,7 +22,7 @@ from numbers import Real
 from types import MappingProxyType
 from typing import Any
 
-from .utils import hash_values
+from advoice.utils import hash_values
 
 
 AUTHORITY_JOINT_FUSION_SCHEMA_VERSION = "advoice.authority.joint_fusion.v5-evidence-bound"

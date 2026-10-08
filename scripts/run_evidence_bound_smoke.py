@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import time
 
-from advoice.authority_study_dataset import AuthorityStudyDataset
+from advoice.legacy.authority_study_dataset import AuthorityStudyDataset
 
 
 def build_parser() -> argparse.ArgumentParser:

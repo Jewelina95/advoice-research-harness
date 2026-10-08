@@ -376,7 +376,7 @@ def run(config_path: Path) -> dict[str, Any]:
         "random_seed": seed,
         "bootstrap_repeats": repeats,
         "inputs": inputs,
-        "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
+        "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[3], text=True).strip(),
         "python": platform.python_version(),
         "scope": "research_only_no_production_registry_changes",
     }

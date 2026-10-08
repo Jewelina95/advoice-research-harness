@@ -19,9 +19,9 @@ from .authority_review_runtime import (
     REVIEW_MODE_SINGLE_BLIND,
 )
 from .authority_study_dataset import AuthorityStudyDataset
-from .config import paths
-from .decision_lock import hash_artifact
-from .agent_runtime import API_PROVIDERS
+from advoice.config import paths
+from advoice.decision_lock import hash_artifact
+from advoice.agent_runtime import API_PROVIDERS
 
 
 SUPPORTED_PROVIDERS = ("codex_cli", *API_PROVIDERS, "disabled")

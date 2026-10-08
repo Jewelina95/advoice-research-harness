@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, log_loss
 
-from advoice.authority_joint_fusion import AuthorityJointFusionConfig, fuse_authority_joint
+from advoice.legacy.authority_joint_fusion import AuthorityJointFusionConfig, fuse_authority_joint
 
 HOME = Path("/Users/wenshaoyue")
 VOICE = HOME / "Desktop/research/ad general/AD voice"

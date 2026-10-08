@@ -13,7 +13,7 @@ from advoice.cognitive_prototypes import (
     fit_cognitive_prototypes,
     predict_cognitive_prototypes,
 )
-from advoice.cognitive_representation_fusion import active_task_state_matrix
+from advoice.legacy.cognitive_representation_fusion import active_task_state_matrix
 from advoice.config import load_all
 from advoice.states import build_fold_calibrated_state_frame
 

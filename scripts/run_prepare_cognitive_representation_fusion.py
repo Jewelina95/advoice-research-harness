@@ -10,7 +10,7 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from advoice.cognitive_representation_fusion import (
+from advoice.legacy.cognitive_representation_fusion import (
     LABELS,
     ProtocolData,
     active_task_state_matrix,

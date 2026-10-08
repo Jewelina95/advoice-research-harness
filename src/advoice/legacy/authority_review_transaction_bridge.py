@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .agent_runtime import case_pseudonym
+from advoice.agent_runtime import case_pseudonym
 from .authority_agent_bridge import (
     AgentStateReview,
     CompiledAgentStateReview,
@@ -22,9 +22,9 @@ from .authority_review_runtime import (
     StateReviewAction,
 )
 from .conditional_authority import AgentAuthorityDecision, PreparedAuthorityCase
-from .decision_lock import canonical_json
-from .evidence_revision_batch import inferable_supervised_state_evidence
-from .evidence_revision_transaction import EvidenceRevisionTransaction
+from advoice.decision_lock import canonical_json
+from advoice.evidence_revision_batch import inferable_supervised_state_evidence
+from advoice.evidence_revision_transaction import EvidenceRevisionTransaction
 
 
 class AuthorityReviewTransactionBridgeError(ValueError):

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from advoice.post_agent_evaluation import (
+from advoice.legacy.post_agent_evaluation import (
     _prediction_metrics,
     audit_correction_propagation,
     audit_permission_compliance,

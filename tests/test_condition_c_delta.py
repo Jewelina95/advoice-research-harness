@@ -7,7 +7,7 @@ import struct
 
 import pytest
 
-from advoice.condition_c_delta import (
+from advoice.legacy.condition_c_delta import (
     ConditionCDeltaError,
     DeltaFusionConfig,
     DeltaFusionHashExpectations,

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from advoice.cognitive_extension import benchmark_metrics, bounded_cognitive_extension
+from advoice.legacy.cognitive_extension import benchmark_metrics, bounded_cognitive_extension
 
 
 def test_bounded_extension_is_normalized_and_uses_fixed_weight() -> None:

@@ -39,11 +39,11 @@ from .authority_joint_fusion import (
     AuthorityJointFusionResult,
     fuse_authority_joint,
 )
-from .decision_lock import canonical_json, hash_artifact
-from .evaluation import evaluate_predictions
-from .evidence_replay import replay_evidence
-from .module_a import ExplanationPacket
-from .utils import hash_values
+from advoice.decision_lock import canonical_json, hash_artifact
+from advoice.evaluation import evaluate_predictions
+from advoice.evidence_replay import replay_evidence
+from advoice.module_a import ExplanationPacket
+from advoice.utils import hash_values
 
 
 STUDY_SCHEMA_VERSION = "advoice.authority_joint_fusion_study.v1"

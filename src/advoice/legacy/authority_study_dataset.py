@@ -19,11 +19,11 @@ import pandas as pd
 from .condition_c_advisor import FrozenConditionCAdvisor
 from .conditional_authority import ConditionalAuthorityExecutor, PreparedAuthorityCase
 from .conditional_authority_pilot import FrozenAuthorityDataset, load_frozen_authority_dataset
-from .config import load_yaml, paths
-from .evidence import MetricEvidenceV2
-from .evidence_replay import build_state_graph_v2
-from .module_a import TaskConditionedStatisticalExpert
-from .module_b import ConditionalArbitrator
+from advoice.config import load_yaml, paths
+from advoice.evidence import MetricEvidenceV2
+from advoice.evidence_replay import build_state_graph_v2
+from advoice.module_a import TaskConditionedStatisticalExpert
+from advoice.module_b import ConditionalArbitrator
 
 
 class AuthorityStudyDatasetError(ValueError):

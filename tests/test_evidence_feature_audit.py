@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from advoice.evidence_feature_audit import (
+from advoice.legacy.evidence_feature_audit import (
     benjamini_hochberg, candidate_metric_ids, choose_feature_counts,
     feature_inference, map_historical_metrics, stratified_bootstrap_indices,
 )

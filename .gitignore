@@ -35,3 +35,10 @@ demo/local_output/
 !demo/assets/synthetic_picture_description.wav
 !demo/assets/synthetic_structured_task.wav
 !demo/assets/synthetic_public_speech.wav
+
+# LaTeX build artifacts
+paper/**/*.aux
+paper/**/*.bbl
+paper/**/*.blg
+paper/**/*.out
+paper/*.zip

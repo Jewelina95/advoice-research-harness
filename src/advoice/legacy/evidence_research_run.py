@@ -1,6 +1,6 @@
 """Run a private, train-only descriptive evidence-overlap study.
 
-Usage: python -m advoice.evidence_research_run --config local-recipe.yaml
+Usage: python -m advoice.legacy.evidence_research_run --config local-recipe.yaml
 No training, feature selection, inference, or patient-level export is performed.
 """
 
@@ -63,7 +63,7 @@ def load_subject_features(path: Path, metric_ids: set[str], metadata_path: Path 
 def run_study(config_path: Path) -> dict:
     config_path = config_path.resolve()
     recipe = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
 
     def resolve(value: str) -> Path:
         path = Path(value).expanduser()

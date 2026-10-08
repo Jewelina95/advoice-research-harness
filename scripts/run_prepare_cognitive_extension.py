@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from advoice.cognitive_extension import (
+from advoice.legacy.cognitive_extension import (
     LABELS,
     benchmark_metrics,
     bounded_cognitive_extension,

@@ -7,12 +7,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from advoice.authority_agent_bridge import (
+from advoice.legacy.authority_agent_bridge import (
     AgentStateReview,
     AgentStateReviewError,
     compile_agent_state_review,
 )
-from advoice.conditional_authority import PreparedAuthorityCase
+from advoice.legacy.conditional_authority import PreparedAuthorityCase
 from advoice.evidence import EvidencePermissions, MetricEvidenceV2
 from advoice.evidence_replay import evidence_snapshot_hash
 from advoice.state_graph import StateGraphV2

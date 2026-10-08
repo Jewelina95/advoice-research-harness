@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from advoice import evidence_research_run as runner
+from advoice.legacy import evidence_research_run as runner
 
 
 def test_feature_loader_excludes_labels_and_transcripts(tmp_path):
@@ -30,7 +30,7 @@ def test_metadata_join_checks_split_and_cardinality(tmp_path):
 
 
 def study_recipe(tmp_path, monkeypatch):
-    source = tmp_path / "src" / "advoice" / "evidence_research_run.py"
+    source = tmp_path / "src" / "advoice" / "legacy" / "evidence_research_run.py"
     source.parent.mkdir(parents=True)
     source.write_text("# synthetic source fixture\n")
     source.with_name("evidence_research.py").write_text("# synthetic source fixture\n")

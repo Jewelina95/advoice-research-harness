@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from advoice.demo import (
+from advoice.legacy.demo import (
     PUBLIC_DEMO_CASES,
     analyze_local_manifest_case,
     analyze_public_case,

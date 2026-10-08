@@ -6,12 +6,12 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .decision_lock import hash_artifact
+from advoice.decision_lock import hash_artifact
 
 
 REGISTRY_SCHEMA_VERSION = "advoice.authority_calibration_registry.v1"
 DEFAULT_REGISTRY_PATH = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
     / "configs"
     / "calibration"
     / "authority_registry.json"

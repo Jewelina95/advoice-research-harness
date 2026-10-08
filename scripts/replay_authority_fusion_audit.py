@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from advoice.authority_joint_fusion import AuthorityJointFusionConfig, fuse_authority_joint
+from advoice.legacy.authority_joint_fusion import AuthorityJointFusionConfig, fuse_authority_joint
 
 
 PILOT_STATUS = "non_deployable_unvalidated_historical_replay"

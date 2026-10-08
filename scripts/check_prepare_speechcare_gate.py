@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from advoice.cognitive_extension import LABELS, benchmark_metrics
+from advoice.legacy.cognitive_extension import LABELS, benchmark_metrics
 from advoice.config import paths
 
 

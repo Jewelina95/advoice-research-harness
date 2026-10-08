@@ -6,12 +6,12 @@ from types import SimpleNamespace
 import pytest
 import pandas as pd
 
-from advoice.authority_review_runtime import (
+from advoice.legacy.authority_review_runtime import (
     EVIDENCE_STRENGTH_POLICY_SHARED_AWARE,
     LikelihoodEvidenceCitation,
     agent_evidence_strength,
 )
-from advoice.conditional_authority import (
+from advoice.legacy.conditional_authority import (
     AgentAuthorityDecision,
     AuthorityValidation,
     ConditionalAuthorityError,
@@ -744,7 +744,7 @@ def test_rejected_validation_never_replays_revision_batch(monkeypatch) -> None:
     def forbidden_replay(*args, **kwargs):
         raise AssertionError("rejected batch reached replay")
 
-    monkeypatch.setattr("advoice.conditional_authority.replay_evidence", forbidden_replay)
+    monkeypatch.setattr("advoice.legacy.conditional_authority.replay_evidence", forbidden_replay)
     result = executor.finalize_case(
         prepared=prepared,
         agent_decision=decision,

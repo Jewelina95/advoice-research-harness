@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import pandas as pd
 
-from .evidence import (
+from advoice.evidence import (
     ConfoundSets,
     EvidencePermissions,
     EvidenceProvenance,

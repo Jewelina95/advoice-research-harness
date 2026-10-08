@@ -11,15 +11,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
-from .agent_runtime import case_pseudonym, run_structured_batch
+from advoice.agent_runtime import case_pseudonym, run_structured_batch
 from .conditional_authority import (
     ConditionalAuthorityError,
     PreparedAuthorityCase,
     validate_prepared_evidence_family_identity,
 )
-from .condition_c import clean_model_transcript
-from .decision_lock import canonical_json, hash_artifact
-from .transcript_sanitization import sanitize_transcript_payload
+from advoice.condition_c import clean_model_transcript
+from advoice.decision_lock import canonical_json, hash_artifact
+from advoice.transcript_sanitization import sanitize_transcript_payload
 
 
 SCHEMA_VERSION = "advoice.authority_review_runtime.v5-correlated-fusion"

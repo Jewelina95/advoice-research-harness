@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from advoice.calibration_registry import (
+from advoice.legacy.calibration_registry import (
     CalibrationRegistryError,
     REGISTRY_SCHEMA_VERSION,
     validate_registered_calibration_artifact,

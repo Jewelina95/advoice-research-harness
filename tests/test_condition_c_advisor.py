@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from advoice.condition_c_advisor import FrozenConditionCAdvisor
+from advoice.legacy.condition_c_advisor import FrozenConditionCAdvisor
 from advoice.module_a import ExplanationPacket, snapshot_hash
 from advoice.utils import sha256_file
 

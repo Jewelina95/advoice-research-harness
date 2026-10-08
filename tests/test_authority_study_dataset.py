@@ -8,8 +8,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import advoice.authority_study_dataset as study_module
-from advoice.authority_study_dataset import AuthorityStudyDataset, AuthorityStudyDatasetError
+import advoice.legacy.authority_study_dataset as study_module
+from advoice.legacy.authority_study_dataset import AuthorityStudyDataset, AuthorityStudyDatasetError
 from advoice.evidence import MetricEvidenceV2, ReferenceMetadata
 from advoice.evidence_replay import build_state_graph_v2
 

@@ -8,8 +8,8 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 from .conditional_authority import AgentAuthorityDecision, PreparedAuthorityCase
-from .decision_lock import canonical_json, hash_artifact
-from .evidence_revision_batch import (
+from advoice.decision_lock import canonical_json, hash_artifact
+from advoice.evidence_revision_batch import (
     EvidenceRevisionBatch,
     EvidenceRevisionBatchError,
     compile_evidence_revision_batch,

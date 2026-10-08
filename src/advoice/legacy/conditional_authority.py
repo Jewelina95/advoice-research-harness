@@ -18,28 +18,28 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .decision_lock import (
+from advoice.decision_lock import (
     DecisionLock,
     HashMismatchError,
     create_decision_lock,
     hash_artifact,
     validate_locked_report,
 )
-from .evidence import MetricEvidenceV2
-from .evidence_replay import (
+from advoice.evidence import MetricEvidenceV2
+from advoice.evidence_replay import (
     EvidenceReplayResult,
     EvidenceRevision,
     replay_evidence,
 )
-from .evidence_revision_batch import EvidenceRevisionBatch, EvidenceRevisionBatchError
-from .evidence_revision_transaction import (
+from advoice.evidence_revision_batch import EvidenceRevisionBatch, EvidenceRevisionBatchError
+from advoice.evidence_revision_transaction import (
     EvidenceRevisionTransaction,
     EvidenceRevisionTransactionError,
 )
-from .module_a import ExplanationPacket, TaskConditionedStatisticalExpert
-from .module_b import ConditionalArbitrator, ModuleBPrediction
-from .routing import RouteDecision, route_case
-from .state_graph import deserialize_state_card_ids
+from advoice.module_a import ExplanationPacket, TaskConditionedStatisticalExpert
+from advoice.module_b import ConditionalArbitrator, ModuleBPrediction
+from advoice.routing import RouteDecision, route_case
+from advoice.state_graph import deserialize_state_card_ids
 
 
 class ConditionalAuthorityError(ValueError):

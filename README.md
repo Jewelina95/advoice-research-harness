@@ -1,3 +1,7 @@
+> **For AI agents:** read [`CODEMAP.md`](CODEMAP.md) first (entry points, data flow, what not to read).
+> Frozen one-off research code lives in `src/advoice/legacy/`; skip it unless a task names it.
+> Tests: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src python3 -m pytest -q -p no:cacheprovider`
+
 # ADvoice research harness
 
 [![Reproducibility checks](https://github.com/Jewelina95/advoice-research-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Jewelina95/advoice-research-harness/actions/workflows/ci.yml)

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from advoice.evidence_research import (
+from advoice.legacy.evidence_research import (
     effective_dimension_statistics, historical_declared_reuse,
     historical_inventory, overlap_components, overlap_statistics, replay_check,
     state_overlap_tables, task_scope_reuse_statistics, training_rows,

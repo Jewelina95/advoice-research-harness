@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from advoice.conditional_authority_pilot import (
+from advoice.legacy.conditional_authority_pilot import (
     FrozenAuthorityArtifactError,
     load_frozen_authority_dataset,
 )

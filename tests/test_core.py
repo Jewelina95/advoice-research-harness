@@ -72,7 +72,6 @@ def test_voice_activity_mask_preserves_a_long_silence() -> None:
     assert middle.mean() < 0.10
     assert edges.mean() > 0.50
     assert backend in {"energy", "webrtc_energy_hybrid"}
-from advoice.report_agent import _retained_state_features, _sanitized_segments
 from advoice.reporting import _expert_cv_values, plot_branch_weights
 from advoice.agent_runtime import select_agent_cohort
 from advoice.aggregate_reporting import _evaluation_payload
@@ -307,25 +306,6 @@ def test_state_fusion_bounds_metric_contribution_without_hiding_raw_value() -> N
     assert _bounded_metric_contribution(raw, 5.0).tolist() == [-5.0, -1.0, 2.0, 5.0]
 
 
-def test_report_prediction_roles_follow_fitted_branch_specification() -> None:
-    metadata = {
-        "branches": [
-            {
-                "kind": "clinical_state",
-                "state_features": ["state_S01", "state_S02__task_cookie"],
-            },
-            {
-                "kind": "low_interpretability_auxiliary",
-                "state_features": ["state_S06"],
-            },
-        ]
-    }
-    assert _retained_state_features(metadata) == {
-        "state_S01",
-        "state_S02__task_cookie",
-    }
-
-
 def test_legacy_evidence_schema_gets_overall_task_scope() -> None:
     frame = _normalize_evidence_schema(pd.DataFrame({"metric_id": ["m1"]}))
     assert frame.loc[0, "task_scope"] == "overall"
@@ -352,13 +332,6 @@ def test_stage_cache_skips_unchanged_inputs(tmp_path: Path) -> None:
     assert first.status == "executed"
     assert second.status == "cached"
     assert len(calls) == 1
-
-
-def test_report_segments_remove_source_label_identifiers() -> None:
-    raw = '[{"segment_id":"HC_F_019239_002:S06","case_id":"HC_F_019239_002","start_sec":50,"end_sec":60,"silence_fraction":0.8,"rms_db_mean":-32}]'
-    result = _sanitized_segments(raw)
-    assert result[0]["segment_id"].startswith("SEG-")
-    assert "HC_F" not in str(result)
 
 
 def test_agent_cohort_is_capped_deterministically_without_using_labels() -> None:

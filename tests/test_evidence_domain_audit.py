@@ -1,6 +1,6 @@
 import pandas as pd
 
-from advoice.evidence_domain_audit_run import state_observability
+from advoice.legacy.evidence_domain_audit_run import state_observability
 
 
 def test_constant_columns_do_not_count_as_observable_evidence():

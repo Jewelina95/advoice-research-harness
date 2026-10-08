@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .features import extract_audio_file
-from .transcripts import read_transcript
+from advoice.features import extract_audio_file
+from advoice.transcripts import read_transcript
 
 
 DEMO_REFERENCES: dict[str, dict[str, Any]] = {

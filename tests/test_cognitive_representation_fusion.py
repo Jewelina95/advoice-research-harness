@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from advoice.cognitive_representation_fusion import (
+from advoice.legacy.cognitive_representation_fusion import (
     active_task_state_matrix,
     apply_logit_offsets,
     fit_class_logit_offsets,

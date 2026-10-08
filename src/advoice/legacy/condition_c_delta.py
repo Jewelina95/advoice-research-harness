@@ -15,8 +15,8 @@ import re
 from types import MappingProxyType
 from typing import Any
 
-from .module_a import ExplanationPacket
-from .utils import hash_values
+from advoice.module_a import ExplanationPacket
+from advoice.utils import hash_values
 
 
 DELTA_FUSION_SCHEMA_VERSION = "advoice.condition_c.state_delta_fusion.v1"

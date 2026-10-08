@@ -214,7 +214,7 @@ body{{font-family:Arial,'Noto Sans SC',sans-serif;margin:0;background:#f4f6f7;co
 
 def run(config_path: Path) -> dict[str, Any]:
     recipe = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     output = root / recipe["output_dir"]
     if output.exists():
         raise FileExistsError(output)

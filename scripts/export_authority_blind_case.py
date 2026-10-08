@@ -6,12 +6,12 @@ import argparse
 import json
 from pathlib import Path
 
-from advoice.authority_review_runtime import (
+from advoice.legacy.authority_review_runtime import (
     _blind_schema,
     _policy_documents,
     build_blind_payload,
 )
-from advoice.authority_study_dataset import AuthorityStudyDataset
+from advoice.legacy.authority_study_dataset import AuthorityStudyDataset
 from advoice.decision_lock import canonical_json
 
 

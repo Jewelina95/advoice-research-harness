@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from advoice.authority_review_runtime import (
+from advoice.legacy.authority_review_runtime import (
     AuthorityReviewRuntime,
     AuthorityReviewValidationError,
     LikelihoodEvidenceCitation,
@@ -23,7 +23,7 @@ from advoice.authority_review_runtime import (
     _parse_blind,
     _parse_reconciliation,
 )
-from advoice.conditional_authority import PreparedAuthorityCase
+from advoice.legacy.conditional_authority import PreparedAuthorityCase
 from advoice.decision_lock import canonical_json, hash_artifact
 from advoice.evidence import (
     EvidencePermissions,
@@ -249,7 +249,7 @@ def test_two_pass_payloads_are_blind_then_advisor_bound(monkeypatch, tmp_path: P
         calls.append(_payload_from_prompt(prompt))
         return _blind(prepared) if len(calls) == 1 else _advisor(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     runtime = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", model="test",
         skill_path=_skill(tmp_path), review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
@@ -272,7 +272,7 @@ def test_default_runtime_uses_one_blind_evidence_call(monkeypatch, tmp_path: Pat
         calls.append(_payload_from_prompt(prompt))
         return _blind(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
     ).review(prepared)
@@ -576,7 +576,7 @@ def test_runtime_schema_enumerates_true_state_ids_and_forbids_blind_retain(
         schemas.append(json.loads(Path(schema_path).read_text(encoding="utf-8")))
         return _blind(prepared) if len(schemas) == 1 else _advisor(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
         review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
@@ -633,7 +633,7 @@ def test_runtime_schema_binds_each_action_to_same_state_evidence(
         schemas.append(json.loads(Path(schema_path).read_text(encoding="utf-8")))
         return _blind(prepared) if len(schemas) == 1 else _advisor(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
         review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
@@ -661,7 +661,7 @@ def test_runtime_uses_short_transport_ids_and_restores_full_audit_ids(
         text = canonical_json(response).replace("metric:pause", "E001")
         return json.loads(text)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     result = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", model="test", skill_path=_skill(tmp_path),
         review_mode=REVIEW_MODE_LEGACY_TWO_PASS,
@@ -721,7 +721,7 @@ def test_provider_leakage_and_stale_hashes_are_rejected(monkeypatch, tmp_path: P
     prepared = _prepared()
     response = _blind(prepared)
     response["truth"] = "AD"
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", lambda *args: response)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", lambda *args: response)
     runtime = AuthorityReviewRuntime(root=tmp_path, provider="openai_api", skill_path=_skill(tmp_path))
     with pytest.raises(AuthorityReviewValidationError, match="prohibited leakage"):
         runtime.review(prepared)
@@ -737,7 +737,7 @@ def test_provider_leakage_and_stale_hashes_are_rejected(monkeypatch, tmp_path: P
 def test_provider_failure_is_closed_without_fabricated_review(monkeypatch, tmp_path: Path) -> None:
     prepared = _prepared()
     monkeypatch.setattr(
-        "advoice.authority_review_runtime.run_structured_batch",
+        "advoice.legacy.authority_review_runtime.run_structured_batch",
         lambda *args: (_ for _ in ()).throw(RuntimeError("provider down")),
     )
     result = AuthorityReviewRuntime(
@@ -758,7 +758,7 @@ def test_request_hashes_are_deterministic_and_disabled_never_calls_provider(monk
         calls += 1
         return _blind(prepared) if calls % 2 else _advisor(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     skill = _skill(tmp_path)
     first = AuthorityReviewRuntime(
         root=tmp_path, provider="openai_api", skill_path=skill,
@@ -788,7 +788,7 @@ def test_request_hashes_change_when_provider_contract_or_policy_changes(monkeypa
         output_paths.append(Path(output_path))
         return _blind(prepared) if calls % 2 else _advisor(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     skill = _skill(tmp_path)
 
     def review(**kwargs):
@@ -804,7 +804,7 @@ def test_request_hashes_change_when_provider_contract_or_policy_changes(monkeypa
     changed_skill = review(provider="openai_api", model="model-a")
     (skill.parent / "POLICY.md").write_text("Require verified measurements.", encoding="utf-8")
     changed_policy = review(provider="openai_api", model="model-a")
-    monkeypatch.setattr("advoice.authority_review_runtime.SCHEMA_VERSION", "test.runtime.v2")
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.SCHEMA_VERSION", "test.runtime.v2")
     changed_schema = review(provider="openai_api", model="model-a")
 
     results = (baseline, changed_provider, changed_model, changed_skill, changed_policy, changed_schema)
@@ -823,7 +823,7 @@ def test_request_identity_binds_versioned_evidence_strength_policy(
         payloads.append(_payload_from_prompt(prompt))
         return _blind(prepared)
 
-    monkeypatch.setattr("advoice.authority_review_runtime.run_structured_batch", provider)
+    monkeypatch.setattr("advoice.legacy.authority_review_runtime.run_structured_batch", provider)
     skill = _skill(tmp_path)
     strict = AuthorityReviewRuntime(
         root=tmp_path,

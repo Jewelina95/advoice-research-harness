@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import advoice.authority_state_delta_cli as cli
+import advoice.legacy.authority_state_delta_cli as cli
 from advoice.decision_lock import hash_artifact
 
 

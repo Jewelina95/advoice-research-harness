@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from advoice.post_agent_evaluation import (
+from advoice.legacy.post_agent_evaluation import (
     audit_correction_propagation,
     audit_permission_compliance,
     audit_trace_integrity,

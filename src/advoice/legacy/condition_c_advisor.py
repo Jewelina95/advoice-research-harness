@@ -19,8 +19,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .module_a import EXPLANATION_PACKET_VERSION, ExplanationPacket, snapshot_hash
-from .utils import hash_values, sha256_file
+from advoice.module_a import EXPLANATION_PACKET_VERSION, ExplanationPacket, snapshot_hash
+from advoice.utils import hash_values, sha256_file
 
 
 FROZEN_CONDITION_C_ADVISOR_VERSION = "advoice.condition_c_advisor.frozen.v1"

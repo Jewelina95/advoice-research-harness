@@ -7,15 +7,15 @@ from typing import Any, Mapping
 
 import pytest
 
-import advoice.authority_state_delta_study as study_module
-from advoice.authority_state_delta_study import (
+import advoice.legacy.authority_state_delta_study as study_module
+from advoice.legacy.authority_state_delta_study import (
     AuthorityStateDeltaStudyConfig,
     AuthorityStateDeltaStudyError,
     _packet_bound_hash,
     run_authority_state_delta_cohort,
 )
-from advoice.authority_joint_fusion import AuthorityJointFusionConfig
-from advoice.authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
+from advoice.legacy.authority_joint_fusion import AuthorityJointFusionConfig
+from advoice.legacy.authority_study_dataset import AuthorityStudyDataset, PreparedAuthorityStudyCase
 from advoice.module_a import ExplanationPacket
 
 
@@ -354,7 +354,7 @@ def test_calibration_context_changes_with_model_and_dataset_artifacts() -> None:
 
 @pytest.mark.parametrize("scores, expected", [({"HC": 4, "AD": 0}, True), ({"HC": 0, "AD": 4}, False)])
 def test_fusion_audit_retains_state_agent_conflict(scores, expected):
-    from advoice.authority_joint_fusion import fuse_authority_joint
+    from advoice.legacy.authority_joint_fusion import fuse_authority_joint
 
     fusion = fuse_authority_joint(
         {"HC": 0.5, "AD": 0.5}, {"HC": 0.7, "AD": 0.3},
@@ -377,13 +377,12 @@ def test_report_mode_is_rejected_before_any_work(tmp_path, decision_only):
 
 
 def test_decision_only_is_default_and_preserves_audits_and_resume(tmp_path, monkeypatch):
-    from advoice import diagnostic_agent_report, report_agent, report_scoring_agent
+    from advoice import diagnostic_agent_report, report_scoring_agent
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Decision-only evaluation cannot invoke a report provider or renderer")
     for module, entry in (
         (diagnostic_agent_report, "run_diagnostic_agent_reports"),
-        (report_agent, "run_ours_report_agent"),
         (report_scoring_agent, "run_report_scoring_agent"),
     ):
         monkeypatch.setattr(module, entry, forbidden)

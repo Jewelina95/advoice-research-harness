@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 import pytest
 
-from advoice.authority_joint_fusion import (
+from advoice.legacy.authority_joint_fusion import (
     AuthorityJointFusionConfig,
     AuthorityJointFusionError,
     fuse_authority_joint,

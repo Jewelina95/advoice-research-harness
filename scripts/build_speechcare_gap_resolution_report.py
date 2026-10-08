@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix
 
-from advoice.cognitive_extension import LABELS, benchmark_metrics
+from advoice.legacy.cognitive_extension import LABELS, benchmark_metrics
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -85,10 +85,13 @@ class QCOrthogonalizer(BaseEstimator, TransformerMixin):
 
     def fit(self, x: pd.DataFrame, y: np.ndarray | None = None) -> QCOrthogonalizer:
         frame = pd.DataFrame(x, columns=list(self.state_columns) + list(self.qc_columns))
-        self.state_imputer_ = SimpleImputer(strategy="median")
+        # A state can be structurally unobservable for an entire task/channel.
+        # Keep that column as a neutral zero instead of allowing sklearn to
+        # drop it, which would break the fixed state/QC boundary below.
+        self.state_imputer_ = SimpleImputer(strategy="median", keep_empty_features=True)
         state = self.state_imputer_.fit_transform(frame[list(self.state_columns)])
         if self.qc_columns:
-            self.qc_imputer_ = SimpleImputer(strategy="median")
+            self.qc_imputer_ = SimpleImputer(strategy="median", keep_empty_features=True)
             qc = self.qc_imputer_.fit_transform(frame[list(self.qc_columns)])
             self.residualizer_ = Ridge(alpha=float(self.alpha)).fit(qc, state)
         else:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from advoice.evaluation import (
+    _optional_prediction_metric,
     _available_state_cards,
     _report_permission_rate,
     _quality_reference_rate,
@@ -30,6 +31,23 @@ def test_multiclass_metrics_perfect() -> None:
     assert result["per_class"]["AD"]["sensitivity"] == 1.0
     assert result["referral_auroc"] == 1.0
     assert result["referral_specificity_at_locked_threshold"] == 1.0
+
+
+def test_optional_prediction_metric_marks_unestimable_ablation_unavailable() -> None:
+    frame = pd.DataFrame(
+        {
+            "label": ["HC", "AD"],
+            "predicted_label": ["HC", "AD"],
+            "prob_HC": [float("nan"), float("nan")],
+            "prob_AD": [float("nan"), float("nan")],
+        }
+    )
+
+    value = _optional_prediction_metric(
+        frame, bins=5, labels=["HC", "AD"], positive_class="AD", metric="macro_auroc_ovr"
+    )
+
+    assert pd.isna(value)
 
 
 def test_paired_prediction_comparison_uses_matched_subjects() -> None:

@@ -92,6 +92,7 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--extra", nargs="*", default=[], help="name=path.npz extra embedding branches")
     ap.add_argument("--agent-c", nargs="*", default=[], help="name=results.csv framework measurement branches")
+    ap.add_argument("--prob-branch", nargs="*", default=[], help="name=probs.npz cross-fitted probability branches")
     ap.add_argument("--agent-b", nargs="*", default=[], help="name=results.csv plain-agent probability arms")
     a = ap.parse_args()
     art = Path(a.artifacts)
@@ -161,6 +162,8 @@ def main() -> None:
     for name in a.extra:
         key = name.split("=")[0]
         arms[f"S_framework_z+{key}"] = arms["S_framework_z"] + [key]
+    if a.extra:
+        arms["S_framework_z+all_extra"] = arms["S_framework_z"] + [n.split("=")[0] for n in a.extra]
     base_c = arms["S_framework_z"] + [k.split("=")[0] for k in a.extra]
     for spec in a.agent_c:
         arms[f"C_{spec.split('=')[0]}"] = base_c + [spec.split("=")[0]]
@@ -171,16 +174,43 @@ def main() -> None:
             arms[f"C_{spec_c.split('=')[0]}+{nb}"] = base_c + [spec_c.split("=")[0], nb]
     y = y_all[tr]
     results: dict = {f"B_{n}_direct": [metrics(y_all[te], pb[te])] for n, pb in direct.items()}
+    ens_oof: dict = {}
+    ens_test: dict = {}
+    fixed: dict = {}
+    for spec in a.prob_branch:
+        name, path = spec.split("=", 1)
+        d = np.load(path)
+        pr = pd.DataFrame(d["probs"], index=d["subject_ids"].astype(str)).loc[df["subject_id"].astype(str)].to_numpy()
+        fixed[name] = (np.clip(pr[tr], 1e-6, 1), np.clip(pr[te], 1e-6, 1))
+        arms[f"S_framework_z+all_extra+{name}"] = arms.get("S_framework_z+all_extra", arms["S_framework_z"]) + [name]
+        arms[f"S_framework_z+w32+{name}"] = arms["S_framework_z"] + [k for k in ("w32",) if k in branches] + [name]
+        arms[f"{name}_alone"] = [name]
     for seed in range(a.seeds):
         cache = {b: oof_branch(x[tr], y, x[te], seed) for b, x in branches.items()}
+        cache.update(fixed)
         for arm, members in arms.items():
             if len(members) == 1:
-                p = cache[members[0]][1]
+                p_oof, p = cache[members[0]]
             else:
                 xs_tr = np.hstack([np.log(np.clip(cache[m][0], 1e-6, 1)) for m in members])
                 xs_te = np.hstack([np.log(np.clip(cache[m][1], 1e-6, 1)) for m in members])
-                _, p = oof_branch(xs_tr, y, xs_te, seed + 100, cs=(0.01, 0.1, 1.0))
+                p_oof, p = oof_branch(xs_tr, y, xs_te, seed + 100, cs=(0.01, 0.1, 1.0))
             results.setdefault(arm, []).append(metrics(y_all[te], p))
+            ens_oof.setdefault(arm, []).append(p_oof)
+            ens_test.setdefault(arm, []).append(p)
+    # Seed ensemble, then class log-offsets chosen on train OOF for accuracy (test untouched).
+    grid = np.arange(-1.0, 1.01, 0.1)
+    for arm in list(ens_test):
+        po, pt = np.mean(ens_oof[arm], 0), np.mean(ens_test[arm], 0)
+        results[f"{arm}__ens"] = [metrics(y_all[te], pt)]
+        best = (-1, (0, 0))
+        for b1 in grid:
+            for b2 in grid:
+                acc = ((np.log(po) + [0, b1, b2]).argmax(1) == y).mean()
+                if acc > best[0] + 1e-9:
+                    best = (acc, (b1, b2))
+        adj = np.exp(np.log(pt) + [0, *best[1]])
+        results[f"{arm}__ens_acc_offset"] = [metrics(y_all[te], adj / adj.sum(1, keepdims=True))]
     summary = {arm: {k: (np.mean([r[k] for r in rs], 0).round(4).tolist()) for k in rs[0]} for arm, rs in results.items()}
     summary["_speechcare_paper_mean"] = {"acc": 0.7211, "micro_auc": 0.8683}
     Path(a.out).write_text(json.dumps(summary, indent=1))

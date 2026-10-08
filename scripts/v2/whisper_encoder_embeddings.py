@@ -18,6 +18,9 @@ def main() -> None:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--model", default="mlx-community/whisper-large-v3-turbo")
     ap.add_argument("--layers", default="8,16,24,32")
+    ap.add_argument("--frames-layer", type=int, default=0, help="also save pooled frame sequence of this layer")
+    ap.add_argument("--frame-pool", type=int, default=4)
+    ap.add_argument("--max-frames", type=int, default=750)
     a = ap.parse_args()
     layers = [int(x) for x in a.layers.split(",")]
     model = load_model(a.model, dtype=mx.float16)
@@ -25,6 +28,7 @@ def main() -> None:
     man = pd.read_csv(a.manifest).sort_values("subject_id")
     out: dict[int, list[np.ndarray]] = {k: [] for k in layers}
     ids = []
+    seqs: list[np.ndarray] = []
     for i, row in enumerate(man.itertuples()):
         audio = load_audio(row.audio_path)
         chunks = [audio[s:s + N_SAMPLES] for s in range(0, max(len(audio), 1), N_SAMPLES)][:4]
@@ -41,6 +45,11 @@ def main() -> None:
                 if depth in per_layer:
                     h = x if depth < len(enc.blocks) else enc.ln_post(x)
                     per_layer[depth].append(np.array(h[0, :n_frames].astype(mx.float32)))
+        if a.frames_layer:
+            fr = np.concatenate(per_layer[a.frames_layer], 0)
+            n = len(fr) // a.frame_pool * a.frame_pool or len(fr)
+            pooled = fr[:n].reshape(-1, min(a.frame_pool, n), fr.shape[1]).mean(1) if n >= a.frame_pool else fr
+            seqs.append(pooled[: a.max_frames].astype(np.float16))
         for k in layers:
             frames = np.concatenate(per_layer[k], 0)
             out[k].append(np.concatenate([frames.mean(0), frames.std(0)]))
@@ -52,6 +61,13 @@ def main() -> None:
     for k in layers:
         np.savez_compressed(od / f"whisper_l{k}.npz", embeddings=np.stack(out[k]).astype(np.float32),
                             subject_ids=np.array(ids))
+    if a.frames_layer:
+        lengths = np.array([len(x) for x in seqs])
+        padded = np.zeros((len(seqs), lengths.max(), seqs[0].shape[1]), np.float16)
+        for i, x in enumerate(seqs):
+            padded[i, : len(x)] = x
+        np.save(od / f"whisper_frames_l{a.frames_layer}.npy", padded)
+        np.savez(od / f"whisper_frames_l{a.frames_layer}_meta.npz", lengths=lengths, subject_ids=np.array(ids))
     print("done", len(ids))
 
 

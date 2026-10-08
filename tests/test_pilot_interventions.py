@@ -8,7 +8,7 @@ from advoice.evidence import EvidenceProvenance, MetricEvidenceV2
 from advoice.pilot import contracts as c
 from advoice.pilot.runtime import (
     InMemoryAssessmentCache, OperationAuthorization, ProviderCapabilities, ProviderResponse,
-    ProviderTerminalOutcome, ReplayExecution, RuntimeBudget, RuntimeValidationError, SkillBundle, SkillDocument,
+    ProviderTerminalOutcome, ProviderUsage, ReplayExecution, RuntimeBudget, RuntimeValidationError, SkillBundle, SkillDocument,
     TranscriptSpan, assess_and_replay, build_case_packet, canonical_operation_registry_hash,
     canonical_skill_bundle_hash,
 )
@@ -126,7 +126,9 @@ def _budget() -> RuntimeBudget:
 
 
 def _response(payload: dict, *, status: str = "ok") -> ProviderResponse:
-    return ProviderResponse(payload=payload, usage=None, response_id="resp_0", reported_cost_usd=None, status=status)
+    usage = ProviderUsage(input_tokens=10, output_tokens=5, reasoning_tokens=2) if status == "ok" else None
+    cost = 0.001 if status == "ok" else None
+    return ProviderResponse(payload=payload, usage=usage, response_id="resp_0", reported_cost_usd=cost, status=status)
 
 
 def test_relevant_evidence_replay_propagates_but_fixed_base_does_not_change() -> None:

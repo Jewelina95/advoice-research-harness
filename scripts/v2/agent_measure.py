@@ -73,18 +73,33 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=12)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--variant", type=int, default=0, help="1 = paraphrased instructions and reversed case order")
+    ap.add_argument("--ids-file", default="", help="optional file with one subject_id per line")
     a = ap.parse_args()
     art = Path(a.artifacts)
     tx = pd.read_csv(art / "subject_transcripts.csv")[["subject_id", "transcript"]]
     man = pd.read_csv(art / "manifest.csv")[["subject_id", "task_type"]]
     df = tx.merge(man, on="subject_id").sort_values("subject_id")
+    if a.ids_file:
+        keep = set(Path(a.ids_file).read_text().split())
+        df = df[df["subject_id"].isin(keep)]
     if a.limit:
         df = df.head(a.limit)
-    out = Path(a.out_dir) / f"{a.arm}_{a.provider}_{a.model}"
+    if a.variant:
+        df = df.iloc[::-1]
+    suffix = f"_v{a.variant}" if a.variant else ""
+    out = Path(a.out_dir) / f"{a.arm}_{a.provider}_{a.model}{suffix}"
     out.mkdir(parents=True, exist_ok=True)
     schema_path = out / "schema.json"
     schema_path.write_text(json.dumps(schema(a.arm)))
     prompt_head = B_PROMPT if a.arm == "B" else C_PROMPT
+    if a.variant:
+        # Same task and schema, different wording: tests sensitivity to irrelevant phrasing.
+        prompt_head = ("Instructions (reworded). " + prompt_head
+                       .replace("You are screening speech transcripts for cognitive impairment.",
+                                "Task: review older adults' speech transcripts and assess cognitive status.")
+                       .replace("You are a clinical speech-language measurement instrument. You do NOT diagnose.",
+                                "Act as a standardised language-measurement tool; do not make diagnoses."))
     # Pseudonymous IDs only; no labels, paths or demographics are sent.
     batches = [df.iloc[i:i + a.batch] for i in range(0, len(df), a.batch)]
 

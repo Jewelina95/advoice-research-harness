@@ -418,7 +418,7 @@ def run_claude_cli_batch(prompt: str, schema_path: Path, output_path: Path, mode
                 "prompt_chars": len(prompt), "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
     command = [binary, "-p", "--model", model, "--effort", AGENT_REASONING_EFFORT,
                "--output-format", "json", "--json-schema", json.dumps(schema),
-               "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+               "--tools", "", "--strict-mcp-config", "--setting-sources", "user",
                "--no-session-persistence",
                "--system-prompt", "You are a measurement instrument. Answer only via the required structured output."]
     sandbox = output_path.parent / ".claude_cli_cwd"
@@ -429,8 +429,10 @@ def run_claude_cli_batch(prompt: str, schema_path: Path, output_path: Path, mode
         started = time.monotonic()
         _call_event(output_path, event="request_started", attempt=attempt, **metadata)
         try:
+            # Drop host-session variables so a CLI launched from another Claude session uses the user's own login.
+            env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_")}
             result = subprocess.run(command, input=prompt, capture_output=True, text=True, cwd=sandbox,
-                                    timeout=CLAUDE_CLI_TIMEOUT_SECONDS, check=False)
+                                    timeout=CLAUDE_CLI_TIMEOUT_SECONDS, check=False, env=env)
             envelope = json.loads(result.stdout)
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as error:
             _call_event(output_path, event="request_failed", attempt=attempt, **metadata,

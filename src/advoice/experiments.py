@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlsplit
 
 from .config import load_yaml, project_root
 from .workspace import LOCK_TOKEN_ENV, validate_output_paths, workspace_lock
+from .agent_runtime import AGENT_PROVIDERS
 
 
 DATASET_OUTPUTS = (
@@ -111,7 +112,7 @@ def load_recipe(path: Path, root: Path | None = None) -> dict:
     recipe.setdefault("agent_provider", "disabled")
     recipe.setdefault("force", False)
     for key, choices in {"input_mode": ("raw", "processed"), "mode": ("quick", "full"),
-                         "agent_provider": ("disabled", "codex_cli", "openai_api")}.items():
+                         "agent_provider": AGENT_PROVIDERS}.items():
         if recipe[key] not in choices:
             raise ValueError(f"Invalid {key}")
     if type(recipe["force"]) is not bool:

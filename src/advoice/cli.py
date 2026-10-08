@@ -8,6 +8,7 @@ from pathlib import Path
 from .aggregate_reporting import build_aggregate_report
 from .config import load_all, paths
 from .workspace import LOCK_TOKEN_ENV, workspace_lock
+from .agent_runtime import AGENT_PROVIDERS, API_PROVIDERS
 from .pipeline import (
     clean_cache,
     rebuild_latest_report,
@@ -28,7 +29,7 @@ def parser() -> argparse.ArgumentParser:
     agent_led.add_argument("--workspaces", type=Path, required=True)
     agent_led.add_argument("--output-dir", type=Path, required=True)
     agent_led.add_argument("--labels", nargs="+", required=True)
-    agent_led.add_argument("--provider", choices=["disabled", "openai_api"], default="disabled")
+    agent_led.add_argument("--provider", choices=["disabled", *API_PROVIDERS], default="disabled")
     agent_led.add_argument("--model", default=None)
     agent_led.add_argument("--max-steps", type=int, default=16)
     agent_led.add_argument("--max-cases", type=int)
@@ -45,7 +46,7 @@ def parser() -> argparse.ArgumentParser:
     study.add_argument("--artifact-dir", type=Path, required=True)
     study.add_argument("--output-dir", type=Path, required=True)
     study.add_argument("--labels", nargs="+", required=True)
-    study.add_argument("--provider", choices=["disabled", "openai_api"], default="disabled")
+    study.add_argument("--provider", choices=["disabled", *API_PROVIDERS], default="disabled")
     study.add_argument("--model", default=None)
     study.add_argument("--max-steps", type=int, default=16)
     study.add_argument("--max-cases", type=int)
@@ -61,20 +62,20 @@ def parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run")
     run.add_argument("--dataset", default="NCMMSC2021_AD")
     run.add_argument("--mode", choices=["quick", "full"], default="quick")
-    run.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
+    run.add_argument("--agent-provider", choices=list(AGENT_PROVIDERS), default="disabled")
     run.add_argument("--force", action="store_true")
     run_all = commands.add_parser("run-all")
     run_all.add_argument("--mode", choices=["quick", "full"], default="quick")
-    run_all.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
+    run_all.add_argument("--agent-provider", choices=list(AGENT_PROVIDERS), default="disabled")
     run_all.add_argument("--force", action="store_true")
     run_all.add_argument("--datasets", nargs="*")
     processed = commands.add_parser("run-processed")
     processed.add_argument("--dataset", default="NCMMSC2021_AD")
-    processed.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
+    processed.add_argument("--agent-provider", choices=list(AGENT_PROVIDERS), default="disabled")
     processed.add_argument("--force", action="store_true")
     processed.add_argument("--source-root", type=Path, help="Directory containing frozen per-dataset artifacts")
     processed_all = commands.add_parser("run-all-processed")
-    processed_all.add_argument("--agent-provider", choices=["disabled", "codex_cli", "openai_api"], default="disabled")
+    processed_all.add_argument("--agent-provider", choices=list(AGENT_PROVIDERS), default="disabled")
     processed_all.add_argument("--force", action="store_true")
     processed_all.add_argument("--datasets", nargs="*")
     processed_all.add_argument("--source-root", type=Path)

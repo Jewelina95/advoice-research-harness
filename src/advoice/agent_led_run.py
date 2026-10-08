@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent_led import EvidenceSession, VERSION, response_schema, run_agent_session
-from .agent_runtime import run_structured_batch
+from .agent_runtime import API_PROVIDERS, run_structured_batch
 from .cognitive_agent import SKILL_FILES
 from .utils import hash_values, json_dump, now_utc
 
@@ -180,8 +180,8 @@ def run_agent_led_cohort(root: Path, workspaces_path: Path, output_dir: Path,
                         truth_path: Path | None = None,
                         decision_mode: str = "clinical") -> dict[str, Any]:
     """Keep original artifacts intact; all external requests are explicit opt-ins."""
-    if provider not in {"disabled", "openai_api"}:
-        raise ValueError("Agent-led inference supports only disabled or openai_api; filesystem-capable providers are not permitted.")
+    if provider not in {"disabled", *API_PROVIDERS}:
+        raise ValueError("Agent-led inference supports only disabled or hosted API providers; filesystem-capable providers are not permitted.")
     if max_cases is not None and max_cases < 1:
         raise ValueError("max_cases must be positive.")
     rows = [json.loads(line) for line in workspaces_path.read_text(encoding="utf-8").splitlines() if line.strip()]

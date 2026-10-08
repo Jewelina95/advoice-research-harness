@@ -11,7 +11,7 @@ from sklearn.metrics import accuracy_score, f1_score
 
 from .agent_led import evidence_snapshot
 from .agent_led_run import run_agent_led_cohort
-from .agent_runtime import case_pseudonym
+from .agent_runtime import API_PROVIDERS, case_pseudonym
 from .evaluation import evaluate_predictions
 from .transcript_sanitization import sanitize_transcript_payload
 from .utils import hash_values, json_dump, now_utc, sha256_file
@@ -406,8 +406,8 @@ def run_agent_led_study(
     decision_mode: str = "clinical",
     selection_method: str = "hash",
 ) -> dict[str, Any]:
-    if provider == "openai_api" and not confirm_external_data_permission:
-        raise ValueError("openai_api requires explicit external-data permission for selected evidence.")
+    if provider in API_PROVIDERS and not confirm_external_data_permission:
+        raise ValueError("Hosted API providers require explicit external-data permission for selected evidence.")
     prepared = prepare_agent_led_study(
         artifact_dir, study_dir, dataset_id=dataset_id, labels=labels,
         max_cases=max_cases, selection_seed=selection_seed,

@@ -237,56 +237,137 @@ def run_codex_batch(
     return json.loads(output_path.read_text(encoding="utf-8"))
 
 
-def run_openai_batch(
+API_PROVIDERS = ("openai_api", "anthropic_api", "deepseek_api")
+AGENT_PROVIDERS = ("disabled", "codex_cli", *API_PROVIDERS)
+_API_KEY_ENV = {
+    "openai_api": "OPENAI_API_KEY",
+    "anthropic_api": "ANTHROPIC_API_KEY",
+    "deepseek_api": "DEEPSEEK_API_KEY",
+}
+_ERROR_PREFIX = {"openai_api": "openai", "anthropic_api": "anthropic", "deepseek_api": "deepseek"}
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# One shared effort level keeps cross-provider comparisons on the same policy.
+AGENT_REASONING_EFFORT = os.environ.get("ADVOICE_AGENT_EFFORT", "low")
+_ANTHROPIC_UNSUPPORTED = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+                          "minItems", "maxItems", "minLength", "maxLength", "pattern"}
+
+
+def _strip_keywords(value: Any, keywords: set[str]) -> Any:
+    if isinstance(value, dict):
+        return {key: _strip_keywords(item, keywords) for key, item in value.items() if key not in keywords}
+    if isinstance(value, list):
+        return [_strip_keywords(item, keywords) for item in value]
+    return value
+
+
+def _validate_payload(payload: Any, schema: dict[str, Any]) -> None:
+    # Providers without strict server-side schemas are validated locally, so a
+    # malformed answer is a recorded failure instead of a silently coerced row.
+    import jsonschema
+
+    try:
+        jsonschema.validate(payload, schema)
+    except jsonschema.ValidationError:
+        raise _provider_runtime_error("schema_validation_failed") from None
+
+
+def _openai_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[str | None, Any, str]:
+    from openai import OpenAI
+
+    response = OpenAI(max_retries=0).responses.create(
+        model=model,
+        input=prompt,
+        text={"format": {"type": "json_schema", "name": "advoice_structured_output",
+                         "strict": True, "schema": schema}},
+        reasoning={"effort": AGENT_REASONING_EFFORT},
+        max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+        store=False,
+    )
+    ok = response.status == "completed" and bool(response.output_text)
+    return (response.output_text if ok else None), getattr(response, "usage", None), str(response.status)
+
+
+def _anthropic_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[str | None, Any, str]:
+    import anthropic
+
+    # No server-side refusal fallback: a silent switch to another model would
+    # break the model identity that cross-model comparisons depend on.
+    with anthropic.Anthropic(max_retries=0).messages.stream(
+        model=model,
+        max_tokens=16000,
+        messages=[{"role": "user", "content": prompt}],
+        output_config={"effort": AGENT_REASONING_EFFORT,
+                       "format": {"type": "json_schema",
+                                  "schema": _strip_keywords(schema, _ANTHROPIC_UNSUPPORTED)}},
+    ) as stream:
+        message = stream.get_final_message()
+    text = next((block.text for block in message.content if block.type == "text"), None)
+    ok = message.stop_reason == "end_turn" and bool(text)
+    return (text if ok else None), message.usage, str(message.stop_reason)
+
+
+def _deepseek_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[str | None, Any, str]:
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE_URL, max_retries=0)
+    # DeepSeek offers JSON mode but not strict schemas; the schema goes in the
+    # prompt and the result is validated locally after parsing.
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "Return one JSON object that validates against this JSON schema:\n"
+                                          + json.dumps(schema, ensure_ascii=False)},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=8192,
+    )
+    choice = response.choices[0]
+    text = choice.message.content
+    ok = choice.finish_reason == "stop" and bool(text)
+    return (text if ok else None), getattr(response, "usage", None), str(choice.finish_reason)
+
+
+_API_CALLERS = {"openai_api": _openai_call, "anthropic_api": _anthropic_call, "deepseek_api": _deepseek_call}
+
+
+def run_api_batch(
+    provider: str,
     prompt: str,
     schema_path: Path,
     output_path: Path,
     model: str,
 ) -> dict[str, Any]:
-    """Run a stateless structured-output request through the Responses API."""
+    """Run one stateless structured-output request against a hosted model API."""
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required for the openai_api provider.")
-    from openai import OpenAI
-
+    if provider not in _API_CALLERS:
+        raise ValueError(f"Unsupported API provider: {provider}")
+    key_env = _API_KEY_ENV[provider]
+    if not os.environ.get(key_env):
+        raise RuntimeError(f"{key_env} is required for the {provider} provider.")
+    prefix = _ERROR_PREFIX[provider]
     schema = _provider_schema(json.loads(schema_path.read_text(encoding="utf-8")))
-    # Retry only here: SDK retries multiplied the five outer attempts by three.
-    client = OpenAI(max_retries=0)
-    response = None
-    retry_delays = OPENAI_RETRY_DELAYS_SECONDS
-    metadata = {"provider": "openai_api", "model": model,
+    metadata = {"provider": provider, "model": model, "effort": AGENT_REASONING_EFFORT,
                 "prompt_chars": len(prompt), "schema_bytes": len(json.dumps(schema).encode()),
                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
-    for attempt, delay_seconds in enumerate(retry_delays, start=1):
+    # Retry only here: SDK retries are disabled so attempts are counted once.
+    result = None
+    for attempt, delay_seconds in enumerate(OPENAI_RETRY_DELAYS_SECONDS, start=1):
         if delay_seconds:
             time.sleep(delay_seconds)
         started = time.monotonic()
         _call_event(output_path, event="request_started", attempt=attempt, **metadata)
         try:
-            response = client.responses.create(
-                model=model,
-                input=prompt,
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "advoice_structured_output",
-                        "strict": True,
-                        "schema": schema,
-                    }
-                },
-                reasoning={"effort": "low"},
-                max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
-                store=False,
-            )
-            usage = _usage_counts(getattr(response, "usage", None))
+            result = _API_CALLERS[provider](prompt, schema, model)
+            usage = _usage_counts(result[1])
             _call_event(output_path, event="request_finished", attempt=attempt, **metadata,
                         elapsed_seconds=time.monotonic() - started,
-                        status=response.status, usage=usage, usage_available=usage is not None)
+                        status=result[2], usage=usage, usage_available=usage is not None)
             break
         except Exception as error:
             status_code = getattr(error, "status_code", None)
             error_name = type(error).__name__
-            category = "openai_request_failed"
+            category = f"{prefix}_request_failed"
             _call_event(output_path, event="request_failed", attempt=attempt, **metadata,
                         elapsed_seconds=time.monotonic() - started,
                         error_type=error_name, status_code=status_code,
@@ -298,27 +379,29 @@ def run_openai_batch(
             transient_status = status_code in {408, 409, 429} or (
                 isinstance(status_code, int) and 500 <= status_code < 600
             )
-            if not (transient_transport or transient_status) or attempt == len(retry_delays):
+            if not (transient_transport or transient_status) or attempt == len(OPENAI_RETRY_DELAYS_SECONDS):
                 raise _provider_runtime_error(category) from None
-    if response is None:
-        raise RuntimeError("OpenAI agent request exhausted its rate-limit retries.")
-    if response.status != "completed" or not response.output_text:
-        category = "openai_response_failed"
-        _call_event(
-            output_path,
-            event="response_rejected",
-            **metadata,
-            status=str(response.status),
-            error_category=category,
-            error_sha256=_diagnostic_hash(getattr(response, "error", None)),
-            usage=None,
-        )
+    if result is None:
+        raise RuntimeError("Agent API request exhausted its retries.")
+    text, _, status = result
+    if text is None:
+        category = f"{prefix}_response_failed"
+        _call_event(output_path, event="response_rejected", **metadata, status=status,
+                    error_category=category, error_sha256=_diagnostic_hash(status), usage=None)
         raise _provider_runtime_error(category)
     raw_path = output_path.with_name(f"{output_path.name}.raw.txt")
-    raw_path.write_text(response.output_text, encoding="utf-8")
-    payload = json.loads(response.output_text)
+    raw_path.write_text(text, encoding="utf-8")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise _provider_runtime_error(f"{prefix}_invalid_json") from None
+    _validate_payload(payload, schema)
     json_dump(payload, output_path)
     return payload
+
+
+def run_openai_batch(prompt: str, schema_path: Path, output_path: Path, model: str) -> dict[str, Any]:
+    return run_api_batch("openai_api", prompt, schema_path, output_path, model)
 
 
 def run_structured_batch(
@@ -346,6 +429,8 @@ def run_structured_batch(
         return run_codex_batch(root, prompt, schema_path, output_path, model)
     if provider == "openai_api":
         return run_openai_batch(prompt, schema_path, output_path, model)
+    if provider in API_PROVIDERS:
+        return run_api_batch(provider, prompt, schema_path, output_path, model)
     raise ValueError(f"Unsupported agent provider: {provider}")
 
 

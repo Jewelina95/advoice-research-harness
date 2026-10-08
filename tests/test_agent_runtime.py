@@ -225,3 +225,113 @@ def test_openai_missing_usage_is_not_reported_as_zero(monkeypatch, tmp_path):
     run_openai_batch("prompt", schema, tmp_path / "out.json", "test")
     event = json.loads((tmp_path / "out.json.calls.jsonl").read_text().splitlines()[-1])
     assert event["usage"] is None and event["usage_available"] is False
+
+
+_ACTION_SCHEMA = {"type": "object", "properties": {"action": {"type": "string", "minLength": 1}},
+                  "required": ["action"], "additionalProperties": False}
+
+
+def _install_anthropic(monkeypatch: pytest.MonkeyPatch, text: str, stop_reason: str, seen: dict) -> None:
+    message = types.SimpleNamespace(
+        content=[types.SimpleNamespace(type="thinking", thinking=""), types.SimpleNamespace(type="text", text=text)],
+        stop_reason=stop_reason, usage={"input_tokens": 50, "output_tokens": 9})
+
+    class _Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_final_message(self):
+            return message
+
+    class _Messages:
+        def stream(self, **kwargs):
+            seen.update(kwargs)
+            return _Stream()
+
+    class _Anthropic:
+        def __init__(self, *, max_retries: int) -> None:
+            assert max_retries == 0
+            self.messages = _Messages()
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_Anthropic))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+
+
+def test_anthropic_batch_uses_structured_output_without_fallback(monkeypatch, tmp_path) -> None:
+    from advoice.agent_runtime import run_structured_batch
+
+    seen: dict = {}
+    _install_anthropic(monkeypatch, '{"action":"finish"}', "end_turn", seen)
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    result = run_structured_batch(tmp_path, "prompt", schema, tmp_path / "out.json", "claude-opus-5-5", "anthropic_api")
+    assert result == {"action": "finish"}
+    fmt = seen["output_config"]["format"]
+    assert fmt["type"] == "json_schema" and "minLength" not in json.dumps(fmt["schema"])
+    assert "fallbacks" not in seen and "betas" not in seen
+    events = [json.loads(line) for line in (tmp_path / "out.json.calls.jsonl").read_text().splitlines()]
+    assert events[-1]["usage"] == {"input_tokens": 50, "output_tokens": 9}
+
+
+def test_anthropic_refusal_is_a_recorded_failure(monkeypatch, tmp_path) -> None:
+    from advoice.agent_runtime import run_structured_batch
+
+    _install_anthropic(monkeypatch, "", "refusal", {})
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    with pytest.raises(RuntimeError, match=r"\[anthropic_response_failed\]"):
+        run_structured_batch(tmp_path, "p", schema, tmp_path / "out.json", "claude-opus-5-5", "anthropic_api")
+    assert not (tmp_path / "out.json").exists()
+
+
+def _install_deepseek(monkeypatch: pytest.MonkeyPatch, content: str, seen: dict) -> None:
+    class _Completions:
+        def create(self, **kwargs):
+            seen.update(kwargs)
+            choice = types.SimpleNamespace(finish_reason="stop", message=types.SimpleNamespace(content=content))
+            return types.SimpleNamespace(choices=[choice], usage={"prompt_tokens": 40, "completion_tokens": 7})
+
+    class _OpenAI:
+        def __init__(self, *, api_key: str, base_url: str, max_retries: int) -> None:
+            assert base_url == "https://api.deepseek.com" and max_retries == 0
+            self.chat = types.SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=_OpenAI))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+
+
+def test_deepseek_batch_validates_json_mode_output_locally(monkeypatch, tmp_path) -> None:
+    from advoice.agent_runtime import run_structured_batch
+
+    seen: dict = {}
+    _install_deepseek(monkeypatch, '{"action":"finish"}', seen)
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    assert run_structured_batch(tmp_path, "p", schema, tmp_path / "out.json", "deepseek-chat", "deepseek_api") == {"action": "finish"}
+    assert seen["response_format"] == {"type": "json_object"}
+    assert '"action"' in seen["messages"][0]["content"]
+
+
+def test_deepseek_schema_violation_fails_closed(monkeypatch, tmp_path) -> None:
+    from advoice.agent_runtime import run_structured_batch
+
+    _install_deepseek(monkeypatch, '{"action":"finish","extra":1}', {})
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    with pytest.raises(RuntimeError, match=r"\[schema_validation_failed\]"):
+        run_structured_batch(tmp_path, "p", schema, tmp_path / "out.json", "deepseek-chat", "deepseek_api")
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_missing_provider_key_fails_before_any_call(monkeypatch, tmp_path) -> None:
+    from advoice.agent_runtime import run_api_batch
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps(_ACTION_SCHEMA))
+    with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):
+        run_api_batch("deepseek_api", "p", schema, tmp_path / "out.json", "deepseek-chat")
+    assert not (tmp_path / "out.json.calls.jsonl").exists()

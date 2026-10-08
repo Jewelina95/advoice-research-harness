@@ -21,9 +21,10 @@ from .authority_review_runtime import (
 from .authority_study_dataset import AuthorityStudyDataset
 from .config import paths
 from .decision_lock import hash_artifact
+from .agent_runtime import API_PROVIDERS
 
 
-SUPPORTED_PROVIDERS = ("codex_cli", "openai_api", "disabled")
+SUPPORTED_PROVIDERS = ("codex_cli", *API_PROVIDERS, "disabled")
 SUPPORTED_SELECTION_ORDERS = ("longest_first", "subject_id", "stable_hash")
 SUPPORTED_REVIEW_MODES = (REVIEW_MODE_SINGLE_BLIND, REVIEW_MODE_LEGACY_TWO_PASS)
 

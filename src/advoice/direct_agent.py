@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from .agent_runtime import case_pseudonym, normalize_probabilities, output_schema, pseudonym, run_structured_batch, select_agent_cohort
+from .agent_runtime import API_PROVIDERS, case_pseudonym, normalize_probabilities, output_schema, pseudonym, run_structured_batch, select_agent_cohort
 from .utils import hash_values, json_dump, json_load, now_utc
 
 
@@ -127,7 +127,7 @@ def run_direct_agent(
         )
         prompt_path.write_text(agents_config["direct_agent_instruction"], encoding="utf-8")
         return
-    if provider not in {"codex_cli", "openai_api"}:
+    if provider not in {"codex_cli", *API_PROVIDERS}:
         raise ValueError(f"Unsupported agent provider: {provider}")
     transcripts = pd.read_csv(subject_transcripts_path, dtype={"subject_id": str}).fillna("")
     transcripts = truth[["subject_id"]].merge(transcripts, on="subject_id", how="left").fillna("")

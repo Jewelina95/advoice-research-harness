@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ART="/Users/wenshaoyue/Desktop/research/ad general/AD voice/9.2/artifacts/PREPARE_DrivenData"
 P="$1"; M="$2"; W="${WORKERS:-6}"
-run() { python3 -W ignore scripts/v2/agent_measure.py --artifacts "$ART" --provider "$P" --model "$M" --out-dir .local/v2/agent --workers "$W" "$@"; }
+run() { python3 -W ignore scripts/v2/agent_measure.py --artifacts "$ART" --provider "$P" --model "$M" --out-dir .local/v2/agent --workers "$W" --batch "${BATCH:-12}" "$@"; }
 run --arm C --limit 12            # smoke test
 run --arm C &                     # full framework measurement
 run --arm B &                     # full plain-agent judgement

@@ -309,7 +309,7 @@ def _anthropic_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[st
 def _deepseek_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[str | None, Any, str]:
     from openai import OpenAI
 
-    client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE_URL, max_retries=0)
+    client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE_URL, max_retries=0, timeout=240)
     # DeepSeek offers JSON mode but not strict schemas; the schema goes in the
     # prompt and the result is validated locally after parsing.
     response = client.chat.completions.create(
@@ -320,7 +320,7 @@ def _deepseek_call(prompt: str, schema: dict[str, Any], model: str) -> tuple[str
             {"role": "user", "content": prompt},
         ],
         response_format={"type": "json_object"},
-        max_tokens=8192,
+        max_tokens=int(os.environ.get("ADVOICE_DEEPSEEK_MAX_TOKENS", "8192")),
     )
     choice = response.choices[0]
     text = choice.message.content
